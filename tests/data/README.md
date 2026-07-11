@@ -1,0 +1,2 @@
+- `bucket.stl` -- from `slugdev/stltostp`'s own `test/` folder (BSD-licensed), reused here as a real, moderately dense (11,286 triangle) watertight mesh.
+- `real_mesh_bottom_bracket.stl` -- a real mechanical CAD part (62,028 triangles, watertight) from this host's `~/projects/Core-R-Theta-4-Axis-Printer/` project, copied in so the "dense real scan mesh" test is self-contained and doesn't depend on an unrelated project's files continuing to exist at a fixed path.
