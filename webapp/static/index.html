@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mesh2step — mesh to STEP B-Rep converter</title>
+  <meta name="description" content="Convert triangle meshes (STL/OBJ/3MF/PLY) into faceted B-Rep STEP solids. Exact, geometry-preserving, shared-topology-by-construction." />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="logo">mesh<span>2</span>step</div>
+    <div class="header-actions">
+      <button id="reset-btn" class="icon-btn" title="Reset settings">Reset</button>
+    </div>
+    <span class="header-note">Server-side OCCT conversion · uploaded, converted, discarded after 1h</span>
+    <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+      <span class="icon-moon">🌙</span><span class="icon-sun">☀️</span>
+    </button>
+    <a class="github-link" href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+  </header>
+
+  <main>
+    <section id="viewport-section">
+      <div id="drop-zone" class="drop-zone">
+        <div id="drop-hint" class="drop-hint">
+          <div class="drop-icon">⬇</div>
+          <div>Drop an <b>.stl</b>, <b>.obj</b>, <b>.3mf</b> or <b>.ply</b> file here<br />or
+            <label class="link-label">click to browse<input id="file-input" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
+          </div>
+        </div>
+        <canvas id="viewport"></canvas>
+      </div>
+      <div id="viewport-footer">
+        <span id="mesh-info" class="mesh-info">No model loaded</span>
+        <label class="wireframe-toggle"><input id="wireframe-toggle" type="checkbox" /> Wireframe</label>
+        <div class="viewport-controls-hint">Left drag: orbit · Right drag: pan · Scroll: zoom</div>
+      </div>
+    </section>
+
+    <aside id="settings-panel">
+      <section class="panel-section">
+        <h2>Input</h2>
+        <div class="form-row">
+          <label class="upload-btn">Load model…<input id="file-input-2" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
+        </div>
+        <div class="form-row"><span id="input-name" class="active-map-name">No file selected</span></div>
+      </section>
+
+      <section class="panel-section">
+        <h2>Tolerance</h2>
+        <div class="form-row slider-row">
+          <label>Dedup cell (mm)</label>
+          <input id="tolerance" type="range" min="0.0001" max="1" step="0.0001" value="0.01" />
+          <input id="tolerance-num" class="num" type="number" min="0.0001" step="0.0001" value="0.01" />
+        </div>
+        <p class="hint">Vertices within one cell merge into one shared topology vertex. Also the sub-resolution floor for degenerate triangles.</p>
+      </section>
+
+      <section class="panel-section">
+        <h2>Merge co-planar</h2>
+        <div class="form-row">
+          <label class="checkbox-label"><input id="merge-toggle" type="checkbox" /> Merge adjacent co-planar faces</label>
+        </div>
+        <div id="merge-controls" class="merge-controls hidden">
+          <div class="form-row slider-row">
+            <label>Angle (°)</label>
+            <input id="merge-angle" type="range" min="0.1" max="45" step="0.1" value="5" />
+            <input id="merge-angle-num" class="num" type="number" min="0.1" step="0.1" value="5" />
+          </div>
+          <p class="hint">Off = exact faceted output (one face per triangle). On = smaller face count, no longer 1:1 with the mesh.</p>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h2>STEP format</h2>
+        <div class="form-row">
+          <select id="schema">
+            <option value="ap203">AP203</option>
+            <option value="ap214" selected>AP214</option>
+            <option value="ap242">AP242</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h2>Export</h2>
+        <button id="convert-btn" class="export-btn" disabled>Convert to STEP</button>
+        <div id="convert-status" class="convert-status hidden"></div>
+        <div id="stats-panel" class="stats-panel hidden"></div>
+        <div id="warnings" class="warnings"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
