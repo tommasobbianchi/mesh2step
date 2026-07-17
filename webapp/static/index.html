@@ -17,15 +17,25 @@
 </head>
 <body>
   <header>
-    <div class="logo">mesh<span>2</span>step</div>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+        <polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+        <polygon points="16,10 21,13 21,19 16,22 11,19 11,13" fill="var(--accent)" opacity="0.85"/>
+      </svg>
+      <div class="brand-text">
+        <div class="logo">mesh<span>2</span>step</div>
+        <div class="brand-sub">by Native&nbsp;Research</div>
+      </div>
+    </div>
     <div class="header-actions">
       <button id="reset-btn" class="icon-btn" title="Reset settings">Reset</button>
     </div>
     <span class="header-note">Server-side OCCT conversion · uploaded, converted, discarded after 1h</span>
+    <button id="help-btn" class="theme-toggle" title="How it works">?</button>
     <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
       <span class="icon-moon">🌙</span><span class="icon-sun">☀️</span>
     </button>
-    <a class="github-link" href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+    <a class="github-link" href="https://github.com/tommasobbianchi/mesh2step" target="_blank" rel="noopener">GitHub</a>
   </header>
 
   <main>
@@ -173,6 +183,59 @@
       </section>
     </aside>
   </main>
+
+  <!-- Welcome / how-it-works dialog -->
+  <div id="welcome-overlay" class="modal-overlay hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+      <button id="welcome-close" class="modal-close" title="Close">×</button>
+      <div class="modal-brand">
+        <svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true">
+          <polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+          <polygon points="16,10 21,13 21,19 16,22 11,19 11,13" fill="var(--accent)" opacity="0.85"/>
+        </svg>
+        <div>
+          <h2 id="welcome-title" class="modal-title">Welcome to mesh<span>2</span>step</h2>
+          <p class="modal-tagline">Turn a scanned or downloaded mesh into a clean CAD <b>STEP</b> solid — in five steps.</p>
+        </div>
+      </div>
+
+      <ol class="flow">
+        <li class="flow-step">
+          <span class="flow-icon">📤</span>
+          <div><b>1 · Upload</b><span>Drop an STL / OBJ / 3MF / PLY into the viewport.</span></div>
+        </li>
+        <li class="flow-arrow">→</li>
+        <li class="flow-step">
+          <span class="flow-icon">✂️</span>
+          <div><b>2 · Isolate</b><span>Remove junk: Box, Plane, or Lasso — or click a colored <b>Component</b> to keep just one part.</span></div>
+        </li>
+        <li class="flow-arrow">→</li>
+        <li class="flow-step">
+          <span class="flow-icon">🩹</span>
+          <div><b>3 · Repair</b><span>Weld, fill holes, or <b>Solidify</b> a messy scan into a watertight solid.</span></div>
+        </li>
+        <li class="flow-arrow">→</li>
+        <li class="flow-step">
+          <span class="flow-icon">📐</span>
+          <div><b>4 · Convert</b><span>Exact faceted B-Rep — one CAD face per triangle.</span></div>
+        </li>
+        <li class="flow-arrow">→</li>
+        <li class="flow-step">
+          <span class="flow-icon">⬇️</span>
+          <div><b>5 · Download</b><span>Grab your <b>.step</b> (AP203 / AP214 / AP242).</span></div>
+        </li>
+      </ol>
+
+      <p class="modal-hint">Tip: tolerance auto-tunes to your model's size. All uploads are deleted after 1 hour.</p>
+      <button id="welcome-start" class="export-btn">Get started</button>
+
+      <div class="credits">
+        A <b>Native Research</b> tool · built by
+        <a href="https://github.com/tommasobbianchi" target="_blank" rel="noopener">@tommasobbianchi</a>
+        with <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude</a>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>

@@ -1,0 +1,14 @@
+[Unit]
+Description=mesh2step cloudflared quick tunnel (public HTTPS URL)
+After=network-online.target mesh2step.service
+Wants=network-online.target
+Requires=mesh2step.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloudflared tunnel --url http://localhost:8000 --no-autoupdate
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -755,3 +755,21 @@ function addWarning(text) {
   d.textContent = '⚠ ' + text;
   warningsEl.appendChild(d);
 }
+
+// ---- welcome / how-it-works dialog ----
+const welcomeOverlay = document.getElementById('welcome-overlay');
+function showWelcome() { welcomeOverlay.classList.remove('hidden'); }
+function hideWelcome() {
+  welcomeOverlay.classList.add('hidden');
+  try { localStorage.setItem('m2s_welcomed', '1'); } catch (e) { /* private mode */ }
+}
+document.getElementById('welcome-close').addEventListener('click', hideWelcome);
+document.getElementById('welcome-start').addEventListener('click', hideWelcome);
+document.getElementById('help-btn').addEventListener('click', showWelcome);
+welcomeOverlay.addEventListener('click', (e) => { if (e.target === welcomeOverlay) hideWelcome(); });
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !welcomeOverlay.classList.contains('hidden')) hideWelcome();
+});
+let _seenWelcome = false;
+try { _seenWelcome = !!localStorage.getItem('m2s_welcomed'); } catch (e) { /* private mode */ }
+if (!_seenWelcome) showWelcome();
