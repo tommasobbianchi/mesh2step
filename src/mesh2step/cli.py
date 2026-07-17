@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from .convert import convert_file
+from .cut import load_cut_ops
 from .io_mesh import SUPPORTED_EXTENSIONS
 
 DEFAULT_MERGE_ANGLE_DEG = 5.0
@@ -128,6 +129,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Runs before dedup; still-non-watertight meshes are reported honestly."
         ),
     )
+    p.add_argument(
+        "--cut-largest",
+        action="store_true",
+        help="keep only the largest connected component of the mesh",
+    )
+    p.add_argument(
+        "--cut-json",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="path to a JSON file containing a list of cut operations",
+    )
     return p
 
 
@@ -147,6 +160,7 @@ def main(argv=None) -> int:
         return 1
 
     if input_path.is_dir():
+        ops = _build_cut_ops(args)
         files = list(_iter_batch_inputs(input_path))
         if not files:
             print(f"error: no supported mesh files ({sorted(SUPPORTED_EXTENSIONS)}) in {input_path}", file=sys.stderr)
@@ -164,6 +178,7 @@ def main(argv=None) -> int:
                 merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
                 schema=args.format,
                 repair=args.repair,
+                cuts=ops,
             )
             _log_stats(stats)
             if stats.error:
@@ -173,6 +188,7 @@ def main(argv=None) -> int:
         print(f"batch done: {n_ok} ok, {n_fail} failed, {time.perf_counter() - t_batch:.2f}s total")
         return 1 if n_fail else 0
 
+    ops = _build_cut_ops(args)
     output_path = Path(args.output) if args.output else _default_output(input_path, output_dir)
     stats = convert_file(
         input_path,
@@ -182,9 +198,19 @@ def main(argv=None) -> int:
         merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
         schema=args.format,
         repair=args.repair,
+        cuts=ops,
     )
     _log_stats(stats)
     return 1 if stats.error else 0
+
+
+def _build_cut_ops(args):
+    ops = []
+    if args.cut_json:
+        ops.extend(load_cut_ops(args.cut_json))
+    if args.cut_largest:
+        ops.append({"type": "largest"})
+    return ops or None
 
 
 if __name__ == "__main__":

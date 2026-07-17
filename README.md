@@ -122,6 +122,22 @@ afterward. The result is reported honestly: if the mesh remains non-watertight
 after repair, it is exported as an open shell like any other non-watertight
 input.
 
+## Select &amp; cut
+
+Off by default. Cuts are centroid-mask based (no new vertices, exact faceted
+fidelity preserved) and applied before repair in the pipeline order:
+load &#8594; cut &#8594; repair &#8594; dedup &#8594; build &#8594; write.
+Available operations:
+
+- **box**: keep (or discard) triangles whose centroids fall inside a min/max box.
+- **plane**: keep triangles on one side of an axis-aligned plane.
+- **lasso**: freehand selection in the web viewer via a projector matrix.
+- **largest**: retain only the largest connected component.
+
+CLI: `--cut-largest` or `--cut-json path/to/ops.json`. In the web UI, use the
+Select &amp; cut panel; each cut can be previewed before conversion with
+`/api/edit` (returns the cut mesh as STL).
+
 ## Scope limits
 
 - One input file = one output body (one shell/solid). Multiple disconnected islands

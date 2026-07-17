@@ -27,6 +27,15 @@ scene.add(grid);
 const material = new THREE.MeshStandardMaterial({ color: 0x9b8dff, metalness: 0.1, roughness: 0.6, flatShading: true });
 let currentMesh = null;
 
+// ---- cut state ----
+let cutOps = [];
+let boxHelper = null;
+let planeHelper = null;
+let meshBBox = null;
+let lassoActive = false;
+let lassoPoints = [];
+let cutKeepInside = true;
+
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (canvas.width !== w || canvas.height !== h) {
@@ -127,6 +136,25 @@ async function loadFile(file) {
   convertBtn.disabled = false;
   document.getElementById('stats-panel').classList.add('hidden');
   document.getElementById('warnings').innerHTML = '';
+
+  // Reset cut state on new mesh load
+  cutOps = [];
+  _clearHelpers();
+  _hideCutControls();
+  meshBBox = { min: new THREE.Vector3(), max: new THREE.Vector3() };
+  if (obj) {
+    const box = new THREE.Box3().setFromObject(obj);
+    meshBBox = box;
+    document.getElementById('box-xmin').value = box.min.x;
+    document.getElementById('box-xmax').value = box.max.x;
+    document.getElementById('box-ymin').value = box.min.y;
+    document.getElementById('box-ymax').value = box.max.y;
+    document.getElementById('box-zmin').value = box.min.z;
+    document.getElementById('box-zmax').value = box.max.z;
+    document.getElementById('plane-offset').value = box.min.x;
+    document.getElementById('plane-axis').value = 'x';
+  }
+  document.getElementById('cut-status').textContent = '';
 }
 
 // ---- dropzone + file inputs ----
@@ -165,6 +193,246 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('repair').value = 'off';
 });
 
+// ---- cut helpers ----
+function _clearHelpers() {
+  if (boxHelper) { scene.remove(boxHelper); boxHelper = null; }
+  if (planeHelper) { scene.remove(planeHelper); planeHelper = null; }
+}
+
+function _hideCutControls() {
+  document.getElementById('cut-box-controls').classList.add('hidden');
+  document.getElementById('cut-plane-controls').classList.add('hidden');
+}
+
+function _updateBoxHelper() {
+  if (boxHelper) scene.remove(boxHelper);
+  const min = new THREE.Vector3(
+    parseFloat(document.getElementById('box-xmin').value) || 0,
+    parseFloat(document.getElementById('box-ymin').value) || 0,
+    parseFloat(document.getElementById('box-zmin').value) || 0
+  );
+  const max = new THREE.Vector3(
+    parseFloat(document.getElementById('box-xmax').value) || 0,
+    parseFloat(document.getElementById('box-ymax').value) || 0,
+    parseFloat(document.getElementById('box-zmax').value) || 0
+  );
+  const box = new THREE.Box3(min, max);
+  boxHelper = new THREE.Box3Helper(box, 0xffaa00);
+  scene.add(boxHelper);
+}
+
+function _updatePlaneHelper() {
+  if (planeHelper) scene.remove(planeHelper);
+  const axis = document.getElementById('plane-axis').value;
+  const offset = parseFloat(document.getElementById('plane-offset').value) || 0;
+  const size = meshBBox ? meshBBox.getSize(new THREE.Vector3()).length() * 0.7 : 100;
+  const planeGeo = new THREE.PlaneGeometry(size, size);
+  const planeMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+  planeHelper = new THREE.Mesh(planeGeo, planeMat);
+  if (axis === 'x') { planeHelper.rotation.y = Math.PI / 2; planeHelper.position.set(offset, 0, 0); }
+  else if (axis === 'y') { planeHelper.rotation.x = -Math.PI / 2; planeHelper.position.set(0, offset, 0); }
+  else { planeHelper.position.set(0, 0, offset); }
+  scene.add(planeHelper);
+}
+
+function _showCutTool(tool) {
+  _hideCutControls();
+  _clearHelpers();
+  if (tool === 'box') {
+    document.getElementById('cut-box-controls').classList.remove('hidden');
+    _updateBoxHelper();
+  } else if (tool === 'plane') {
+    document.getElementById('cut-plane-controls').classList.remove('hidden');
+    _updatePlaneHelper();
+  }
+}
+
+// ---- cut tool buttons ----
+document.getElementById('cut-box-btn').addEventListener('click', () => _showCutTool('box'));
+document.getElementById('cut-plane-btn').addEventListener('click', () => _showCutTool('plane'));
+document.getElementById('cut-lasso-btn').addEventListener('click', () => _startLasso());
+
+// Box inputs update helper
+['box-xmin', 'box-xmax', 'box-ymin', 'box-ymax', 'box-zmin', 'box-zmax'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', () => { if (!document.getElementById('cut-box-controls').classList.contains('hidden')) _updateBoxHelper(); });
+});
+
+// Plane inputs update helper
+document.getElementById('plane-axis').addEventListener('change', _updatePlaneHelper);
+document.getElementById('plane-offset').addEventListener('input', _updatePlaneHelper);
+
+// Keep inside toggle
+document.getElementById('cut-keep-inside').addEventListener('change', (e) => { cutKeepInside = e.target.checked; });
+
+// ---- lasso mode ----
+function _startLasso() {
+  if (lassoActive) return;
+  lassoActive = true;
+  lassoPoints = [];
+  controls.enabled = false;
+  _hideCutControls();
+  _clearHelpers();
+
+  // Create overlay canvas
+  let overlay = document.getElementById('lasso-overlay');
+  if (!overlay) {
+    overlay = document.createElement('canvas');
+    overlay.id = 'lasso-overlay';
+    overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:10;cursor:crosshair;';
+    canvas.parentElement.style.position = 'relative';
+    canvas.parentElement.appendChild(overlay);
+  }
+  overlay.style.display = 'block';
+  const ctx = overlay.getContext('2d');
+  const rect = overlay.getBoundingClientRect();
+  overlay.width = rect.width;
+  overlay.height = rect.height;
+
+  function onDown(e) {
+    lassoPoints = [{ x: e.clientX, y: e.clientY }];
+  }
+  function onMove(e) {
+    if (lassoPoints.length === 0) return;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ctx.strokeStyle = '#ffaa00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(lassoPoints[0].x - rect.left, lassoPoints[0].y - rect.top);
+    for (let i = 1; i < lassoPoints.length; i++) {
+      ctx.lineTo(lassoPoints[i].x - rect.left, lassoPoints[i].y - rect.top);
+    }
+    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.stroke();
+  }
+  function onUp(e) {
+    overlay.removeEventListener('pointerdown', onDown);
+    overlay.removeEventListener('pointermove', onMove);
+    overlay.removeEventListener('pointerup', onUp);
+    overlay.style.display = 'none';
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    lassoActive = false;
+    controls.enabled = true;
+
+    if (lassoPoints.length < 3) return;
+    // Convert screen points to NDC
+    const r = overlay.getBoundingClientRect();
+    const polygon = lassoPoints.map(p => {
+      const ndcx = (p.x - r.left) / r.width * 2 - 1;
+      const ndcy = -((p.y - r.top) / r.height * 2 - 1);
+      return [ndcx, ndcy];
+    });
+    const matrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements.slice();
+    cutOps.push({
+      type: 'lasso',
+      polygon: polygon,
+      matrix: Array.from(matrix),
+      keep: cutKeepInside ? 'inside' : 'outside'
+    });
+    _applyCut();
+  }
+
+  overlay.addEventListener('pointerdown', onDown);
+  overlay.addEventListener('pointermove', onMove);
+  overlay.addEventListener('pointerup', onUp);
+}
+
+// ---- apply cut ----
+async function _applyCut() {
+  if (!selectedFile) return;
+
+  // Collect op from active tool
+  const boxVisible = !document.getElementById('cut-box-controls').classList.contains('hidden');
+  const planeVisible = !document.getElementById('cut-plane-controls').classList.contains('hidden');
+  if (boxVisible) {
+    cutOps.push({
+      type: 'box',
+      min: [parseFloat(document.getElementById('box-xmin').value), parseFloat(document.getElementById('box-ymin').value), parseFloat(document.getElementById('box-zmin').value)],
+      max: [parseFloat(document.getElementById('box-xmax').value), parseFloat(document.getElementById('box-ymax').value), parseFloat(document.getElementById('box-zmax').value)],
+      keep: cutKeepInside ? 'inside' : 'outside'
+    });
+  } else if (planeVisible) {
+    const sideMax = document.getElementById('plane-side-max').checked;
+    cutOps.push({
+      type: 'plane',
+      axis: document.getElementById('plane-axis').value,
+      offset: parseFloat(document.getElementById('plane-offset').value) || 0,
+      side: sideMax ? 'max' : 'min'
+    });
+  }
+  if (document.getElementById('cut-largest').checked) {
+    cutOps.push({ type: 'largest' });
+  }
+
+  if (cutOps.length === 0) return;
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('cuts', JSON.stringify(cutOps));
+
+  document.getElementById('cut-status').textContent = 'Cutting…';
+  try {
+    const res = await fetch('/api/edit', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'cut failed');
+    }
+    const statsHeader = res.headers.get('X-Mesh-Stats');
+    let nTris = 0;
+    if (statsHeader) {
+      const s = JSON.parse(statsHeader);
+      nTris = s.n_tris_after;
+    }
+    document.getElementById('cut-status').textContent = `Cut applied: ${nTris.toLocaleString()} tris`;
+
+    // Replace preview mesh
+    const buf = await res.arrayBuffer();
+    const geo = new STLLoader().parse(buf);
+    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+    const obj = new THREE.Mesh(geo, material);
+    scene.add(obj);
+    currentMesh = obj;
+    frameObject(obj);
+    meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (cut)`;
+  } catch (e) {
+    document.getElementById('cut-status').textContent = 'Cut error: ' + e.message;
+  }
+}
+
+document.getElementById('cut-apply-btn').addEventListener('click', _applyCut);
+
+// ---- reset cuts ----
+document.getElementById('cut-reset-btn').addEventListener('click', async () => {
+  if (!selectedFile) return;
+  cutOps = [];
+  _clearHelpers();
+  _hideCutControls();
+  document.getElementById('cut-status').textContent = '';
+  // Re-read original file
+  const buf = await selectedFile.arrayBuffer();
+  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+  const ext = selectedFile.name.split('.').pop().toLowerCase();
+  let obj = null, triCount = 0;
+  if (ext === 'stl') {
+    const geo = new STLLoader().parse(buf);
+    obj = new THREE.Mesh(geo, material);
+  }
+  if (obj) {
+    obj.traverse(c => { if (c.isMesh && c.geometry) triCount += (c.geometry.index ? c.geometry.index.count / 3 : c.geometry.attributes.position.count / 3); });
+    scene.add(obj);
+    currentMesh = obj;
+    const { size } = frameObject(obj);
+    meshInfo.textContent = `${selectedFile.name} · ${triCount.toLocaleString()} triangles · ${size.x.toFixed(1)}×${size.y.toFixed(1)}×${size.z.toFixed(1)} mm`;
+    meshBBox = new THREE.Box3().setFromObject(obj);
+    document.getElementById('box-xmin').value = meshBBox.min.x;
+    document.getElementById('box-xmax').value = meshBBox.max.x;
+    document.getElementById('box-ymin').value = meshBBox.min.y;
+    document.getElementById('box-ymax').value = meshBBox.max.y;
+    document.getElementById('box-zmin').value = meshBBox.min.z;
+    document.getElementById('box-zmax').value = meshBBox.max.z;
+    document.getElementById('plane-offset').value = meshBBox.min.x;
+  }
+});
+
 // ---- convert ----
 const statusEl = document.getElementById('convert-status');
 const statsEl = document.getElementById('stats-panel');
@@ -188,6 +456,9 @@ convertBtn.addEventListener('click', async () => {
   const repairVal = document.getElementById('repair').value;
   if (repairVal !== 'off') {
     fd.append('repair', repairVal);
+  }
+  if (cutOps.length) {
+    fd.append('cuts', JSON.stringify(cutOps));
   }
 
   try {

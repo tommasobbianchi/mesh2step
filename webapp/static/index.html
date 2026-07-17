@@ -56,6 +56,55 @@
       </section>
 
       <section class="panel-section">
+        <h2>Select &amp; cut</h2>
+        <div class="form-row">
+          <button id="cut-box-btn" class="icon-btn">Box</button>
+          <button id="cut-plane-btn" class="icon-btn">Plane</button>
+          <button id="cut-lasso-btn" class="icon-btn">Lasso</button>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label"><input type="checkbox" id="cut-keep-inside" checked> Keep inside</label>
+        </div>
+        <div id="cut-box-controls" class="hidden">
+          <div class="form-row">
+            <label>X min</label><input id="box-xmin" type="number" step="any" />
+            <label>X max</label><input id="box-xmax" type="number" step="any" />
+          </div>
+          <div class="form-row">
+            <label>Y min</label><input id="box-ymin" type="number" step="any" />
+            <label>Y max</label><input id="box-ymax" type="number" step="any" />
+          </div>
+          <div class="form-row">
+            <label>Z min</label><input id="box-zmin" type="number" step="any" />
+            <label>Z max</label><input id="box-zmax" type="number" step="any" />
+          </div>
+        </div>
+        <div id="cut-plane-controls" class="hidden">
+          <div class="form-row">
+            <label>Axis</label>
+            <select id="plane-axis">
+              <option value="x">X</option>
+              <option value="y">Y</option>
+              <option value="z">Z</option>
+            </select>
+            <label>Offset</label>
+            <input id="plane-offset" type="number" step="any" />
+          </div>
+          <div class="form-row">
+            <label class="checkbox-label"><input type="checkbox" id="plane-side-max"> Keep max side</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label"><input type="checkbox" id="cut-largest"> Keep largest component</label>
+        </div>
+        <div class="form-row">
+          <button id="cut-apply-btn" class="export-btn">Apply cut</button>
+          <button id="cut-reset-btn" class="icon-btn">Reset cuts</button>
+        </div>
+        <div id="cut-status" class="hint"></div>
+      </section>
+
+      <section class="panel-section">
         <h2>Repair mesh</h2>
         <div class="form-row">
           <select id="repair">

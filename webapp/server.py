@@ -6,17 +6,20 @@ mesh locally with three.js for preview; conversion is a server round trip.
 Run:  uvicorn webapp.server:app --reload   (from repo root, after `pip install -e .`)
       or:  python webapp/server.py
 """
+import json
 import tempfile
 import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import trimesh
 from mesh2step.convert import convert_file
-from mesh2step.io_mesh import SUPPORTED_EXTENSIONS
+from mesh2step.cut import apply_cuts
+from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, load_mesh
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
 RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S3 if multi-worker.
@@ -45,6 +48,7 @@ def convert(
     merge_coplanar_linear_tol: float | None = Form(None),
     schema: str = Form("ap214"),
     repair: str | None = Form(None),
+    cuts: str | None = Form(None),
 ):
     _purge_expired()
 
@@ -55,6 +59,8 @@ def convert(
         raise HTTPException(400, f"invalid schema {schema!r}")
     if repair not in (None, "weld", "fill", "solidify"):
         raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, solidify, or omitted")
+
+    parsed_cuts = _parse_cuts(cuts)
 
     workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
     stem = Path(file.filename).stem or "model"
@@ -86,6 +92,7 @@ def convert(
         merge_coplanar_linear_tol=merge_coplanar_linear_tol,
         schema=schema,
         repair=repair,
+        cuts=parsed_cuts,
     )
     d = stats.as_dict()
     # don't leak server temp paths to the client
@@ -107,6 +114,61 @@ def download(token: str):
     if not job or not job["path"].exists():
         raise HTTPException(404, "result expired or not found")
     return FileResponse(job["path"], media_type="application/step", filename=job["name"])
+
+
+def _parse_cuts(cuts_str: str | None) -> list | None:
+    if cuts_str is None:
+        return None
+    try:
+        parsed = json.loads(cuts_str)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"invalid cuts JSON: {e}")
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "cuts must be a JSON list")
+    return parsed
+
+
+@app.post("/api/edit")
+def edit_mesh(
+    file: UploadFile = File(...),
+    cuts: str = Form(...),
+):
+    parsed_cuts = _parse_cuts(cuts)
+    if parsed_cuts is None:
+        raise HTTPException(400, "cuts parameter is required")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(400, f"unsupported extension {suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}")
+
+    workdir = Path(tempfile.mkdtemp(prefix="mesh2step_edit_"))
+    try:
+        in_path = workdir / f"input{suffix}"
+        size = 0
+        with in_path.open("wb") as fh:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
+                fh.write(chunk)
+
+        verts, tris = load_mesh(in_path)
+        cr = apply_cuts(verts, tris, parsed_cuts)
+        m = trimesh.Trimesh(vertices=cr.verts, faces=cr.tris, process=False)
+        stl_bytes = m.export(file_type="stl")
+
+        stats_header = json.dumps({
+            "n_tris_before": cr.n_tris_before,
+            "n_tris_after": cr.n_tris_after,
+        })
+        return Response(
+            content=stl_bytes,
+            media_type="model/stl",
+            headers={"X-Mesh-Stats": stats_header},
+        )
+    finally:
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # static site last so /api/* wins

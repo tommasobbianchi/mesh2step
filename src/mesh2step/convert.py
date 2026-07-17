@@ -3,7 +3,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import brep_build, dedup, io_mesh, merge_coplanar, step_export
+from . import brep_build, cut, dedup, io_mesh, merge_coplanar, step_export
 
 
 @dataclass
@@ -31,6 +31,10 @@ class ConvertStats:
 
     n_faces_before_merge: int | None = None
     n_faces_after_merge: int | None = None
+
+    n_cut_tris_before: int | None = None
+    n_cut_tris_after: int | None = None
+    t_cut_s: float = 0.0
 
     repair_level: str | None = None
     n_repair_faces_before: int | None = None
@@ -62,6 +66,7 @@ def convert_file(
     merge_coplanar_linear_tol: float | None = None,
     schema: str = "ap214",
     repair: str | None = None,
+    cuts: list | None = None,
 ) -> ConvertStats:
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -80,6 +85,19 @@ def convert_file(
     stats.n_input_verts = len(verts)
     stats.n_input_tris = len(tris)
     stats.t_load_s = time.perf_counter() - t0
+
+    if cuts:
+        t0 = time.perf_counter()
+        cr = cut.apply_cuts(verts, tris, cuts)
+        verts, tris = cr.verts, cr.tris
+        stats.n_cut_tris_before = cr.n_tris_before
+        stats.n_cut_tris_after = cr.n_tris_after
+        stats.t_cut_s = time.perf_counter() - t0
+
+        if len(tris) == 0:
+            stats.error = "cut operations removed all triangles"
+            stats.t_total_s = time.perf_counter() - t_start
+            return stats
 
     if tolerance == "auto":
         tolerance = dedup.smart_tolerance(verts)

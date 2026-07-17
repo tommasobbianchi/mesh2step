@@ -2,6 +2,9 @@ import sys
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+import json
+
+import numpy as np
 import trimesh
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +28,19 @@ def cube_stl_bytes(tmp_path_factory):
     mesh = trimesh.creation.box((10, 10, 10))
     p = tmp_path_factory.mktemp("data") / "cube.stl"
     mesh.export(str(p))
+    return p.read_bytes()
+
+
+@pytest.fixture(scope="module")
+def two_box_stl_bytes(tmp_path_factory):
+    v0, t0 = trimesh.creation.box((2, 2, 2)).vertices, trimesh.creation.box((2, 2, 2)).faces
+    v1, t1 = trimesh.creation.box((5, 5, 5)).vertices, trimesh.creation.box((5, 5, 5)).faces
+    v1 = v1 + np.array([10, 0, 0])
+    verts = np.concatenate([v0, v1])
+    tris = np.concatenate([t0, t1 + len(v0)])
+    m = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+    p = tmp_path_factory.mktemp("data") / "two_boxes.stl"
+    m.export(str(p))
     return p.read_bytes()
 
 
@@ -113,5 +129,46 @@ def test_convert_bad_repair_rejected(client, cube_stl_bytes):
         "/api/convert",
         files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
         data={"tolerance": "0.01", "schema": "ap214", "repair": "nope"},
+    )
+    assert resp.status_code == 400
+
+
+def test_edit_endpoint_reduces_tris(client, two_box_stl_bytes):
+    cuts = json.dumps([{"type": "largest"}])
+    resp = client.post(
+        "/api/edit",
+        files={"file": ("two_boxes.stl", two_box_stl_bytes, "application/octet-stream")},
+        data={"cuts": cuts},
+    )
+    assert resp.status_code == 200
+    assert len(resp.content) > 0
+    stats_header = resp.headers.get("X-Mesh-Stats")
+    assert stats_header is not None
+    s = json.loads(stats_header)
+    assert s["n_tris_after"] < s["n_tris_before"]
+
+
+def test_convert_with_cuts(client, two_box_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("two_boxes.stl", two_box_stl_bytes, "application/octet-stream")},
+        data={
+            "tolerance": "auto",
+            "schema": "ap214",
+            "repair": "fill",
+            "cuts": json.dumps([{"type": "largest"}]),
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["stats"]["is_solid"] is True
+
+
+def test_edit_bad_cuts_400(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/edit",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"cuts": "not json"},
     )
     assert resp.status_code == 400

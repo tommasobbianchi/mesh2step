@@ -19,12 +19,16 @@ STEP format in the sidebar, hit **Convert to STEP**, read the live stats, downlo
 
 - **Frontend** (`static/`): zero-framework — plain HTML + CSS + ES-module JS +
   three.js 0.170 via CDN importmap. Renders the mesh locally for preview
-  (STL/OBJ/PLY/3MF loaders); orbit/pan/zoom; wireframe + light/dark theme.
+  (STL/OBJ/PLY/3MF loaders); orbit/pan/zoom; wireframe + light/dark theme;
+  **Select &amp; cut** panel with box, plane, and lasso gizmos for previewing
+  and accumulating centroid-mask cut operations before conversion.
 - **Backend** (`server.py`): `POST /api/convert` (multipart) runs
   `mesh2step.convert.convert_file`, returns the full `ConvertStats` as JSON plus a
   one-time download token; `GET /api/download/{token}` streams the STEP file.
-  In-memory job registry, 1h TTL — **single-worker only**; move results to
-  object storage + a real queue before scaling out or adding billing.
+  `POST /api/edit` applies cut operations to the uploaded mesh and returns the
+  result as an STL preview (with `X-Mesh-Stats` header). In-memory job registry,
+  1h TTL — **single-worker only**; move results to object storage + a real queue
+  before scaling out or adding billing.
 
 ## Not yet (future SaaS)
 
