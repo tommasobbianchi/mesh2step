@@ -62,19 +62,21 @@
             <option value="off" selected>Off (exact)</option>
             <option value="weld">Weld (merge + fix)</option>
             <option value="fill">Weld + fill holes</option>
+            <option value="solidify">Solidify (pymeshfix — reconstructs)</option>
           </select>
         </div>
-        <p class="hint">Off = exact, geometry-preserving. Weld merges duplicate/split vertices, drops duplicate faces, and fixes winding. "Fill" also closes holes (best-effort via trimesh). Still-non-watertight meshes are reported honestly.</p>
+        <p class="hint">Off = exact, geometry-preserving. Weld merges duplicate/split vertices, drops duplicate faces, and fixes winding. "Fill" also closes holes (best-effort via trimesh). Solidify forces a watertight solid by reconstruction (geometry changes; needs pymeshfix). Still-non-watertight meshes are reported honestly.</p>
       </section>
 
       <section class="panel-section">
         <h2>Tolerance</h2>
         <div class="form-row slider-row">
           <label>Dedup cell (mm)</label>
-          <input id="tolerance" type="range" min="0.0001" max="1" step="0.0001" value="0.01" />
-          <input id="tolerance-num" class="num" type="number" min="0.0001" step="0.0001" value="0.01" />
+          <input id="tolerance" type="range" min="0.00001" max="1" step="0.0001" value="0.01" />
+          <input id="tolerance-num" class="num" type="number" min="0.00001" step="0.0001" value="0.01" />
         </div>
         <p class="hint">Vertices within one cell merge into one shared topology vertex. Also the sub-resolution floor for degenerate triangles.</p>
+        <p class="hint" id="tol-auto-hint"></p>
       </section>
 
       <section class="panel-section">

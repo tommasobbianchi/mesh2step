@@ -40,7 +40,7 @@ def _purge_expired() -> None:
 @app.post("/api/convert")
 def convert(
     file: UploadFile = File(...),
-    tolerance: float = Form(0.01),
+    tolerance: str = Form("0.01"),
     merge_coplanar_angle: float | None = Form(None),
     merge_coplanar_linear_tol: float | None = Form(None),
     schema: str = Form("ap214"),
@@ -53,8 +53,8 @@ def convert(
         raise HTTPException(400, f"unsupported extension {suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}")
     if schema not in ("ap203", "ap214", "ap242"):
         raise HTTPException(400, f"invalid schema {schema!r}")
-    if repair not in (None, "weld", "fill"):
-        raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, or omitted")
+    if repair not in (None, "weld", "fill", "solidify"):
+        raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, solidify, or omitted")
 
     workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
     stem = Path(file.filename).stem or "model"
@@ -71,10 +71,17 @@ def convert(
                 raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
             fh.write(chunk)
 
+    if tolerance == "auto":
+        tol = "auto"
+    else:
+        try:
+            tol = float(tolerance)
+        except ValueError:
+            raise HTTPException(400, f"invalid tolerance {tolerance!r}; must be a number or \"auto\"")
     stats = convert_file(
         in_path,
         out_path,
-        tolerance=tolerance,
+        tolerance=tol,
         merge_coplanar_angle=merge_coplanar_angle,
         merge_coplanar_linear_tol=merge_coplanar_linear_tol,
         schema=schema,

@@ -114,6 +114,14 @@ async function loadFile(file) {
     const { size } = frameObject(obj);
     meshInfo.textContent = `${file.name} · ${triCount.toLocaleString()} triangles · ${size.x.toFixed(1)}×${size.y.toFixed(1)}×${size.z.toFixed(1)} mm`;
     dropHint.classList.add('hidden');
+
+    const diag = Math.hypot(size.x, size.y, size.z);
+    let autoTol = Math.max(diag / 2000, 1e-5);
+    autoTol = Number(autoTol.toPrecision(2));
+    document.getElementById('tolerance').value = autoTol;
+    document.getElementById('tolerance-num').value = autoTol;
+    const h = document.getElementById('tol-auto-hint');
+    if (h) h.textContent = `Auto-set to ${autoTol} from model size (${diag.toFixed(2)} diagonal).`;
   }
   inputName.textContent = file.name;
   convertBtn.disabled = false;
@@ -213,7 +221,8 @@ function renderStats(data) {
   html += row('edges', `${s.n_boundary_edges.toLocaleString()} boundary · ${s.n_nonmanifold_edges.toLocaleString()} non-manifold`);
   html += row('watertight', flag(s.watertight)) + row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
   if (s.repair_level) {
-    html += row(`repair(${s.repair_level})`, `${s.n_repair_faces_before.toLocaleString()} → ${s.n_repair_faces_after.toLocaleString()} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
+    const extra = s.repair_level === 'solidify' ? ' (reconstructed)' : '';
+    html += row(`repair(${s.repair_level}${extra})`, `${s.n_repair_faces_before.toLocaleString()} → ${s.n_repair_faces_after.toLocaleString()} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
   }
   if (s.n_faces_after_merge != null) html += row('merge', `${s.n_faces_before_merge.toLocaleString()} → ${s.n_faces_after_merge.toLocaleString()} faces`);
   html += row('output', `${(s.output_size_bytes / 1024).toFixed(0)} KB · ${s.schema.toUpperCase()}`);

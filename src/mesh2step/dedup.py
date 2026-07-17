@@ -33,6 +33,16 @@ class DedupResult:
     n_kept_tris: int
 
 
+def smart_tolerance(verts, divisor: float = 2000.0) -> float:
+    """Scale-aware default dedup tolerance = bbox diagonal / divisor.
+    Prevents the fixed 0.01 default from collapsing a small mesh's triangles."""
+    v = np.asarray(verts, dtype=float)
+    if len(v) == 0:
+        return 0.01
+    diag = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+    return max(diag / divisor, 1e-6)
+
+
 def dedup_and_clean(verts: np.ndarray, tris: np.ndarray, tolerance: float) -> DedupResult:
     if tolerance <= 0:
         raise ValueError(f"tolerance must be > 0, got {tolerance}")

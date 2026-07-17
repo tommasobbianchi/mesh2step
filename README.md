@@ -30,6 +30,8 @@ same OpenCASCADE kernel with near-identical class names.
 ```sh
 mesh2step part.stl                              # -> part.step, faceted, AP214
 mesh2step part.stl -o out.step --tolerance 0.001 # tighter dedup tolerance
+mesh2step part.stl --tolerance auto              # scale-aware tolerance (bbox-diag/2000)
+mesh2step part.stl --repair solidify             # pymeshfix reconstruction
 mesh2step part.stl --merge-coplanar              # merge co-planar faces, default 5deg
 mesh2step part.stl --merge-coplanar 1.0          # explicit angular tolerance
 mesh2step part.stl --format ap242
@@ -52,6 +54,10 @@ path: `--tolerance`. It is a spatial quantization cell size used for two things 
 2. **Degenerate-triangle rejection floor**: a triangle entirely smaller than one
    tolerance cell (its longest edge `< tolerance`) is treated as sub-resolution noise
    and dropped.
+
+Pass `--tolerance auto` (CLI) or `auto` in the web UI to derive tolerance from mesh
+scale (bbox diagonal / 2000), preventing the fixed 0.01 default from discarding a
+large fraction of a sub-unit mesh's triangles.
 
 Separately, a triangle is also rejected if it's a **near-collinear sliver** --
 `area < 1e-9 * longest_edge^2`, a dimensionless, scale-independent test that does
@@ -106,11 +112,15 @@ this step and has no pure-faceted mode at all.
 Off by default. `--repair weld` runs a trimesh-backed surgery pass before vertex
 dedup: it merges coincident/split vertices, drops duplicate faces, and fixes
 inconsistent winding. `--repair fill` additionally attempts to close holes
-(`trimesh.fill_holes`, best-effort). Like `--merge-coplanar`, repair is an explicit
-opt-in stage and runs after load but before dedup, so dedup's canonical `round(v/tol)`
-merge still applies afterward. The result is reported honestly: if the mesh remains
-non-watertight after repair, it is exported as an open shell like any other
-non-watertight input.
+(`trimesh.fill_holes`, best-effort). `--repair solidify` uses
+[pymeshfix](https://github.com/pyamg/pymeshfix) to reconstruct a watertight
+manifold when weld/fill cannot -- this is reconstructive (geometry may change)
+and requires the optional `[repair]` extra (`pip install mesh2step[repair]`).
+Like `--merge-coplanar`, repair is an explicit opt-in stage and runs after load
+but before dedup, so dedup's canonical `round(v/tol)` merge still applies
+afterward. The result is reported honestly: if the mesh remains non-watertight
+after repair, it is exported as an open shell like any other non-watertight
+input.
 
 ## Scope limits
 

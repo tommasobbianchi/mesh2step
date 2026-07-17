@@ -9,6 +9,12 @@ from .io_mesh import SUPPORTED_EXTENSIONS
 DEFAULT_MERGE_ANGLE_DEG = 5.0
 
 
+def _tol_type(s: str):
+    if s == "auto":
+        return "auto"
+    return float(s)
+
+
 def _fmt_bool(b) -> str:
     return "yes" if b else "no"
 
@@ -80,9 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--tolerance",
-        type=float,
+        type=_tol_type,
         default=0.01,
-        help="vertex dedup / degenerate-triangle quantization tolerance, in input units (default: 0.01)",
+        help="vertex dedup / degenerate-triangle quantization tolerance, in input units; "
+             'or "auto" for scale-aware bbox-diag/2000 (default: 0.01)',
     )
     p.add_argument(
         "--merge-coplanar",
@@ -112,11 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--repair",
-        choices=["weld", "fill"],
+        choices=["weld", "fill", "solidify"],
         default=None,
         help=(
-            "off by default. \"weld\" = merge coincident vertices + drop duplicate faces "
-            "+ fix winding; \"fill\" = also fill holes (best-effort). "
+            'off by default. "weld" = merge coincident vertices + drop duplicate faces '
+            '+ fix winding; "fill" = also fill holes (best-effort); '
+            '"solidify" = pymeshfix reconstruction (requires pymeshfix). '
             "Runs before dedup; still-non-watertight meshes are reported honestly."
         ),
     )

@@ -15,6 +15,7 @@ mesh2step = "mesh2step.cli:main"
 [project.optional-dependencies]
 test = ["pytest"]
 web = ["fastapi", "uvicorn[standard]", "python-multipart"]
+repair = ["pymeshfix"]
 
 [build-system]
 requires = ["setuptools>=61"]

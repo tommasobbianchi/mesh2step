@@ -10,7 +10,7 @@ from . import brep_build, dedup, io_mesh, merge_coplanar, step_export
 class ConvertStats:
     input_path: str
     output_path: str
-    tolerance: float
+    tolerance: float | str
     schema: str
     merge_coplanar_angle_deg: float | None = None
 
@@ -57,7 +57,7 @@ class ConvertStats:
 def convert_file(
     input_path,
     output_path,
-    tolerance: float = 0.01,
+    tolerance: float | str = 0.01,
     merge_coplanar_angle: float | None = None,
     merge_coplanar_linear_tol: float | None = None,
     schema: str = "ap214",
@@ -80,6 +80,10 @@ def convert_file(
     stats.n_input_verts = len(verts)
     stats.n_input_tris = len(tris)
     stats.t_load_s = time.perf_counter() - t0
+
+    if tolerance == "auto":
+        tolerance = dedup.smart_tolerance(verts)
+        stats.tolerance = tolerance
 
     if repair is not None:
         from . import repair as _repair
