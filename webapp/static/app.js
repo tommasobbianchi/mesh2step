@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
@@ -31,6 +32,8 @@ let currentMesh = null;
 let cutOps = [];
 let boxHelper = null;
 let planeHelper = null;
+let planeCtrl = null;      // TransformControls draggable handle for the plane
+let planeDummy = null;     // object the handle moves; its position => plane offset
 let meshBBox = null;
 let lassoActive = false;
 let lassoPoints = [];
@@ -197,6 +200,7 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 function _clearHelpers() {
   if (boxHelper) { scene.remove(boxHelper); boxHelper = null; }
   if (planeHelper) { scene.remove(planeHelper); planeHelper = null; }
+  if (planeCtrl) { planeCtrl.detach(); planeCtrl.getHelper().visible = false; }
 }
 
 function _hideCutControls() {
@@ -221,7 +225,43 @@ function _updateBoxHelper() {
   scene.add(boxHelper);
 }
 
+function _ensurePlaneGizmo() {
+  if (planeCtrl) return;
+  planeDummy = new THREE.Object3D();
+  scene.add(planeDummy);
+  planeCtrl = new TransformControls(camera, renderer.domElement);
+  planeCtrl.setMode('translate');
+  planeCtrl.setSpace('world');
+  planeCtrl.setSize(0.8);
+  // dragging the handle disables orbit; on move, write the offset back to the input
+  planeCtrl.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
+  planeCtrl.addEventListener('objectChange', () => {
+    const axis = document.getElementById('plane-axis').value;
+    const off = planeDummy.position[axis];
+    document.getElementById('plane-offset').value = Number(off.toPrecision(6));
+    _positionPlaneMesh(axis, off);
+  });
+  const helper = planeCtrl.getHelper();
+  helper.visible = false;
+  scene.add(helper);
+}
+
+// position the translucent plane preview along `axis` at `offset` (no gizmo/dummy touch)
+function _positionPlaneMesh(axis, offset) {
+  if (!planeHelper) return;
+  planeHelper.rotation.set(0, 0, 0);
+  if (axis === 'x') { planeHelper.rotation.y = Math.PI / 2; planeHelper.position.set(offset, meshCenter().y, meshCenter().z); }
+  else if (axis === 'y') { planeHelper.rotation.x = -Math.PI / 2; planeHelper.position.set(meshCenter().x, offset, meshCenter().z); }
+  else { planeHelper.position.set(meshCenter().x, meshCenter().y, offset); }
+}
+
+function meshCenter() {
+  return meshBBox ? meshBBox.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+}
+
+// (re)build the plane preview + reposition the draggable handle from the inputs
 function _updatePlaneHelper() {
+  _ensurePlaneGizmo();
   if (planeHelper) scene.remove(planeHelper);
   const axis = document.getElementById('plane-axis').value;
   const offset = parseFloat(document.getElementById('plane-offset').value) || 0;
@@ -229,10 +269,16 @@ function _updatePlaneHelper() {
   const planeGeo = new THREE.PlaneGeometry(size, size);
   const planeMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
   planeHelper = new THREE.Mesh(planeGeo, planeMat);
-  if (axis === 'x') { planeHelper.rotation.y = Math.PI / 2; planeHelper.position.set(offset, 0, 0); }
-  else if (axis === 'y') { planeHelper.rotation.x = -Math.PI / 2; planeHelper.position.set(0, offset, 0); }
-  else { planeHelper.position.set(0, 0, offset); }
   scene.add(planeHelper);
+  _positionPlaneMesh(axis, offset);
+  // place the handle at the plane center and restrict it to the plane's axis
+  const c = meshCenter();
+  planeDummy.position.set(axis === 'x' ? offset : c.x, axis === 'y' ? offset : c.y, axis === 'z' ? offset : c.z);
+  planeCtrl.showX = axis === 'x';
+  planeCtrl.showY = axis === 'y';
+  planeCtrl.showZ = axis === 'z';
+  planeCtrl.attach(planeDummy);
+  planeCtrl.getHelper().visible = true;
 }
 
 function _showCutTool(tool) {
