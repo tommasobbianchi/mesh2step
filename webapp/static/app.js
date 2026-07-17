@@ -30,6 +30,7 @@ let currentMesh = null;
 
 // ---- cut state ----
 let cutOps = [];
+let redoStack = [];        // undo/redo stack for cut operations
 let boxHelper = null;
 let planeHelper = null;
 let planeCtrl = null;      // TransformControls draggable handle for the plane
@@ -142,8 +143,10 @@ async function loadFile(file) {
 
   // Reset cut state on new mesh load
   cutOps = [];
+  redoStack = [];
   _clearHelpers();
   _hideCutControls();
+  _updateCutButtons();
   meshBBox = { min: new THREE.Vector3(), max: new THREE.Vector3() };
   if (obj) {
     const box = new THREE.Box3().setFromObject(obj);
@@ -410,27 +413,23 @@ async function _applyCut() {
   }
 
   if (cutOps.length === 0) return;
+  redoStack = [];               // a fresh cut invalidates the redo stack
+  await _previewCurrentCuts();
+  _updateCutButtons();
+}
 
+// POST the current cutOps to /api/edit and show the returned STL preview
+async function _sendCutPreview() {
   const fd = new FormData();
   fd.append('file', selectedFile);
   fd.append('cuts', JSON.stringify(cutOps));
-
   document.getElementById('cut-status').textContent = 'Cutting…';
   try {
     const res = await fetch('/api/edit', { method: 'POST', body: fd });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'cut failed');
-    }
-    const statsHeader = res.headers.get('X-Mesh-Stats');
+    if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'cut failed'); }
     let nTris = 0;
-    if (statsHeader) {
-      const s = JSON.parse(statsHeader);
-      nTris = s.n_tris_after;
-    }
-    document.getElementById('cut-status').textContent = `Cut applied: ${nTris.toLocaleString()} tris`;
-
-    // Replace preview mesh
+    const statsHeader = res.headers.get('X-Mesh-Stats');
+    if (statsHeader) nTris = JSON.parse(statsHeader).n_tris_after;
     const buf = await res.arrayBuffer();
     const geo = new STLLoader().parse(buf);
     if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
@@ -439,29 +438,22 @@ async function _applyCut() {
     currentMesh = obj;
     frameObject(obj);
     meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (cut)`;
+    document.getElementById('cut-status').textContent = `${cutOps.length} cut(s) · ${nTris.toLocaleString()} tris`;
   } catch (e) {
     document.getElementById('cut-status').textContent = 'Cut error: ' + e.message;
   }
 }
 
-document.getElementById('cut-apply-btn').addEventListener('click', _applyCut);
-
-// ---- reset cuts ----
-document.getElementById('cut-reset-btn').addEventListener('click', async () => {
-  if (!selectedFile) return;
-  cutOps = [];
-  _clearHelpers();
-  _hideCutControls();
-  document.getElementById('cut-status').textContent = '';
-  // Re-read original file
+// re-display the untouched original mesh (used when the cut stack is empty)
+async function _reloadOriginalPreview() {
   const buf = await selectedFile.arrayBuffer();
-  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
   const ext = selectedFile.name.split('.').pop().toLowerCase();
   let obj = null, triCount = 0;
-  if (ext === 'stl') {
-    const geo = new STLLoader().parse(buf);
-    obj = new THREE.Mesh(geo, material);
-  }
+  if (ext === 'stl') obj = new THREE.Mesh(new STLLoader().parse(buf), material);
+  else if (ext === 'ply') { const g = new PLYLoader().parse(buf); g.computeVertexNormals(); obj = new THREE.Mesh(g, material); }
+  else if (ext === 'obj') { obj = new OBJLoader().parse(new TextDecoder().decode(buf)); obj.traverse(c => { if (c.isMesh) c.material = material; }); }
+  else if (ext === '3mf') { obj = new ThreeMFLoader().parse(buf); obj.traverse(c => { if (c.isMesh) c.material = material; }); }
+  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
   if (obj) {
     obj.traverse(c => { if (c.isMesh && c.geometry) triCount += (c.geometry.index ? c.geometry.index.count / 3 : c.geometry.attributes.position.count / 3); });
     scene.add(obj);
@@ -469,14 +461,69 @@ document.getElementById('cut-reset-btn').addEventListener('click', async () => {
     const { size } = frameObject(obj);
     meshInfo.textContent = `${selectedFile.name} · ${triCount.toLocaleString()} triangles · ${size.x.toFixed(1)}×${size.y.toFixed(1)}×${size.z.toFixed(1)} mm`;
     meshBBox = new THREE.Box3().setFromObject(obj);
-    document.getElementById('box-xmin').value = meshBBox.min.x;
-    document.getElementById('box-xmax').value = meshBBox.max.x;
-    document.getElementById('box-ymin').value = meshBBox.min.y;
-    document.getElementById('box-ymax').value = meshBBox.max.y;
-    document.getElementById('box-zmin').value = meshBBox.min.z;
-    document.getElementById('box-zmax').value = meshBBox.max.z;
-    document.getElementById('plane-offset').value = meshBBox.min.x;
+    _seedBoxInputs();
   }
+}
+
+function _seedBoxInputs() {
+  if (!meshBBox) return;
+  document.getElementById('box-xmin').value = meshBBox.min.x;
+  document.getElementById('box-xmax').value = meshBBox.max.x;
+  document.getElementById('box-ymin').value = meshBBox.min.y;
+  document.getElementById('box-ymax').value = meshBBox.max.y;
+  document.getElementById('box-zmin').value = meshBBox.min.z;
+  document.getElementById('box-zmax').value = meshBBox.max.z;
+  document.getElementById('plane-offset').value = meshBBox.min.x;
+}
+
+async function _previewCurrentCuts() {
+  if (cutOps.length === 0) await _reloadOriginalPreview();
+  else await _sendCutPreview();
+}
+
+async function _undoCut() {
+  if (!selectedFile || cutOps.length === 0) return;
+  redoStack.push(cutOps.pop());
+  await _previewCurrentCuts();
+  _updateCutButtons();
+}
+
+async function _redoCut() {
+  if (!selectedFile || redoStack.length === 0) return;
+  cutOps.push(redoStack.pop());
+  await _previewCurrentCuts();
+  _updateCutButtons();
+}
+
+function _updateCutButtons() {
+  const u = document.getElementById('cut-undo-btn'), r = document.getElementById('cut-redo-btn');
+  if (u) u.disabled = cutOps.length === 0;
+  if (r) r.disabled = redoStack.length === 0;
+}
+
+document.getElementById('cut-apply-btn').addEventListener('click', _applyCut);
+document.getElementById('cut-undo-btn').addEventListener('click', _undoCut);
+document.getElementById('cut-redo-btn').addEventListener('click', _redoCut);
+// Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo (ignored while typing in a field)
+window.addEventListener('keydown', (e) => {
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); _undoCut(); }
+  else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); _redoCut(); }
+});
+
+// ---- reset cuts ----
+document.getElementById('cut-reset-btn').addEventListener('click', async () => {
+  if (!selectedFile) return;
+  cutOps = [];
+  redoStack = [];
+  _clearHelpers();
+  _hideCutControls();
+  document.getElementById('cut-status').textContent = '';
+  await _reloadOriginalPreview();
+  _updateCutButtons();
 });
 
 // ---- convert ----
