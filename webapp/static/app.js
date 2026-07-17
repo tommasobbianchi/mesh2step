@@ -26,6 +26,9 @@ const grid = new THREE.GridHelper(200, 20, 0x444455, 0x2a2a33);
 scene.add(grid);
 
 const material = new THREE.MeshStandardMaterial({ color: 0x9b8dff, metalness: 0.1, roughness: 0.6, flatShading: true });
+const componentMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, metalness: 0.1, roughness: 0.6, side: THREE.DoubleSide });
+const raycaster = new THREE.Raycaster();
+let pointerDownPos = { x: 0, y: 0 };
 let currentMesh = null;
 
 // ---- cut state ----
@@ -39,6 +42,8 @@ let meshBBox = null;
 let lassoActive = false;
 let lassoPoints = [];
 let cutKeepInside = true;
+let componentMode = false, faceComponent = null, selectedComponent = -1;
+const COMPONENT_COLORS = [0x7c6aff, 0x4ade80, 0xff5f5f, 0xf59e0b, 0x22d3ee, 0xe879f9, 0xa3e635, 0xfb923c];
 
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -146,6 +151,7 @@ async function loadFile(file) {
   redoStack = [];
   _clearHelpers();
   _hideCutControls();
+  _exitComponents();
   _updateCutButtons();
   meshBBox = { min: new THREE.Vector3(), max: new THREE.Vector3() };
   if (obj) {
@@ -287,6 +293,7 @@ function _updatePlaneHelper() {
 function _showCutTool(tool) {
   _hideCutControls();
   _clearHelpers();
+  _exitComponents();
   if (tool === 'box') {
     document.getElementById('cut-box-controls').classList.remove('hidden');
     _updateBoxHelper();
@@ -321,6 +328,7 @@ function _startLasso() {
   controls.enabled = false;
   _hideCutControls();
   _clearHelpers();
+  _exitComponents();
 
   // Create overlay canvas
   let overlay = document.getElementById('lasso-overlay');
@@ -408,10 +416,6 @@ async function _applyCut() {
       side: sideMax ? 'max' : 'min'
     });
   }
-  if (document.getElementById('cut-largest').checked) {
-    cutOps.push({ type: 'largest' });
-  }
-
   if (cutOps.length === 0) return;
   redoStack = [];               // a fresh cut invalidates the redo stack
   await _previewCurrentCuts();
@@ -517,12 +521,147 @@ window.addEventListener('keydown', (e) => {
 // ---- reset cuts ----
 document.getElementById('cut-reset-btn').addEventListener('click', async () => {
   if (!selectedFile) return;
+  _exitComponents();
   cutOps = [];
   redoStack = [];
   _clearHelpers();
   _hideCutControls();
   document.getElementById('cut-status').textContent = '';
   await _reloadOriginalPreview();
+  _updateCutButtons();
+});
+
+// ---- component mode ----
+async function _startComponents() {
+  if (!selectedFile) return;
+  _hideCutControls();
+  _clearHelpers();
+  _exitComponents();
+  componentMode = true;
+  document.getElementById('cut-component-panel').classList.remove('hidden');
+  document.getElementById('component-delete-btn').disabled = true;
+  document.getElementById('component-keep-btn').disabled = true;
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('cuts', JSON.stringify(cutOps));
+
+  try {
+    const res = await fetch('/api/segment', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'segment failed');
+    }
+    const data = await res.json();
+    faceComponent = data.face_component;
+
+    const bin = atob(data.stl_base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const geo = new STLLoader().parse(bytes.buffer);
+
+    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+    const obj = new THREE.Mesh(geo, componentMaterial);
+    scene.add(obj);
+    currentMesh = obj;
+
+    _colorByComponent(geo, -1);
+    frameObject(obj);
+
+    document.getElementById('component-info').textContent =
+      `${data.components.length} components — click one to select`;
+    selectedComponent = -1;
+
+    // update mesh info
+    const nTris = geo.attributes.position.count / 3;
+    meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (components)`;
+  } catch (e) {
+    document.getElementById('component-info').textContent = 'Error: ' + e.message;
+    componentMode = false;
+  }
+}
+
+function _colorByComponent(geometry, selected) {
+  const pos = geometry.attributes.position;
+  const numFaces = pos.count / 3;
+  const colors = new Float32Array(pos.count * 3);
+
+  for (let f = 0; f < numFaces; f++) {
+    const comp = faceComponent[f];
+    const hex = COMPONENT_COLORS[comp % COMPONENT_COLORS.length];
+    let r = ((hex >> 16) & 0xFF) / 255;
+    let g = ((hex >> 8) & 0xFF) / 255;
+    let b = (hex & 0xFF) / 255;
+
+    if (selected >= 0 && comp !== selected) {
+      r *= 0.25; g *= 0.25; b *= 0.25;
+    }
+
+    for (let v = 0; v < 3; v++) {
+      const idx = f * 3 + v;
+      colors[idx * 3] = r;
+      colors[idx * 3 + 1] = g;
+      colors[idx * 3 + 2] = b;
+    }
+  }
+
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+function _exitComponents() {
+  componentMode = false;
+  faceComponent = null;
+  selectedComponent = -1;
+  document.getElementById('cut-component-panel').classList.add('hidden');
+  document.getElementById('component-delete-btn').disabled = true;
+  document.getElementById('component-keep-btn').disabled = true;
+}
+
+document.getElementById('cut-components-btn').addEventListener('click', _startComponents);
+
+// click picking for component mode (distinguish from orbit drag)
+canvas.addEventListener('pointerdown', (e) => { pointerDownPos = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('click', (e) => {
+  if (!componentMode || !currentMesh) return;
+  const dx = e.clientX - pointerDownPos.x;
+  const dy = e.clientY - pointerDownPos.y;
+  if (dx * dx + dy * dy > 36) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(currentMesh);
+  if (hits.length === 0) return;
+
+  const hit = hits[0];
+  if (hit.faceIndex == null) return;
+  const f = hit.faceIndex;
+  if (f >= faceComponent.length) return;
+  selectedComponent = faceComponent[f];
+  _colorByComponent(currentMesh.geometry, selectedComponent);
+  document.getElementById('component-info').textContent = `Component ${selectedComponent} selected`;
+  document.getElementById('component-delete-btn').disabled = false;
+  document.getElementById('component-keep-btn').disabled = false;
+});
+
+document.getElementById('component-delete-btn').addEventListener('click', async () => {
+  if (selectedComponent < 0) return;
+  cutOps.push({ type: 'component', index: selectedComponent, keep: 'delete' });
+  redoStack = [];
+  _exitComponents();
+  await _previewCurrentCuts();
+  _updateCutButtons();
+});
+
+document.getElementById('component-keep-btn').addEventListener('click', async () => {
+  if (selectedComponent < 0) return;
+  cutOps.push({ type: 'component', index: selectedComponent, keep: 'only' });
+  redoStack = [];
+  _exitComponents();
+  await _previewCurrentCuts();
   _updateCutButtons();
 });
 

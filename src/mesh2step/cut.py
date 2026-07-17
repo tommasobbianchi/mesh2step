@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import trimesh
 
-CUT_TYPES = ("box", "plane", "lasso", "largest")
+CUT_TYPES = ("box", "plane", "lasso", "largest", "component")
 
 
 @dataclass
@@ -23,6 +23,22 @@ class CutResult:
     n_tris_before: int
     n_tris_after: int
     ops_applied: int
+
+
+def component_labels(verts, tris):
+    """Return an int label per face (len == len(tris)). Components are ordered
+    deterministically by descending face count, ties broken by smallest face
+    index, so label 0 is the largest component. Labels align to the INPUT face
+    order (merge_vertices does not reorder faces)."""
+    m = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+    m.merge_vertices()
+    comps = trimesh.graph.connected_components(m.face_adjacency,
+                                               nodes=np.arange(len(m.faces)))
+    order = sorted(comps, key=lambda c: (-len(c), int(min(c))))
+    labels = np.full(len(tris), 0, dtype=np.int64)
+    for cid, c in enumerate(order):
+        labels[list(c)] = cid
+    return labels
 
 
 def _centroids(verts: np.ndarray, tris: np.ndarray) -> np.ndarray:
@@ -139,6 +155,21 @@ def apply_cuts(verts: np.ndarray, tris: np.ndarray, ops) -> CutResult:
         op_type = op["type"]
         if op_type == "largest":
             verts, tris = _apply_largest(verts, tris, op)
+            applied += 1
+            continue
+
+        if op_type == "component":
+            labels = component_labels(verts, tris)
+            idx = int(op["index"])
+            keep = op["keep"]
+            if not (0 <= idx < int(labels.max() + 1)):
+                raise ValueError(f"component index {idx} out of range (0..{labels.max()})")
+            if keep == "only":
+                tris = tris[labels == idx]
+            elif keep == "delete":
+                tris = tris[labels != idx]
+            else:
+                raise ValueError(f"invalid keep value {keep!r}; must be 'only' or 'delete'")
             applied += 1
             continue
 

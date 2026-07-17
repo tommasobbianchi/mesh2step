@@ -133,6 +133,9 @@ Available operations:
 - **plane**: keep triangles on one side of an axis-aligned plane.
 - **lasso**: freehand selection in the web viewer via a projector matrix.
 - **largest**: retain only the largest connected component.
+- **component**: interactive component picker (web UI only) — split into connected
+  components, click a colored part to select it, then Delete selected or Keep only
+  selected. Replaces auto keep-largest in the web UI.
 
 CLI: `--cut-largest` or `--cut-json path/to/ops.json`. In the web UI, use the
 Select &amp; cut panel; each cut can be previewed before conversion with

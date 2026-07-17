@@ -22,6 +22,9 @@ STEP format in the sidebar, hit **Convert to STEP**, read the live stats, downlo
   (STL/OBJ/PLY/3MF loaders); orbit/pan/zoom; wireframe + light/dark theme;
   **Select &amp; cut** panel with box, plane, and lasso gizmos for previewing
   and accumulating centroid-mask cut operations before conversion.
+  Interactive **component picker**: split into connected components, click a
+  colored part to select it, then Delete selected or Keep only selected
+  (replaces auto keep-largest).
 - **Backend** (`server.py`): `POST /api/convert` (multipart) runs
   `mesh2step.convert.convert_file`, returns the full `ConvertStats` as JSON plus a
   one-time download token; `GET /api/download/{token}` streams the STEP file.

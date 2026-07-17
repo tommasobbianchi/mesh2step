@@ -6,6 +6,7 @@ mesh locally with three.js for preview; conversion is a server round trip.
 Run:  uvicorn webapp.server:app --reload   (from repo root, after `pip install -e .`)
       or:  python webapp/server.py
 """
+import base64
 import json
 import tempfile
 import time
@@ -18,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 import trimesh
 from mesh2step.convert import convert_file
-from mesh2step.cut import apply_cuts
+from mesh2step.cut import apply_cuts, component_labels
 from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, load_mesh
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
@@ -166,6 +167,58 @@ def edit_mesh(
             media_type="model/stl",
             headers={"X-Mesh-Stats": stats_header},
         )
+    finally:
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/api/segment")
+def segment(
+    file: UploadFile = File(...),
+    cuts: str | None = Form(None),
+):
+    import numpy as np
+
+    parsed_cuts = _parse_cuts(cuts)
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(400, f"unsupported extension {suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}")
+
+    workdir = Path(tempfile.mkdtemp(prefix="mesh2step_segment_"))
+    try:
+        in_path = workdir / f"input{suffix}"
+        size = 0
+        with in_path.open("wb") as fh:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    fh.close()
+                    raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
+                fh.write(chunk)
+
+        verts, tris = load_mesh(in_path)
+        if parsed_cuts:
+            cr = apply_cuts(verts, tris, parsed_cuts)
+            verts, tris = cr.verts, cr.tris
+
+        labels = component_labels(verts, tris)
+
+        m = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+        stl_bytes = m.export(file_type="stl")
+        stl_b64 = base64.b64encode(stl_bytes).decode("ascii")
+
+        unique, counts = np.unique(labels, return_counts=True)
+        comps = [
+            {"index": int(u), "face_count": int(c)}
+            for u, c in sorted(zip(unique, counts), key=lambda x: x[0])
+        ]
+
+        return {
+            "stl_base64": stl_b64,
+            "face_component": labels.tolist(),
+            "components": comps,
+        }
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)

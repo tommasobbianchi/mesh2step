@@ -172,3 +172,15 @@ def test_edit_bad_cuts_400(client, cube_stl_bytes):
         data={"cuts": "not json"},
     )
     assert resp.status_code == 400
+
+
+def test_segment_endpoint(client, two_box_stl_bytes):
+    resp = client.post(
+        "/api/segment",
+        files={"file": ("two_boxes.stl", two_box_stl_bytes, "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["components"]) == 2
+    assert len(body["face_component"]) == 24
+    assert isinstance(body["stl_base64"], str) and len(body["stl_base64"]) > 0

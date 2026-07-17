@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from mesh2step.cut import apply_cuts, CUT_TYPES
+from mesh2step.cut import apply_cuts, component_labels, CUT_TYPES
 
 
 def _box_mesh(center, size=(10, 10, 10)):
@@ -112,4 +112,42 @@ def test_empty_ops_noop():
 
 
 def test_cut_types():
-    assert set(CUT_TYPES) == {"box", "plane", "lasso", "largest"}
+    assert set(CUT_TYPES) == {"box", "plane", "lasso", "largest", "component"}
+
+
+class TestComponentLabels:
+    def test_two_boxes(self):
+        v0, t0 = _box_mesh([0, 0, 0], (2, 2, 2))
+        v1, t1 = _box_mesh([10, 0, 0], (5, 5, 5))
+        verts = np.concatenate([v0, v1])
+        tris = np.concatenate([t0, t1 + len(v0)])
+        labels = component_labels(verts, tris)
+        assert set(labels) == {0, 1}
+        n0 = int((labels == 0).sum())
+        n1 = int((labels == 1).sum())
+        assert n0 == 12 and n1 == 12
+
+    def test_component_keep_only(self):
+        v0, t0 = _box_mesh([0, 0, 0], (2, 2, 2))
+        v1, t1 = _box_mesh([10, 0, 0], (5, 5, 5))
+        verts = np.concatenate([v0, v1])
+        tris = np.concatenate([t0, t1 + len(v0)])
+        cr = apply_cuts(verts, tris, [{"type": "component", "index": 0, "keep": "only"}])
+        assert cr.n_tris_after == 12
+        c = cr.verts[cr.tris].mean(axis=1)
+        assert np.all(c[:, 0] < 5)
+
+    def test_component_delete(self):
+        v0, t0 = _box_mesh([0, 0, 0], (2, 2, 2))
+        v1, t1 = _box_mesh([10, 0, 0], (5, 5, 5))
+        verts = np.concatenate([v0, v1])
+        tris = np.concatenate([t0, t1 + len(v0)])
+        cr = apply_cuts(verts, tris, [{"type": "component", "index": 0, "keep": "delete"}])
+        assert cr.n_tris_after == 12
+        c = cr.verts[cr.tris].mean(axis=1)
+        assert np.all(c[:, 0] > 5)
+
+    def test_component_bad_index(self):
+        v, t = _box_mesh([0, 0, 0])
+        with pytest.raises(ValueError):
+            apply_cuts(v, t, [{"type": "component", "index": 99, "keep": "only"}])
