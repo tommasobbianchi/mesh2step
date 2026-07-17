@@ -101,6 +101,17 @@ face count (a 12-triangle cube collapses to 6 faces). The two modes are never
 conflated -- see SELECTION.md's critique of `2STEP-Converter`, which always applies
 this step and has no pure-faceted mode at all.
 
+## Mesh repair
+
+Off by default. `--repair weld` runs a trimesh-backed surgery pass before vertex
+dedup: it merges coincident/split vertices, drops duplicate faces, and fixes
+inconsistent winding. `--repair fill` additionally attempts to close holes
+(`trimesh.fill_holes`, best-effort). Like `--merge-coplanar`, repair is an explicit
+opt-in stage and runs after load but before dedup, so dedup's canonical `round(v/tol)`
+merge still applies afterward. The result is reported honestly: if the mesh remains
+non-watertight after repair, it is exported as an open shell like any other
+non-watertight input.
+
 ## Scope limits
 
 - One input file = one output body (one shell/solid). Multiple disconnected islands

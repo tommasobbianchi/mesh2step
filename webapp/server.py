@@ -44,6 +44,7 @@ def convert(
     merge_coplanar_angle: float | None = Form(None),
     merge_coplanar_linear_tol: float | None = Form(None),
     schema: str = Form("ap214"),
+    repair: str | None = Form(None),
 ):
     _purge_expired()
 
@@ -52,6 +53,8 @@ def convert(
         raise HTTPException(400, f"unsupported extension {suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}")
     if schema not in ("ap203", "ap214", "ap242"):
         raise HTTPException(400, f"invalid schema {schema!r}")
+    if repair not in (None, "weld", "fill"):
+        raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, or omitted")
 
     workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
     stem = Path(file.filename).stem or "model"
@@ -75,6 +78,7 @@ def convert(
         merge_coplanar_angle=merge_coplanar_angle,
         merge_coplanar_linear_tol=merge_coplanar_linear_tol,
         schema=schema,
+        repair=repair,
     )
     d = stats.as_dict()
     # don't leak server temp paths to the client

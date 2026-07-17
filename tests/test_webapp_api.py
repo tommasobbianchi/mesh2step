@@ -9,6 +9,18 @@ from webapp.server import app
 
 
 @pytest.fixture(scope="module")
+def holed_cube_stl_bytes(tmp_path_factory):
+    import numpy as np
+
+    m = trimesh.creation.box((10, 10, 10))
+    faces = m.faces[1:]  # drop face 0
+    m2 = trimesh.Trimesh(vertices=m.vertices, faces=faces, process=False)
+    p = tmp_path_factory.mktemp("data") / "holed_cube.stl"
+    m2.export(str(p))
+    return p.read_bytes()
+
+
+@pytest.fixture(scope="module")
 def cube_stl_bytes(tmp_path_factory):
     mesh = trimesh.creation.box((10, 10, 10))
     p = tmp_path_factory.mktemp("data") / "cube.stl"
@@ -83,3 +95,23 @@ def test_bad_schema_rejected(client, cube_stl_bytes):
 def test_download_unknown_token_404(client):
     resp = client.get("/api/download/deadbeef")
     assert resp.status_code == 404
+
+
+def test_convert_repair_fill_makes_solid(client, holed_cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("holed_cube.stl", holed_cube_stl_bytes, "application/octet-stream")},
+        data={"tolerance": "0.01", "schema": "ap214", "repair": "fill"},
+    )
+    assert resp.status_code == 200
+    s = resp.json()["stats"]
+    assert s["is_solid"] is True
+
+
+def test_convert_bad_repair_rejected(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"tolerance": "0.01", "schema": "ap214", "repair": "nope"},
+    )
+    assert resp.status_code == 400

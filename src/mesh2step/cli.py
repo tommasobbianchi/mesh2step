@@ -35,6 +35,14 @@ def _log_stats(stats, file=sys.stdout) -> None:
         f"    watertight={_fmt_bool(stats.watertight)} solid={_fmt_bool(stats.is_solid)}{solid_note}",
         file=file,
     )
+    if stats.repair_level is not None:
+        print(
+            f"    repair({stats.repair_level}): "
+            f"faces {stats.n_repair_faces_before:,} -> {stats.n_repair_faces_after:,}, "
+            f"holes_filled={_fmt_bool(stats.repair_holes_filled)}, "
+            f"watertight_after={_fmt_bool(stats.repair_watertight_after)}",
+            file=file,
+        )
     if stats.n_faces_after_merge is not None:
         print(
             f"    merge-coplanar: {stats.n_faces_before_merge:,} -> {stats.n_faces_after_merge:,} faces "
@@ -46,7 +54,8 @@ def _log_stats(stats, file=sys.stdout) -> None:
         file=file,
     )
     print(
-        f"    time: load={stats.t_load_s:.2f}s dedup={stats.t_dedup_s:.2f}s "
+        f"    time: load={stats.t_load_s:.2f}s repair={stats.t_repair_s:.2f}s "
+        f"dedup={stats.t_dedup_s:.2f}s "
         f"build={stats.t_build_s:.2f}s merge={stats.t_merge_s:.2f}s write={stats.t_write_s:.2f}s "
         f"total={stats.t_total_s:.2f}s",
         file=file,
@@ -101,6 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="ap214",
         help="STEP schema (default: ap214)",
     )
+    p.add_argument(
+        "--repair",
+        choices=["weld", "fill"],
+        default=None,
+        help=(
+            "off by default. \"weld\" = merge coincident vertices + drop duplicate faces "
+            "+ fix winding; \"fill\" = also fill holes (best-effort). "
+            "Runs before dedup; still-non-watertight meshes are reported honestly."
+        ),
+    )
     return p
 
 
@@ -136,6 +155,7 @@ def main(argv=None) -> int:
                 merge_coplanar_angle=args.merge_coplanar,
                 merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
                 schema=args.format,
+                repair=args.repair,
             )
             _log_stats(stats)
             if stats.error:
@@ -153,6 +173,7 @@ def main(argv=None) -> int:
         merge_coplanar_angle=args.merge_coplanar,
         merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
         schema=args.format,
+        repair=args.repair,
     )
     _log_stats(stats)
     return 1 if stats.error else 0

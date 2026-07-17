@@ -56,6 +56,18 @@
       </section>
 
       <section class="panel-section">
+        <h2>Repair mesh</h2>
+        <div class="form-row">
+          <select id="repair">
+            <option value="off" selected>Off (exact)</option>
+            <option value="weld">Weld (merge + fix)</option>
+            <option value="fill">Weld + fill holes</option>
+          </select>
+        </div>
+        <p class="hint">Off = exact, geometry-preserving. Weld merges duplicate/split vertices, drops duplicate faces, and fixes winding. "Fill" also closes holes (best-effort via trimesh). Still-non-watertight meshes are reported honestly.</p>
+      </section>
+
+      <section class="panel-section">
         <h2>Tolerance</h2>
         <div class="form-row slider-row">
           <label>Dedup cell (mm)</label>

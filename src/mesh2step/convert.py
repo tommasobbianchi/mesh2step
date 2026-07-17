@@ -32,6 +32,13 @@ class ConvertStats:
     n_faces_before_merge: int | None = None
     n_faces_after_merge: int | None = None
 
+    repair_level: str | None = None
+    n_repair_faces_before: int | None = None
+    n_repair_faces_after: int | None = None
+    repair_holes_filled: bool | None = None
+    repair_watertight_after: bool | None = None
+    t_repair_s: float = 0.0
+
     output_size_bytes: int = 0
 
     t_load_s: float = 0.0
@@ -54,6 +61,7 @@ def convert_file(
     merge_coplanar_angle: float | None = None,
     merge_coplanar_linear_tol: float | None = None,
     schema: str = "ap214",
+    repair: str | None = None,
 ) -> ConvertStats:
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -72,6 +80,19 @@ def convert_file(
     stats.n_input_verts = len(verts)
     stats.n_input_tris = len(tris)
     stats.t_load_s = time.perf_counter() - t0
+
+    if repair is not None:
+        from . import repair as _repair
+
+        t0 = time.perf_counter()
+        rr = _repair.repair_mesh(verts, tris, level=repair)
+        verts, tris = rr.verts, rr.tris
+        stats.repair_level = repair
+        stats.n_repair_faces_before = rr.n_faces_before
+        stats.n_repair_faces_after = rr.n_faces_after
+        stats.repair_holes_filled = rr.holes_filled
+        stats.repair_watertight_after = rr.watertight_after
+        stats.t_repair_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     dd = dedup.dedup_and_clean(verts, tris, tolerance)

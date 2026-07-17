@@ -154,6 +154,7 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('merge-controls').classList.add('hidden');
   document.getElementById('merge-angle').value = document.getElementById('merge-angle-num').value = 5;
   document.getElementById('schema').value = 'ap214';
+  document.getElementById('repair').value = 'off';
 });
 
 // ---- convert ----
@@ -175,6 +176,10 @@ convertBtn.addEventListener('click', async () => {
   fd.append('schema', document.getElementById('schema').value);
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
+  }
+  const repairVal = document.getElementById('repair').value;
+  if (repairVal !== 'off') {
+    fd.append('repair', repairVal);
   }
 
   try {
@@ -207,6 +212,9 @@ function renderStats(data) {
   html += row('faces', `${s.n_faces_built.toLocaleString()} built${s.n_faces_failed ? ' · ' + s.n_faces_failed + ' failed' : ''}`);
   html += row('edges', `${s.n_boundary_edges.toLocaleString()} boundary · ${s.n_nonmanifold_edges.toLocaleString()} non-manifold`);
   html += row('watertight', flag(s.watertight)) + row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
+  if (s.repair_level) {
+    html += row(`repair(${s.repair_level})`, `${s.n_repair_faces_before.toLocaleString()} → ${s.n_repair_faces_after.toLocaleString()} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
+  }
   if (s.n_faces_after_merge != null) html += row('merge', `${s.n_faces_before_merge.toLocaleString()} → ${s.n_faces_after_merge.toLocaleString()} faces`);
   html += row('output', `${(s.output_size_bytes / 1024).toFixed(0)} KB · ${s.schema.toUpperCase()}`);
   html += row('time', `load ${s.t_load_s.toFixed(2)}s · dedup ${s.t_dedup_s.toFixed(2)}s · build ${s.t_build_s.toFixed(2)}s · write ${s.t_write_s.toFixed(2)}s · total ${s.t_total_s.toFixed(2)}s`);
@@ -219,7 +227,11 @@ function renderStats(data) {
 
   // honest warnings, BumpMesh amber style
   if (!s.is_solid) {
-    addWarning(`Not a closed solid — exported as an open shell. ${s.n_boundary_edges.toLocaleString()} boundary edge(s), ${s.n_nonmanifold_edges.toLocaleString()} non-manifold edge(s). The input mesh is not watertight.`);
+    let warnText = `Not a closed solid — exported as an open shell. ${s.n_boundary_edges.toLocaleString()} boundary edge(s), ${s.n_nonmanifold_edges.toLocaleString()} non-manifold edge(s). The input mesh is not watertight.`;
+    if (!s.repair_level && document.getElementById('repair').value === 'off') {
+      warnText += ' Try Repair mesh → Weld (or Weld + fill holes) and convert again.';
+    }
+    addWarning(warnText);
   }
   if (s.n_faces_built > 20000 && s.n_faces_after_merge == null) {
     addWarning(`Faceted output has ${s.n_faces_built.toLocaleString()} faces. STEP files this dense re-open very slowly in CAD tools (one ADVANCED_FACE per triangle). Enable "Merge co-planar", or decimate the mesh, if the file must be reopened quickly.`);
