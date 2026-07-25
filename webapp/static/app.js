@@ -429,7 +429,7 @@ async function _sendCutPreview() {
   fd.append('cuts', JSON.stringify(cutOps));
   document.getElementById('cut-status').textContent = 'Cutting…';
   try {
-    const res = await fetch('/api/edit', { method: 'POST', body: fd });
+    const res = await fetch('api/edit', { method: 'POST', body: fd });
     if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'cut failed'); }
     let nTris = 0;
     const statsHeader = res.headers.get('X-Mesh-Stats');
@@ -547,7 +547,7 @@ async function _startComponents() {
   fd.append('cuts', JSON.stringify(cutOps));
 
   try {
-    const res = await fetch('/api/segment', { method: 'POST', body: fd });
+    const res = await fetch('api/segment', { method: 'POST', body: fd });
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || 'segment failed');
@@ -694,7 +694,7 @@ convertBtn.addEventListener('click', async () => {
   }
 
   try {
-    const res = await fetch('/api/convert', { method: 'POST', body: fd });
+    const res = await fetch('api/convert', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'server error');
     renderStats(data);
@@ -734,7 +734,8 @@ function renderStats(data) {
   statsEl.innerHTML = html;
   statsEl.classList.remove('hidden');
   document.getElementById('dl-btn').addEventListener('click', () => {
-    window.location.href = `/api/download/${data.download_token}`;
+    // ponytail: relative URLs so the app works under a path prefix (Caddy /mesh2step/)
+    window.location.href = `api/download/${data.download_token}`;
   });
 
   // honest warnings, BumpMesh amber style
