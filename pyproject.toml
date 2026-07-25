@@ -3,6 +3,9 @@ name = "mesh2step"
 version = "0.1.0"
 description = "Faceted triangle-mesh to B-Rep STEP converter (OCCT-backed, no surface fitting)"
 requires-python = ">=3.10"
+# ponytail: classic table form, not the PEP 639 SPDX string — that needs
+# setuptools>=77 and this host still ships 68, which fails --no-build-isolation.
+license = {text = "MIT"}
 dependencies = [
     "numpy",
     "trimesh",

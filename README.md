@@ -203,3 +203,12 @@ task's 100k-1M range) are recorded in [`benchmark/results.md`](benchmark/results
 2.6x-3.2x faster than the sew-based approach at reaching an equivalent watertight
 solid, with the gap widening super-linearly as triangle count grows, and identical
 (to 4 decimal places) integrated volume on every mesh tested.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+The two test meshes in `tests/data/` are third-party material and keep their own
+terms; see [`tests/data/README.md`](tests/data/README.md) for provenance. The
+optional `[repair]` extra pulls in `pymeshfix` (GPL), which is imported lazily and
+never distributed with this package — the core install has no copyleft dependency.
