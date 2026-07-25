@@ -3,7 +3,21 @@
 How the nativedev test instance is served (systemd **user** services, so it
 survives reboots via linger).
 
-## Stable public URL (use this one)
+## Branded URL (share this one)
+
+**https://mesh2step.nativemedica.it/**
+
+A cPanel subdomain on the Netsons hosting of nativemedica.it (cPanel user
+`alqpatit`, docroot `public_html/mesh2step`) whose `.htaccess` 302-redirects to
+the origin below. Publicly reachable, Let's Encrypt cert issued and renewed by
+cPanel AutoSSL. It is a **redirect**, not a proxy: the address bar ends up on
+the `ts.net` origin. DNS needed no new record — `*.nativemedica.it` already
+wildcards to the hosting IP.
+
+To retarget it, edit `public_html/mesh2step/.htaccess` in cPanel. The redirect
+is deliberately 302, so the target can move without poisoning browser caches.
+
+## Origin (stable public URL)
 
 **https://nativedev.tail7d3518.ts.net/mesh2step/**
 
