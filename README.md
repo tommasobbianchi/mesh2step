@@ -1,6 +1,7 @@
 # mesh2step
 
-https://assurance-been-internship-spending.trycloudflare.com/
+Live web app: **https://mesh2step.nativemedica.it/**
+(origin: https://nativedev.tail7d3518.ts.net/mesh2step/ — see `webapp/deploy/README.md`)
 
 Convert a triangle mesh (STL / OBJ / 3MF / PLY) into a B-Rep solid, exported as STEP
 (AP203/AP214/AP242), using the **faceted** approach: one planar B-Rep face per input
