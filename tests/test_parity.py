@@ -12,10 +12,9 @@ re-capturing the oracle is not evidence of anything.
 Two levels of check, per fixture and engine mode:
 
 1. **Invariant parity** -- the RESULT payload must agree field-for-field.
-2. **Geometric overlay** -- where a golden ``.step`` was small enough to keep, our solid
-   must share the golden's volume as completely as the golden shares its own. This is the
-   "100% overlay" requirement, made measurable against the instrument's own noise floor
-   rather than against an ideal the reference itself cannot reach. See ``OVERLAY_SLACK``.
+2. **Geometric overlay** -- where a golden ``.step`` was small enough to keep, no volume may
+   lie in exactly one of the two solids. That empty symmetric difference IS the "100%
+   overlay" requirement, stated so that it is measurable. See ``SYMDIFF_MAX``.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.IFSelect import IFSelect_RetDone
@@ -41,32 +40,36 @@ REFERENCE = ROOT / "tests" / "data" / "reference"
 # so the only legitimate difference is floating-point summation order.
 VOLUME_REL_TOL = 1e-9
 
-# Boolean-overlay agreement, SELF-CALIBRATED against the identity case.
+# "100% overlay", measured as an EMPTY SYMMETRIC DIFFERENCE:
 #
-# The first version of this gate was `V(A and B) / V(A or B) >= 1 - 1e-9`, and it was wrong
-# twice over. Measured on the golden solids compared with THEMSELVES -- the case that must
-# score a perfect 1.0 by construction:
+#     ( V(ours \ theirs) + V(theirs \ ours) ) / max(V) == 0
 #
-#   cube                 fuse    1000.000000   common    1000.000000   V    1000.000000
-#   S09                  fuse   32496.957221   common   32496.957221   V   32496.999055
-#   nonprismatic-control fuse    2016.000069   common    2016.000069   V    2016.000069
-#   handle-lock          fuse       0.000000   common   16003.716329   V   16038.862197
+# Two solids that each contain nothing the other lacks ARE the same solid. This is a
+# stronger claim than any intersection ratio, and unlike a ratio it needs no per-fixture
+# calibration, because the instrument reads exactly zero on the identity case.
 #
-# BRepAlgoAPI_Fuse of handle-lock's 194-face merged solid with itself yields an EMPTY
-# compound, so the old denominator was zero and the assertion was unreachable by any
-# correct implementation, the reference engine included. And S09's identity case already
-# deviates by 1.3e-6, three orders above the old epsilon.
+# It replaces two earlier attempts, both defeated by OCCT's boolean operators rather than
+# by any converter defect. Measured on the golden solids:
 #
-# Both are properties of OCCT's boolean operators on coincident geometry, not of the
-# converter. So the gate now measures us against the instrument's own noise floor on the
-# same fixture: our overlay with the golden must be at least as good as the golden's
-# overlay with itself. That IS "100% overlay" stated honestly -- indistinguishable from the
-# reference under the same measurement. The union is gone; only the intersection is used.
-OVERLAY_SLACK = 1e-12
-
-# If the identity case cannot even reach this, the boolean operator is not a usable
-# instrument on that fixture and the test says so loudly rather than passing vacuously.
-IDENTITY_FLOOR = 0.99
+#   fixture                  V(A and B)/V   symdiff(self)   symdiff(0.999x)   symdiff(box)
+#   cube.verbatim             1.000000000     0.000000000       0.002997001    0.875000000
+#   S09.verbatim              0.999998713     0.000000000       0.033568619    0.996158008
+#   S09.trueform              0.999999643     0.000000000       0.033597041    0.996158008
+#   handle-lock.verbatim      0.997808706     0.000000000       0.971330551    1.007793570
+#   handle-lock.trueform      0.999999999     0.000000000       0.088333556    1.007877076
+#   nonprismatic.trueform     1.000000000     0.000000000       0.003757740    0.997519843
+#
+# The first gate was V(A and B)/V(A or B) >= 1-1e-9; BRepAlgoAPI_Fuse of handle-lock's
+# 194-face solid WITH ITSELF returns an empty compound, so the denominator was zero and no
+# implementation could pass. The second self-calibrated against the intersection ratio,
+# which the middle column shows is neither 1.0 nor reproducible: S09 scores 0.999999643
+# comparing the golden to a second read of itself, and 0.999998713 for a solid whose two
+# set differences are both exactly zero -- provably the same solid, 9.3e-7 apart under an
+# operator asked the same question twice.
+#
+# The symmetric difference has none of that scatter: exact zero on every fixture including
+# the one where Fuse degenerates, and six orders of separation from a 0.1%-scaled copy.
+SYMDIFF_MAX = 1e-9
 
 # Fields whose agreement IS the parity claim. Compared with ==, no slack.
 EXACT_FIELDS = (
@@ -130,19 +133,19 @@ def volume(shape) -> float:
     return props.Mass()
 
 
-def overlay_ratio(a, b) -> float:
-    """Shared volume as a fraction of the larger solid: 1.0 means they occupy the same space.
+def _cut_volume(a, b) -> float:
+    """Volume of a minus b."""
+    cut = BRepAlgoAPI_Cut(a, b)
+    cut.Build()
+    assert cut.IsDone(), "boolean cut failed"
+    return abs(volume(cut.Shape()))
 
-    Intersection only. The union is deliberately not used -- see OVERLAY_SLACK for the
-    measurement showing BRepAlgoAPI_Fuse degenerating to an empty compound on coincident
-    input.
-    """
-    common = BRepAlgoAPI_Common(a, b)
-    common.Build()
-    assert common.IsDone(), "boolean common failed"
+
+def symmetric_difference(a, b) -> float:
+    """Volume in exactly one of the two solids, as a fraction of the larger. 0 == identical."""
     denominator = max(volume(a), volume(b))
     assert denominator > 0, "both solids have no volume"
-    return volume(common.Shape()) / denominator
+    return (_cut_volume(a, b) + _cut_volume(b, a)) / denominator
 
 
 def run_mesh2step(stl: Path, out: Path, mode: str, unify_angle: float) -> tuple[dict, int]:
@@ -237,15 +240,17 @@ def test_geometric_overlay_is_total(ref_path, tmp_path):
         f"{fixture}/{mode}: volume {v_ours} vs reference {v_theirs}"
     )
 
-    # Calibrate on the identity case first: what does a PERFECT overlay score here?
-    identity = overlay_ratio(theirs, read_shape(golden))
-    assert identity >= IDENTITY_FLOOR, (
-        f"{fixture}/{mode}: the boolean operator scores only {identity:.12f} on the golden "
-        f"against itself, so it cannot measure overlay on this fixture at all"
+    # Instrument check first: the golden against a second read of itself must read exactly
+    # zero. If it does not, the boolean operator is broken on this fixture and the test says
+    # so rather than passing -- or failing -- vacuously.
+    identity = symmetric_difference(theirs, read_shape(golden))
+    assert identity <= SYMDIFF_MAX, (
+        f"{fixture}/{mode}: the golden scores {identity:.12f} against ITSELF, so the boolean "
+        f"operator cannot measure this fixture at all"
     )
 
-    ratio = overlay_ratio(ours, theirs)
-    assert ratio >= identity - OVERLAY_SLACK, (
-        f"{fixture}/{mode}: overlay {ratio:.12f} against the reference, but the reference "
-        f"scores {identity:.12f} against itself -- short by {identity - ratio:.3e}"
+    symdiff = symmetric_difference(ours, theirs)
+    assert symdiff <= SYMDIFF_MAX, (
+        f"{fixture}/{mode}: {symdiff:.12f} of the volume lies in exactly one of the two "
+        f"solids -- ours and the reference do not occupy the same space"
     )

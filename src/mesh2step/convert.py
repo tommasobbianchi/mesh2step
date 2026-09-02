@@ -1,4 +1,5 @@
 """Single-file conversion orchestration + structured stats for logging."""
+import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -6,8 +7,12 @@ from pathlib import Path
 import numpy as np
 from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
-from OCP.GeomAbs import GeomAbs_Plane
+from OCP.BRepLib import BRepLib
+from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
+from OCP.gp import gp_Pnt
 from OCP.GProp import GProp_GProps
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Precision import Precision
@@ -15,9 +20,11 @@ from OCP.Standard import Standard_Failure
 from OCP.STEPControl import STEPControl_Reader
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
+from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape, TopoDS_Shell
 
 from . import brep_build, cut, dedup, io_mesh, merge_coplanar, result, sew, split, step_export
+from .refit import SegmentParams, build_faces, build_mesh_view, segment
+from .refit.stats import RefitStats
 
 
 @dataclass
@@ -340,3 +347,254 @@ def _convert_verbatim_impl(out, input_path, output_path, unify_angle, schema):
             abs(out.step_volume_mm3 - brep_volume) / abs(brep_volume) * 100.0
         )
     out.ok = True
+
+
+# --- TrueForm (analytic planar refit) --------------------------------------------
+
+
+def convert_trueform(
+    input_path,
+    output_path,
+    *,
+    unify_angle: float | None = None,
+    schema: str = "ap214",
+) -> result.ParityResult:
+    """TrueForm conversion: planar segmentation + analytic Geom_Plane faces per
+    clean component, with the closed/valid/volume accept probe and per-component
+    revert to the faceted build (port of stl2step.cpp's smooth path)."""
+    t_start = time.perf_counter()
+    out = result.ParityResult(
+        input=str(Path(input_path).resolve()),
+        output=str(Path(output_path).resolve()),
+        smooth=True,
+    )
+    try:
+        _convert_trueform_impl(out, input_path, output_path, unify_angle, schema)
+    except (ValueError, RuntimeError, Standard_Failure) as exc:
+        out.ok = False
+        out.error = str(exc)
+    out.seconds = time.perf_counter() - t_start
+    return out
+
+
+def _count_cylindrical_faces(shape) -> int:
+    n = 0
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        if BRepAdaptor_Surface(TopoDS.Face_s(exp.Current()), False).GetType() == GeomAbs_Cylinder:
+            n += 1
+        exp.Next()
+    return n
+
+
+def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
+    verts, tris = io_mesh.load_mesh(input_path)
+    out.triangles = len(tris)
+
+    sr = split.weld_and_split(verts, tris)
+    out.vertices = sr.n_unique_verts
+    out.components = sr.n_components
+    out.watertight = sr.watertight
+    out.mesh_volume_mm3 = sr.mesh_volume
+
+    lo = sr.verts.min(axis=0)
+    hi = sr.verts.max(axis=0)
+    diag = float(np.sqrt(((hi - lo) ** 2).sum()))
+    sew_tol = _sew_tolerance(sr.verts)
+
+    # Stage 3.5: TrueForm segment on each clean component (serial; the harness
+    # does not measure time and threads would only add nondeterminism).
+    plans = {}
+    smooth_skipped = 0
+    for idx, comp in enumerate(sr.components):
+        if not comp.is_clean:
+            smooth_skipped += 1
+            continue
+        mv = build_mesh_view(comp, diag, weld_tol=0.0, sew_tol=sew_tol)
+        rs = segment(mv, SegmentParams())
+        if rs is not None:
+            plans[idx] = (mv, rs)
+    out.smooth_skipped_components = smooth_skipped
+
+    parts = []
+    solids = 0
+    open_shells = 0
+    refit_totals = RefitStats()
+    dvol_pred_abs = 0.0
+    any_refit_used = False
+    # Per-component build reports for the smoothBuilt* census (reference counts
+    # cylinders from the built shape; planes/cylinders/fillets from the stats).
+    comp_reports = []
+    for idx, comp in enumerate(sr.components):
+        used_refit = False
+        refit_st = None
+        n_cyls = 0
+        shape = None
+        plan = plans.get(idx)
+        if plan is not None:
+            mv, rs = plan
+            ok, faces = _try_refit_component(mv, rs, comp, out)
+            if ok:
+                used_refit = True
+                any_refit_used = True
+                shape = brep_build.shell_to_solid(_faces_to_shell(faces))
+                refit_st = rs.stats
+                dvol_pred_abs += sum(abs(r.dvol_predicted) for r in rs.regions)
+                n_cyls = _count_cylindrical_faces(shape)
+        if shape is None:
+            br = brep_build.build_faceted_shape(comp.verts, comp.tris)
+            if comp.is_clean:
+                shape = br.shape
+                if br.is_solid:
+                    solids += 1
+                else:
+                    open_shells += 1
+            else:
+                faces = []
+                exp = TopExp_Explorer(br.shape, TopAbs_FACE)
+                while exp.More():
+                    faces.append(TopoDS.Face_s(exp.Current()))
+                    exp.Next()
+                shape = None
+                for sh in sew.repair_faces(faces, sew_tol):
+                    wrapped = brep_build.shell_to_solid(sh)
+                    if wrapped.ShapeType() == TopAbs_SOLID:
+                        solids += 1
+                    else:
+                        open_shells += 1
+                    if shape is None:
+                        shape = wrapped
+                    else:
+                        shape = _make_compound([shape, wrapped])
+        if used_refit:
+            # Accepted analytic shells are closed by the probe; count as solids
+            # exactly like the faceted path does.
+            if shape.ShapeType() == TopAbs_SOLID:
+                solids += 1
+            else:
+                open_shells += 1
+            refit_totals.absorb(refit_st)
+        parts.append(shape)
+        comp_reports.append((plan is not None, used_refit, refit_st, n_cyls))
+    out.solids = solids
+    out.open_shells = open_shells
+
+    if not parts:
+        out.ok = False
+        out.error = "no usable geometry"
+        return
+
+    shape = parts[0] if len(parts) == 1 else _make_compound(parts)
+    out.faces_before_unify = _count_faces(shape)
+    out.faces_after_unify = out.faces_before_unify
+
+    if unify_angle is not None:
+        shape, _, n_after = merge_coplanar.merge_coplanar(shape, unify_angle, 1e-7)
+        out.faces_after_unify = n_after
+        # TrueForm-only: mesh-jitter-aware flat consolidation on faceted islands
+        # (coarse band only; verbatim defaults stay untouched).
+        if 500 <= out.triangles <= 1200:
+            seg_max_dev = refit_totals.max_vertex_dev
+            for _mv, rs in plans.values():
+                seg_max_dev = max(seg_max_dev, rs.stats.max_vertex_dev)
+            eps_mesh = max(0.0, 1e-4 * diag, 1e-3)
+            dev = max(seg_max_dev, eps_mesh)
+            length = max(diag, dev)
+            smooth_flat_deg = max(0.01, dev / length * (180.0 / math.pi))
+            if smooth_flat_deg > unify_angle:
+                shape, _, n_after = merge_coplanar.merge_coplanar(shape, smooth_flat_deg, 1e-7)
+                out.faces_after_unify = n_after
+
+    out.faces_after_smooth = out.faces_after_unify
+
+    refit_faces = refit_totals.planes + refit_totals.cylinders + refit_totals.fillets
+    if any_refit_used and refit_faces > 0:
+        BRepLib.EncodeRegularity_s(shape, Precision.Angular_s())
+
+    _fit_planar_tolerances(shape)
+
+    brep_volume = _shape_volume(shape)
+    if out.watertight and out.mesh_volume_mm3 > 0:
+        if abs(brep_volume - out.mesh_volume_mm3) / out.mesh_volume_mm3 > 1e-4:
+            out.warnings.append(
+                "B-Rep volume differs from mesh volume by more than 0.01% -- inspect the result"
+            )
+
+    step_export.write_step(shape, output_path, schema=schema)
+
+    out.step_volume_mm3 = _read_step_volume(output_path)
+    if brep_volume != 0:
+        out.volume_delta_pct = (
+            abs(out.step_volume_mm3 - brep_volume) / abs(brep_volume) * 100.0
+        )
+    out.ok = True
+
+    # smoothBuilt* census (stl2step.cpp): reverted components count against
+    # smoothRevertedComponents; only accepted components contribute stats.
+    built_pl = built_cy = built_fi = built_co = rev_co = 0
+    for had_plan, used_refit, refit_st, n_cyls in comp_reports:
+        if not used_refit:
+            if had_plan:
+                rev_co += 1
+            continue
+        if n_cyls > 0 or (refit_st.cylinders == 0 and refit_st.planes > 0):
+            built_co += 1
+            built_pl += refit_st.planes
+            built_cy += n_cyls
+            built_fi += refit_st.fillets
+        else:
+            rev_co += 1
+
+    out.smooth_planes = refit_totals.planes
+    out.smooth_cylinders = refit_totals.cylinders
+    out.smooth_fillets = refit_totals.fillets
+    out.smooth_distinct_radii = refit_totals.distinct_radii
+    out.smooth_rejected = refit_totals.rejected
+    out.smooth_facet_faces = refit_totals.facet_triangles
+    out.smooth_max_dev_mm = refit_totals.max_vertex_dev
+    out.smooth_max_edge_tol_mm = refit_totals.max_edge_tol
+    out.smooth_vol_predicted_mm3 = refit_totals.dvol_predicted
+    out.smooth_built_planes = built_pl
+    out.smooth_built_cylinders = built_cy
+    out.smooth_built_fillets = built_fi
+    out.smooth_built_components = built_co
+    out.smooth_reverted_components = rev_co
+
+
+def _faces_to_shell(faces) -> TopoDS_Shape:
+    builder = BRep_Builder()
+    shell = TopoDS_Shell()
+    builder.MakeShell(shell)
+    for f in faces:
+        builder.Add(shell, f)
+    return shell
+
+
+def _try_refit_component(mv, rs, comp, out) -> tuple[bool, list]:
+    """Build the analytic faces and run the accept probe (stl2step.cpp): the
+    probe shell must be closed, BRepCheck-valid, and within the volume budget.
+    On any failure the component reverts to the faceted build."""
+    verts = []
+    for i in range(mv.n_vtx):
+        p = mv.pts[int(mv.comp_vtx[i])]
+        verts.append(
+            BRepBuilderAPI_MakeVertex(gp_Pnt(float(p[0]), float(p[1]), float(p[2]))).Vertex()
+        )
+    ok, faces = build_faces(mv, rs, verts)
+    if not ok or not faces:
+        return False, []
+    probe = _faces_to_shell(faces)
+    try:
+        if not BRep_Tool.IsClosed_s(probe):
+            return False, []
+        if not BRepCheck_Analyzer(probe, True).IsValid():
+            return False, []
+        dvol_abs = sum(abs(r.dvol_predicted) for r in rs.regions)
+        mesh_vol = abs(comp.signed_volume)
+        budget = max(1e-4 * mesh_vol, 3.0 * dvol_abs)
+        shell_vol = _shape_volume(probe)
+        if abs(shell_vol - mesh_vol) > budget:
+            return False, []
+    except Standard_Failure:
+        return False, []
+    return True, faces

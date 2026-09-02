@@ -3,7 +3,7 @@ import sys
 import time
 from pathlib import Path
 
-from .convert import convert_file, convert_verbatim
+from .convert import convert_file, convert_trueform, convert_verbatim
 from .cut import load_cut_ops
 from .io_mesh import SUPPORTED_EXTENSIONS
 from .result import emit_result
@@ -164,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine",
         choices=["verbatim", "trueform"],
         default="verbatim",
-        help="conversion engine: verbatim (default) or trueform (falls back to verbatim)",
+        help="conversion engine: verbatim (default) or trueform (analytic planar refit)",
     )
     p.add_argument(
         "--unify-angle",
@@ -227,15 +227,19 @@ def main(argv=None) -> int:
 
     output_path = Path(args.output) if args.output else _default_output(input_path, output_dir)
     merge_angle = args.unify_angle if args.unify_angle is not None else args.merge_coplanar
-    res = convert_verbatim(
-        input_path,
-        output_path,
-        unify_angle=merge_angle,
-        schema=args.format,
-    )
     if args.engine == "trueform":
-        res.warnings.append(
-            "trueform engine not implemented in this milestone -- falling back to verbatim"
+        res = convert_trueform(
+            input_path,
+            output_path,
+            unify_angle=merge_angle,
+            schema=args.format,
+        )
+    else:
+        res = convert_verbatim(
+            input_path,
+            output_path,
+            unify_angle=merge_angle,
+            schema=args.format,
         )
     if not args.quiet:
         _log_verbatim(res)

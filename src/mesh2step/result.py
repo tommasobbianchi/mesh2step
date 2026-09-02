@@ -29,6 +29,25 @@ class ParityResult:
     seconds: float = 0.0
     warnings: list = field(default_factory=list)
 
+    # TrueForm (smooth) counters — verbatim payloads never carry these keys.
+    smooth: bool = False
+    smooth_planes: int = 0
+    smooth_cylinders: int = 0
+    smooth_fillets: int = 0
+    smooth_distinct_radii: int = 0
+    smooth_rejected: int = 0
+    smooth_facet_faces: int = 0
+    faces_after_smooth: int = 0
+    smooth_skipped_components: int = 0
+    smooth_max_dev_mm: float = 0.0
+    smooth_max_edge_tol_mm: float = 0.0
+    smooth_vol_predicted_mm3: float = 0.0
+    smooth_built_planes: int = 0
+    smooth_built_cylinders: int = 0
+    smooth_built_fillets: int = 0
+    smooth_built_components: int = 0
+    smooth_reverted_components: int = 0
+
     @property
     def exit_code(self) -> int:
         if not self.ok:
@@ -38,7 +57,7 @@ class ParityResult:
     def to_dict(self) -> dict:
         if not self.ok:
             return {"ok": False, "error": self.error or ""}
-        return {
+        payload = {
             "ok": True,
             "input": self.input,
             "output": self.output,
@@ -56,6 +75,28 @@ class ParityResult:
             "seconds": self.seconds,
             "warnings": self.warnings,
         }
+        if self.smooth:
+            payload.update(
+                {
+                    "smoothPlanes": self.smooth_planes,
+                    "smoothCylinders": self.smooth_cylinders,
+                    "smoothFillets": self.smooth_fillets,
+                    "smoothDistinctRadii": self.smooth_distinct_radii,
+                    "smoothRejected": self.smooth_rejected,
+                    "smoothFacetFaces": self.smooth_facet_faces,
+                    "facesAfterSmooth": self.faces_after_smooth,
+                    "smoothSkippedComponents": self.smooth_skipped_components,
+                    "smoothMaxDevMM": self.smooth_max_dev_mm,
+                    "smoothMaxEdgeTolMM": self.smooth_max_edge_tol_mm,
+                    "smoothVolPredictedMM3": self.smooth_vol_predicted_mm3,
+                    "smoothBuiltPlanes": self.smooth_built_planes,
+                    "smoothBuiltCylinders": self.smooth_built_cylinders,
+                    "smoothBuiltFillets": self.smooth_built_fillets,
+                    "smoothBuiltComponents": self.smooth_built_components,
+                    "smoothRevertedComponents": self.smooth_reverted_components,
+                }
+            )
+        return payload
 
 
 def emit_result(result: ParityResult, file=None) -> None:
