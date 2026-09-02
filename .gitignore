@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 /tmp/
 .gitnexus
+/build/
+
+# The parity oracle: golden solids from the stl2step reference engine. These are
+# the specification for v2 and must be versioned, unlike ordinary .step output.
+!tests/data/reference/*.step

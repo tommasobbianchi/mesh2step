@@ -26,3 +26,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Lint gate for the v2 parity work. Pinned explicitly (not left to ruff's evolving
+# defaults) so the loopspec baseline fingerprint stays comparable across ruff releases.
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "BLE", "TRY", "RUF"]

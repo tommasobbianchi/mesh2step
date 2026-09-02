@@ -1,0 +1,25 @@
+{
+ "_reference": {
+  "engine": "stl2step 1.1.0 (BlinkingSun @ 7cf77a2)",
+  "exit_code": 0,
+  "golden_step": true,
+  "mode": "verbatim",
+  "unify_angle_deg": 5.0
+ },
+ "components": 1,
+ "facesAfterUnify": 6,
+ "facesBeforeUnify": 12,
+ "input": "cube.stl",
+ "meshVolumeMM3": 1000.0,
+ "ok": true,
+ "openShells": 0,
+ "output": "cube.verbatim.step",
+ "seconds": 0.01,
+ "solids": 1,
+ "stepVolumeMM3": 1000.0,
+ "triangles": 12,
+ "vertices": 8,
+ "volumeDeltaPct": 0.0,
+ "warnings": [],
+ "watertight": true
+}

@@ -1,0 +1,27 @@
+{
+ "_reference": {
+  "engine": "stl2step 1.1.0 (BlinkingSun @ 7cf77a2)",
+  "exit_code": 2,
+  "golden_step": false,
+  "mode": "verbatim",
+  "unify_angle_deg": 5.0
+ },
+ "components": 2,
+ "facesAfterUnify": 3142,
+ "facesBeforeUnify": 15300,
+ "input": "Body11.stl",
+ "meshVolumeMM3": 21943.857395,
+ "ok": true,
+ "openShells": 0,
+ "output": "Body11.verbatim.step",
+ "seconds": 7.36,
+ "solids": 2,
+ "stepVolumeMM3": 22234.175127,
+ "triangles": 15300,
+ "vertices": 7579,
+ "volumeDeltaPct": 0.0,
+ "warnings": [
+  "B-Rep volume differs from mesh volume by more than 0.01% -- inspect the result"
+ ],
+ "watertight": true
+}

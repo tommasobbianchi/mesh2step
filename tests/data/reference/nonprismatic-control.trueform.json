@@ -1,0 +1,43 @@
+{
+ "_reference": {
+  "engine": "stl2step 1.1.0 (BlinkingSun @ 7cf77a2)",
+  "exit_code": 2,
+  "golden_step": true,
+  "mode": "trueform",
+  "unify_angle_deg": 5.0
+ },
+ "components": 1,
+ "facesAfterSmooth": 26,
+ "facesAfterUnify": 26,
+ "facesBeforeUnify": 96,
+ "input": "nonprismatic-control.stl",
+ "meshVolumeMM3": 2016.000132,
+ "ok": true,
+ "openShells": 0,
+ "output": "nonprismatic-control.trueform.step",
+ "seconds": 0.11,
+ "smoothBuiltComponents": 0,
+ "smoothBuiltCylinders": 0,
+ "smoothBuiltFillets": 0,
+ "smoothBuiltPlanes": 0,
+ "smoothCylinders": 0,
+ "smoothDistinctRadii": 0,
+ "smoothFacetFaces": 0,
+ "smoothFillets": 0,
+ "smoothMaxDevMM": 0.0,
+ "smoothMaxEdgeTolMM": 0.0,
+ "smoothPlanes": 0,
+ "smoothRejected": 0,
+ "smoothRevertedComponents": 1,
+ "smoothSkippedComponents": 0,
+ "smoothVolPredictedMM3": 0.0,
+ "solids": 1,
+ "stepVolumeMM3": 2016.000069,
+ "triangles": 96,
+ "vertices": 48,
+ "volumeDeltaPct": 0.0,
+ "warnings": [
+  "smooth: analytic rebuild reverted on one component -- kept faceted"
+ ],
+ "watertight": true
+}

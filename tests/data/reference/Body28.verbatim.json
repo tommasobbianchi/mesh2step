@@ -1,0 +1,30 @@
+{
+ "_reference": {
+  "engine": "stl2step 1.1.0 (BlinkingSun @ 7cf77a2)",
+  "exit_code": 2,
+  "golden_step": false,
+  "mode": "verbatim",
+  "unify_angle_deg": 5.0
+ },
+ "components": 1,
+ "facesAfterUnify": 4614,
+ "facesBeforeUnify": 14126,
+ "input": "Body28.stl",
+ "meshVolumeMM3": 56440.048811,
+ "ok": true,
+ "openShells": 0,
+ "output": "Body28.verbatim.step",
+ "seconds": 11.67,
+ "solids": 1,
+ "stepVolumeMM3": 3.3989257548577515e+100,
+ "triangles": 14126,
+ "vertices": 7035,
+ "volumeDeltaPct": 6.25014064315156e+97,
+ "warnings": [
+  "shape still reports invalid after ShapeFix -- STEP written anyway",
+  "B-Rep volume differs from mesh volume by more than 0.01% -- inspect the result",
+  "verification: re-read solid count 0 != written 1",
+  "verification: STEP volume deviates 62501406431515596734141716445729078953950326498260817721009220238946726618961662136662798435876864.000000% from source"
+ ],
+ "watertight": true
+}
