@@ -3,9 +3,10 @@ import sys
 import time
 from pathlib import Path
 
-from .convert import convert_file
+from .convert import convert_file, convert_verbatim
 from .cut import load_cut_ops
 from .io_mesh import SUPPORTED_EXTENSIONS
+from .result import emit_result
 
 DEFAULT_MERGE_ANGLE_DEG = 5.0
 
@@ -72,6 +73,24 @@ def _log_stats(stats, file=sys.stdout) -> None:
 def _default_output(input_path: Path, output_dir: Path | None) -> Path:
     stem = input_path.with_suffix(".step").name
     return (output_dir / stem) if output_dir else input_path.with_suffix(".step")
+
+
+def _log_verbatim(res, file=sys.stdout) -> None:
+    if not res.ok:
+        print(f"  FAILED: {res.error}", file=file)
+        return
+    print(f"  {res.input}", file=file)
+    print(
+        f"    triangles={res.triangles:,} vertices={res.vertices:,} "
+        f"components={res.components} solids={res.solids} open_shells={res.open_shells}",
+        file=file,
+    )
+    print(
+        f"    faces {res.faces_before_unify:,} -> {res.faces_after_unify:,} "
+        f"watertight={_fmt_bool(res.watertight)} volume={res.mesh_volume_mm3:.6f}mm^3",
+        file=file,
+    )
+    print(f"    wrote {res.output} ({res.seconds:.2f}s)", file=file)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,6 +160,24 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="path to a JSON file containing a list of cut operations",
     )
+    p.add_argument(
+        "--engine",
+        choices=["verbatim", "trueform"],
+        default="verbatim",
+        help="conversion engine: verbatim (default) or trueform (falls back to verbatim)",
+    )
+    p.add_argument(
+        "--unify-angle",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help="coplanar-merge angle in degrees (alias of --merge-coplanar)",
+    )
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress the human-readable stats block; print only the RESULT line",
+    )
     return p
 
 
@@ -188,20 +225,22 @@ def main(argv=None) -> int:
         print(f"batch done: {n_ok} ok, {n_fail} failed, {time.perf_counter() - t_batch:.2f}s total")
         return 1 if n_fail else 0
 
-    ops = _build_cut_ops(args)
     output_path = Path(args.output) if args.output else _default_output(input_path, output_dir)
-    stats = convert_file(
+    merge_angle = args.unify_angle if args.unify_angle is not None else args.merge_coplanar
+    res = convert_verbatim(
         input_path,
         output_path,
-        tolerance=args.tolerance,
-        merge_coplanar_angle=args.merge_coplanar,
-        merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
+        unify_angle=merge_angle,
         schema=args.format,
-        repair=args.repair,
-        cuts=ops,
     )
-    _log_stats(stats)
-    return 1 if stats.error else 0
+    if args.engine == "trueform":
+        res.warnings.append(
+            "trueform engine not implemented in this milestone -- falling back to verbatim"
+        )
+    if not args.quiet:
+        _log_verbatim(res)
+    emit_result(res)
+    return res.exit_code
 
 
 def _build_cut_ops(args):

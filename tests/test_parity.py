@@ -12,9 +12,10 @@ re-capturing the oracle is not evidence of anything.
 Two levels of check, per fixture and engine mode:
 
 1. **Invariant parity** -- the RESULT payload must agree field-for-field.
-2. **Geometric overlay** -- where a golden ``.step`` was small enough to keep, the two
-   solids must overlay to within ``OVERLAY_EPS`` by boolean volume ratio. This is the
-   "100% overlay" requirement, made measurable: ``V(A and B) / V(A or B) >= 1 - eps``.
+2. **Geometric overlay** -- where a golden ``.step`` was small enough to keep, our solid
+   must share the golden's volume as completely as the golden shares its own. This is the
+   "100% overlay" requirement, made measurable against the instrument's own noise floor
+   rather than against an ideal the reference itself cannot reach. See ``OVERLAY_SLACK``.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Fuse
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.IFSelect import IFSelect_RetDone
@@ -40,10 +41,32 @@ REFERENCE = ROOT / "tests" / "data" / "reference"
 # so the only legitimate difference is floating-point summation order.
 VOLUME_REL_TOL = 1e-9
 
-# Boolean-overlay agreement. 1 - Jaccard, where Jaccard = V(A and B) / V(A or B).
-# Deliberately not 0: BRepAlgoAPI's own intersection is approximate at the tolerance of
-# the input edges, and demanding exact 0 would gate on the kernel rather than on us.
-OVERLAY_EPS = 1e-9
+# Boolean-overlay agreement, SELF-CALIBRATED against the identity case.
+#
+# The first version of this gate was `V(A and B) / V(A or B) >= 1 - 1e-9`, and it was wrong
+# twice over. Measured on the golden solids compared with THEMSELVES -- the case that must
+# score a perfect 1.0 by construction:
+#
+#   cube                 fuse    1000.000000   common    1000.000000   V    1000.000000
+#   S09                  fuse   32496.957221   common   32496.957221   V   32496.999055
+#   nonprismatic-control fuse    2016.000069   common    2016.000069   V    2016.000069
+#   handle-lock          fuse       0.000000   common   16003.716329   V   16038.862197
+#
+# BRepAlgoAPI_Fuse of handle-lock's 194-face merged solid with itself yields an EMPTY
+# compound, so the old denominator was zero and the assertion was unreachable by any
+# correct implementation, the reference engine included. And S09's identity case already
+# deviates by 1.3e-6, three orders above the old epsilon.
+#
+# Both are properties of OCCT's boolean operators on coincident geometry, not of the
+# converter. So the gate now measures us against the instrument's own noise floor on the
+# same fixture: our overlay with the golden must be at least as good as the golden's
+# overlay with itself. That IS "100% overlay" stated honestly -- indistinguishable from the
+# reference under the same measurement. The union is gone; only the intersection is used.
+OVERLAY_SLACK = 1e-12
+
+# If the identity case cannot even reach this, the boolean operator is not a usable
+# instrument on that fixture and the test says so loudly rather than passing vacuously.
+IDENTITY_FLOOR = 0.99
 
 # Fields whose agreement IS the parity claim. Compared with ==, no slack.
 EXACT_FIELDS = (
@@ -108,16 +131,18 @@ def volume(shape) -> float:
 
 
 def overlay_ratio(a, b) -> float:
-    """Jaccard volume ratio of two solids: 1.0 means they occupy the same space."""
+    """Shared volume as a fraction of the larger solid: 1.0 means they occupy the same space.
+
+    Intersection only. The union is deliberately not used -- see OVERLAY_SLACK for the
+    measurement showing BRepAlgoAPI_Fuse degenerating to an empty compound on coincident
+    input.
+    """
     common = BRepAlgoAPI_Common(a, b)
     common.Build()
     assert common.IsDone(), "boolean common failed"
-    fuse = BRepAlgoAPI_Fuse(a, b)
-    fuse.Build()
-    assert fuse.IsDone(), "boolean fuse failed"
-    v_union = volume(fuse.Shape())
-    assert v_union > 0, "union has no volume"
-    return volume(common.Shape()) / v_union
+    denominator = max(volume(a), volume(b))
+    assert denominator > 0, "both solids have no volume"
+    return volume(common.Shape()) / denominator
 
 
 def run_mesh2step(stl: Path, out: Path, mode: str, unify_angle: float) -> tuple[dict, int]:
@@ -212,7 +237,15 @@ def test_geometric_overlay_is_total(ref_path, tmp_path):
         f"{fixture}/{mode}: volume {v_ours} vs reference {v_theirs}"
     )
 
+    # Calibrate on the identity case first: what does a PERFECT overlay score here?
+    identity = overlay_ratio(theirs, read_shape(golden))
+    assert identity >= IDENTITY_FLOOR, (
+        f"{fixture}/{mode}: the boolean operator scores only {identity:.12f} on the golden "
+        f"against itself, so it cannot measure overlay on this fixture at all"
+    )
+
     ratio = overlay_ratio(ours, theirs)
-    assert ratio >= 1.0 - OVERLAY_EPS, (
-        f"{fixture}/{mode}: overlay {ratio:.12f}, short of 1.0 by {1.0 - ratio:.3e}"
+    assert ratio >= identity - OVERLAY_SLACK, (
+        f"{fixture}/{mode}: overlay {ratio:.12f} against the reference, but the reference "
+        f"scores {identity:.12f} against itself -- short by {identity - ratio:.3e}"
     )

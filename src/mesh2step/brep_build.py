@@ -30,7 +30,7 @@ file is not implemented (would need a face-adjacency flood fill) -- see
 from dataclasses import dataclass, field
 
 import numpy as np
-from OCP.BRep import BRep_Builder
+from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
@@ -154,3 +154,26 @@ def _count_connected_shells(shell: TopoDS_Shell) -> int:
     exp = TopExp_Explorer(shell, TopAbs_FACE)
     has_any = exp.More()
     return 1 if has_any else 0
+
+
+def shell_to_solid(shell: TopoDS_Shell) -> TopoDS_Shape:
+    """Wrap a closed shell in an oriented solid; return the shell otherwise.
+
+    Open shells are never wrapped as fake solids: if the shell does not close or
+    does not produce a positive volume, it is returned unchanged for the caller to
+    count as an open shell."""
+    if not BRep_Tool.IsClosed_s(shell):
+        return shell
+    mk_solid = BRepBuilderAPI_MakeSolid(shell)
+    if not mk_solid.IsDone():
+        return shell
+    solid = mk_solid.Solid()
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid, props)
+    vol = props.Mass()
+    if vol < 0:
+        solid = TopoDS.Solid_s(solid.Reversed())
+        vol = -vol
+    if vol > 0:
+        return solid
+    return shell
