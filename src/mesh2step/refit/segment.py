@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 
 import numpy as np
@@ -131,10 +131,13 @@ class SegmentParams:
     (refit_segment.cpp deriveTols). Angles in degrees.
     """
     eps_mesh: float = 0.0
-    eps_plane: float = 0.0        # Options::smoothTolMM (0 = auto)
-    theta_plane_deg: float = 2.0  # Options::smoothAngleDeg
+    eps_plane: float = 0.0          # Options::smoothTolMM (0 = auto)
+    theta_plane_deg: float = 2.0    # Options::smoothAngleDeg
     theta_sharp_deg: float = 30.0
-    do_fillets: bool = True       # Options::smoothFillets
+    theta_cyl_lo_deg: float = 5.0   # Phase B seed band, INCLUSIVE
+    theta_cyl_hi_deg: float = 60.0  # Phase B seed band, INCLUSIVE (D5.4)
+    theta_bin_deg: float = 0.25     # nSides band-clustering floor (D2.2)
+    do_fillets: bool = True         # Options::smoothFillets
 
 
 @dataclass
@@ -317,10 +320,28 @@ def derive_tols(mv: MeshView, p: SegmentParams) -> DerivedTols:
     tol.eps_plane = p.eps_plane if p.eps_plane > 0.0 else max(tol.eps_mesh, mv.sew_tol, 0.02)
     tol.theta_plane = math.radians(p.theta_plane_deg)
     tol.theta_sharp = math.radians(p.theta_sharp_deg)
-    tol.theta_cyl_lo = math.radians(5.0)
-    tol.theta_cyl_hi = math.radians(60.0)
-    tol.theta_bin = math.radians(0.25)
+    tol.theta_cyl_lo = math.radians(p.theta_cyl_lo_deg)
+    tol.theta_cyl_hi = math.radians(p.theta_cyl_hi_deg)
+    tol.theta_bin = math.radians(p.theta_bin_deg)
     return tol
+
+
+def adapt_coarse_segment_params(mv: MeshView, p: SegmentParams) -> SegmentParams:
+    """refit_segment.cpp adaptCoarseSegmentParams, applied BEFORE derive_tols.
+
+    In the coarse band the tessellation no longer resolves the difference between a
+    gently curved band and a plane at a 2-degree gate, so the gates widen to where
+    the signal actually is: plane growth to 15 degrees, the cylinder seed band's
+    upper edge to 70. This is not tuning -- it is the regime the mesh is in. Without
+    it every coarse-band measurement is taken under the wrong parameters.
+    """
+    if not coarse_fusion_band(mv):
+        return p
+    return replace(
+        p,
+        theta_plane_deg=max(p.theta_plane_deg, 15.0),
+        theta_cyl_hi_deg=max(p.theta_cyl_hi_deg, 70.0),
+    )
 
 
 def derived_eps_plane(mv: MeshView) -> float:
@@ -2953,6 +2974,7 @@ def segment(mv: MeshView, params: SegmentParams | None = None) -> RegionSet | No
         params = SegmentParams()
     out = RegionSet()
     try:
+        params = adapt_coarse_segment_params(mv, params)
         tol = derive_tols(mv, params)
         work = _SegmentWork()
         # A1 charts
