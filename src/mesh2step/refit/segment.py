@@ -17,6 +17,11 @@ from enum import IntEnum
 import numpy as np
 from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
 
+from .lawband import (
+    law_bands_mergeable,
+    law_calibrate,
+    law_chain_accept,
+)
 from .mesh_view import (
     MeshView,
     build_edge_adj,
@@ -46,6 +51,11 @@ K_RING_RESIDUAL_FRAC = 0.25
 K_TINY = 1e-30
 # refit_math.cpp kPrattNewtonCap -- Chernov reports 4-6 iterations typical.
 K_PRATT_NEWTON_CAP = 20
+# refit_grow.cpp:1153-1155. Normal-parallelism gates for law strips: cos(2deg) for
+# the chart pass, cos(1deg) for the tighter leftover pass.
+K_LAW_STRIP_NORMAL_COS = 0.9993908270190957
+K_LAW_STRIP_NORMAL_COS_TIGHT = 0.9998476951563913
+K_LAW_R_REL_GROW = 5e-4
 
 
 class SurfType(IntEnum):
@@ -183,6 +193,7 @@ class Region:
     built_as: int = BuiltAs.NOT_BUILT
     fillet_nbr_a: int = -1
     fillet_nbr_b: int = -1
+    law_band: bool = False   # claimed by stage L rather than grown by B1
 
 
 @dataclass
@@ -288,6 +299,12 @@ class _GrowCand:
 
 def coarse_fusion_band(mv: MeshView) -> bool:
     return 500 <= mv.n_tri <= 1200
+
+
+def law_band_applicable(mv: MeshView) -> bool:
+    """refit_internal.hpp archChainBand. Overlaps the coarse band on [500, 1200];
+    the 8000 ceiling excludes Body11 (15300 triangles) and its 12060-triangle body."""
+    return 500 <= mv.n_tri <= 8000
 
 
 def derive_tols(mv: MeshView, p: SegmentParams) -> DerivedTols:
@@ -1714,6 +1731,283 @@ def _evaluate_commit(
     return ev
 
 
+@dataclass
+class _LawStrip:
+    tris: list = field(default_factory=list)
+    min_tri: int = 0
+    chart_id: int = -1
+
+
+def _cluster_law_strips(mv, ids, chart_id, out, n_cos=K_LAW_STRIP_NORMAL_COS, seed_only=False):
+    """Flood adjacent triangles whose normals stay parallel: one strip per generator
+    band (refit_grow.cpp:1166). `seed_only` gates against the seed normal instead of
+    the running mean, which keeps the leftover pass from drifting around a curve."""
+    if not ids:
+        return
+    in_patch = [False] * mv.n_tri
+    for t in ids:
+        if 0 <= t < mv.n_tri:
+            in_patch[t] = True
+    used = [False] * mv.n_tri
+    adj = build_edge_adj(mv)
+    for seed in ids:
+        if seed < 0 or seed >= mv.n_tri or used[seed]:
+            continue
+        n_seed = tri_normal(mv, seed)
+        n_ref = np.array(n_seed, dtype=float)
+        used[seed] = True
+        comp = [seed]
+        stack = [seed]
+        while stack:
+            t = stack.pop()
+            for s in range(3):
+                e = int(mv.tri_edges[t, s])
+                t0, t1 = adj[e]
+                u = t1 if t0 == t else t0
+                if u < 0 or not in_patch[u] or used[u]:
+                    continue
+                n_u = tri_normal(mv, u)
+                n_gate = n_seed if seed_only else n_ref
+                if abs(float(np.dot(n_gate, n_u))) < n_cos:
+                    continue
+                used[u] = True
+                comp.append(u)
+                stack.append(u)
+                if not seed_only:
+                    n_ref = n_ref + n_u
+                    nm = float(np.linalg.norm(n_ref))
+                    if nm > 1e-15:
+                        n_ref = n_ref / nm
+        comp.sort()
+        out.append(_LawStrip(tris=comp, min_tri=comp[0], chart_id=chart_id))
+
+
+def _bands_share_any_edge(mv: MeshView, a, b, adj) -> bool:
+    in_b = [False] * mv.n_tri
+    for t in b.tris:
+        if 0 <= t < mv.n_tri:
+            in_b[t] = True
+    for t in a.tris:
+        if t < 0 or t >= mv.n_tri:
+            continue
+        for s in range(3):
+            e = int(mv.tri_edges[t, s])
+            t0, t1 = adj[e]
+            u = t1 if t0 == t else t0
+            if u >= 0 and in_b[u]:
+                return True
+    return False
+
+
+def _peel_law_band_from_provisionals(mv: MeshView, claimed: list, work: _SegmentWork) -> None:
+    """Remove claimed triangles from the A2 provisionals and re-fit what is left.
+
+    This is what stops a claimed arc from also being committed as a plane: the
+    provisional that used to own those facets shrinks, and if nothing is left it is
+    marked consumed.
+    """
+    taken = [False] * mv.n_tri
+    for t in claimed:
+        if 0 <= t < mv.n_tri:
+            taken[t] = True
+    for p in work.provisionals:
+        if not p.tris:
+            continue
+        keep = [t for t in p.tris if not (0 <= t < mv.n_tri and taken[t])]
+        if len(keep) == len(p.tris):
+            continue
+        p.tris = keep
+        if not p.tris:
+            p.area = 0.0
+            p.claim = ProvClaim.CONSUMED_CYLINDER
+            continue
+        fit = pca_plane(mv, p.tris)
+        if fit is not None:
+            p.plane = fit
+        p.area = sum(tri_area(mv, t) for t in p.tris)
+        compute_prov_deviations(mv, p)
+
+
+def _fill_law_band_region(mv: MeshView, tol: DerivedTols, band) -> Region:
+    axis = band.axis_dir
+    center = band.axis_loc
+    ev = _CommitEval()
+    ev.fail_gate = Gate.PASS
+    ev.eberly_ok = True
+    ev.center = center
+    ev.radius = band.radius
+    ev.d2 = _compute_d2(mv, band.tris, axis, center, band.radius, tol)
+    if band.closed360:
+        ev.d2.closed360 = True
+        ev.d2.u_min = 0.0
+        ev.d2.u_max = 2.0 * K_PI
+        ev.d2.span = 2.0 * K_PI
+    reg = _fill_cylinder_region(mv, ev, axis, band.tris)
+    reg.law_band = True
+    reg.radius = band.radius
+    reg.closed360 = band.closed360 or reg.closed360
+    return reg
+
+
+def _claim_law_bands_l(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
+    """Stage L (refit_grow.cpp:2057). Runs BEFORE B1 and A3.
+
+    Arc bands must be claimed before plane growing gets to commit them, because a
+    coarsely tessellated arc looks exactly like a fan of near-coplanar facets and
+    plane growth will take it.
+    """
+    if not law_band_applicable(mv) or mv.n_tri == 0:
+        return True
+
+    n_charts = work.n_charts if work.n_charts > 0 else 1
+    per_chart = [[] for _ in range(n_charts)]
+    for t in range(mv.n_tri):
+        c = work.tri_chart[t] if t < len(work.tri_chart) else 0
+        if c < 0 or c >= n_charts:
+            c = 0
+        per_chart[c].append(t)
+
+    strips: list = []
+    for c in range(n_charts):
+        if per_chart[c]:
+            _cluster_law_strips(mv, per_chart[c], c, strips)
+
+    adj_e = build_edge_adj(mv)
+    n_s = len(strips)
+    adj = [set() for _ in range(n_s)]
+    tri_strip = [-1] * mv.n_tri
+    for i, st in enumerate(strips):
+        for t in st.tris:
+            if 0 <= t < mv.n_tri:
+                tri_strip[t] = i
+    for e in range(mv.n_edge):
+        t0, t1 = adj_e[e]
+        if t0 < 0 or t1 < 0:
+            continue
+        a, b = tri_strip[t0], tri_strip[t1]
+        if a < 0 or b < 0 or a == b:
+            continue
+        if strips[a].chart_id != strips[b].chart_id:
+            continue
+        adj[a].add(b)
+        adj[b].add(a)
+    adj = [sorted(s) for s in adj]
+
+    def union_strip_tris(members):
+        ts = set()
+        for m in members:
+            ts.update(strips[m].tris)
+        return sorted(ts)
+
+    # A single facet cannot recover an axis (its shared edge is the diagonal), so
+    # seeds are connected TRIPLES, which carry enough generators.
+    triples = set()
+    for a in range(n_s):
+        for b in adj[a]:
+            for c in adj[b]:
+                if c == a:
+                    continue
+                t = tuple(sorted((a, b, c)))
+                if t[0] != t[1] and t[1] != t[2]:
+                    triples.add(t)
+        for j in adj[a]:
+            if j <= a:
+                continue
+            for k in adj[a]:
+                if k > j:
+                    triples.add((a, j, k))
+
+    grown = []
+    for trip in sorted(triples):
+        members = list(trip)
+        seed_b = law_chain_accept(mv, union_strip_tris(members), tol.eps_mesh)
+        if seed_b is None:
+            continue
+        in_set = set(members)
+        changed = True
+        while changed:
+            changed = False
+            cand = sorted(
+                {nb for m in members for nb in adj[m] if nb not in in_set},
+                key=lambda x: strips[x].min_tri,
+            )
+            for nb in cand:
+                tb = law_chain_accept(mv, union_strip_tris([*members, nb]), tol.eps_mesh)
+                if tb is None:
+                    continue
+                members.append(nb)
+                in_set.add(nb)
+                seed_b = tb
+                changed = True
+                break
+        grown.append(seed_b)
+
+    # A2 provisionals that already isolate a band on their own.
+    for p in work.provisionals:
+        if p.claim != ProvClaim.UNCLAIMED or len(p.tris) < 3:
+            continue
+        pb = law_chain_accept(mv, p.tris, tol.eps_mesh)
+        if pb is not None:
+            grown.append(pb)
+
+    order = sorted(
+        range(len(grown)),
+        key=lambda i: (-grown[i].n, -len(grown[i].tris), grown[i].tris[0] if grown[i].tris else 0),
+    )
+    taken = [False] * mv.n_tri
+    accepted = []
+    for oi in order:
+        b = grown[oi]
+        if any(0 <= t < mv.n_tri and taken[t] for t in b.tris):
+            continue
+        accepted.append(b)
+        for t in b.tris:
+            if 0 <= t < mv.n_tri:
+                taken[t] = True
+
+    # Merge neighbouring bands that are coaxial, same-radius and still equal-theta.
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(accepted)):
+            for j in range(i + 1, len(accepted)):
+                if not _bands_share_any_edge(mv, accepted[i], accepted[j], adj_e):
+                    continue
+                if not law_bands_mergeable(accepted[i], accepted[j], mv, tol.eps_mesh):
+                    continue
+                mt = sorted(set(accepted[i].tris) | set(accepted[j].tris))
+                nb = law_chain_accept(mv, mt, tol.eps_mesh)
+                if nb is None:
+                    continue
+                accepted[i] = nb
+                accepted.pop(j)
+                merged = True
+                break
+            if merged:
+                break
+
+    li = law_calibrate(accepted)
+    if li.empty:
+        return True
+    # A single-preset lock needs several d-limited chains; fewer than five means a
+    # foreign or partial component, and a d-window wider than 5% means the component
+    # mixes exports. Either way the stage declines wholesale rather than guessing.
+    if li.n_d_limited < 5:
+        return True
+    if li.d_hi > li.d_lo:
+        mid = 0.5 * (li.d_lo + li.d_hi)
+        if mid > 0.0 and (li.d_hi - li.d_lo) / mid >= 0.05:
+            return True
+
+    for b in accepted:
+        if len(b.tris) < 3 or not b.radius > 0.0 or b.n < 2:
+            continue
+        work.accepted.append(_fill_law_band_region(mv, tol, b))
+        _peel_law_band_from_provisionals(mv, b.tris, work)
+    work.accepted.sort(key=lambda r: r.tris[0] if r.tris else INT_MAX)
+    return True
+
+
 def _claim_cylinders_b1(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
     for p in work.provisionals:
         if not p.tris:
@@ -2659,9 +2953,13 @@ def segment(mv: MeshView, params: SegmentParams | None = None) -> RegionSet | No
         # A2 provisional plane growth (running PCA per chart; TOTAL partition)
         if not _grow_provisional_a2(mv, tol, work):
             return None
+        # L law-band claim (M3b). refit_segment.cpp:47 runs this BEFORE B1 and A3:
+        # a coarsely tessellated arc reads as a fan of near-coplanar facets, so
+        # plane growing will commit it unless the law claims it first.
+        if not _claim_law_bands_l(mv, tol, work):
+            return None
         # B1 cylinder claim (M3a): seeds provisional pairs, grows members, runs the
-        # G1-G5 gate chain and fills the reject census. Cylinder face building is
-        # M3b and not performed here.
+        # G1-G5 gate chain and fills the reject census.
         if not _claim_cylinders_b1(mv, tol, work):
             return None
         # A3 plane commit
