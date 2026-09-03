@@ -1,14 +1,67 @@
 # Port map — the model of stl2step we are reproducing
 
 Working document for the v2 parity port. **Read this before touching the refit code.**
-It exists because the port was for a long time driven by symptoms: measure a wrong
-counter, instrument the code, discover a rule that was already written down in the
-reference. Everything below was already knowable from `refs/stl2step/` without running
-anything.
 
 Sources: `refs/stl2step/docs/METHOD.md`, `AGENTS.md`, the 18 `FINDINGS-*.md` lane
 reports, `refit_segment.cpp` (the 85-line spine), and diagnostics run against the
 reference binary on 2026-09-03.
+
+---
+
+## 0. The synthesis — five arms, one claim
+
+Sections 1-8 are particulars. They are consequences of this, and if you find yourself
+memorising them you are reading the wrong section. **The claim:**
+
+> A CAD-exported mesh is not data *about* a shape. It is the output of a deterministic
+> program that *had* the shape. The task is not reconstruction, it is **inversion** —
+> recovering that program's inputs.
+
+Everything else follows.
+
+**A. Invert, do not fit.** Parameters of program output are exactly recoverable, so
+`R = w / (2 sin(θ/2))` is an inverse, not a regression. *The law is simultaneously the
+recovery and the validity test:* a chain is accepted because it obeys an equal-step law,
+not because a residual is small. Hence Tier 1 is parameter-free — there is no tolerance
+to tune, and reaching for one is the wrong instinct.
+
+**B. The exporter's settings are global to the file, not per feature.** So calibration
+intersects across bands: one `d`, one `α` for the whole export. A component whose bands
+cannot share one setting is a *mixed export*, and the engine declines wholesale rather
+than fitting each band separately. Global consistency is the evidence; local fit is not.
+This is why `lawCalibrate` is a maximum-interval-stabbing and not an intersection.
+
+**C. Grouping dominates fitting, so claim order is confidence order.** The law applies to
+a chain, not a triangle; wrong grouping makes perfect arithmetic useless. The two failure
+modes are *absorption* (a shallow arc swallowed by a plane) and *chimeras* (two
+cylinders merged and fitted to a radius belonging to neither). Hence L before B1 before
+A3 — the most certain claimant goes first, because plane growth is greedy and destroys
+arcs irreversibly. Stage order is forced, not conventional.
+
+**D. Signal has a regime; the bands are its domain of validity.** Inversion recovers only
+what the tessellation still encodes — a 10° arc across two facets carries almost nothing.
+So `coarseFusionBand` (500-1200) and `archChainBand` (500-8000) are not tuning knobs,
+they mark where the signal exists. This arm *predicts* `adaptCoarseSegmentParams`: in a
+coarse regime the angular gates must widen or grouping fails. It also makes the
+reference's own gaps (Body11: 127 of 583) an honest ceiling rather than a defect.
+
+**E. Recognition and construction are different problems, with a firewall between them.**
+Correct surfaces must still become a valid closed solid, and OCCT is unforgiving; nearly
+all the reference's engineering pain lives here. The firewall has two rules — when
+construction fails, revert **wholesale** rather than ship a mixed shell (R2); and never
+trade volume correctness for face count (FINDINGS-VOLUMEFIX). Its deepest consequence:
+**when the problem class permits, sidestep construction entirely.** The prismatic route
+is not an alternative code path, it is the engine declining to solve the hard
+construction problem — fit arcs in 2D where closure is checkable, extrude, and curved
+walls are analytic *by construction*.
+
+**Corollary of D and E:** the observable counters are *regime-dependent reports*. The
+same field name has three producers depending on which route ran. A counter that will
+not move under any local change is a routing error, not a tuning problem.
+
+**What this says about our port:** it has been implementing **C** and the hard half of
+**E**, in the wrong order, without **D**'s parameters, for a fixture whose answer is
+**E**'s sidestep.
 
 ---
 
@@ -95,16 +148,45 @@ when a region will not build.
 `usedRefit` stays false and **every `smooth*` counter contributes zero**
 (`stl2step.cpp:821`).
 
+**And a fourth outcome, which is easy to mistake for R.** `buildFaces` can succeed while
+the explode ladder has turned *every* region into its own triangles. Then `usedRefit` is
+true, so the segmentation stats ARE reported, but the built census
+(`stl2step.cpp:955`) sees no cylindrical face and counts the component as reverted:
+
+| outcome | stats reported | built census | signature |
+|---|---|---|---|
+| P prism | from `countSurf` on the solid | built | `facesBeforeUnify` small |
+| G built | from the D census | built | `smoothBuilt* > 0` |
+| **G exploded** | **yes** | **reverted** | `smoothPlanes > 0` **and** `smoothBuilt* == 0`, `facesBeforeUnify == triangles` |
+| R2 revert | none (all zero) | reverted | `smoothPlanes == 0` |
+
+Distinguishing G-exploded from R2 is what `smoothPlanes` tells you, and it decides
+whether a fixture needs analytic construction at all.
+
 ### Measured route per corpus fixture (2026-09-03, reference binary)
 
-| fixture | tris | prism `ok` | route | notes |
+| fixture | tris | prism `ok` | route | evidence |
 |---|---:|---|---|---|
-| cube | 12 | 0 (`failedCond=1`) | G | 6 planes, trivial |
-| S09 | 54 | 0, both components | G | 28 planes, 14 facet faces, 8 cylinder seeds rejected |
-| nonprismatic-control | 96 | 0 (`failedCond=3`, `nOblique=1`) | **R** | segmentation finds 2 planes + 2 cylinders, build reverts |
+| cube | 12 | 0 (`failedCond=1`) | G built | 6 planes, trivial |
+| S09 | 54 | 0, both components | G built | 28 planes, 14 facet faces, 8 cylinder seeds rejected |
+| nonprismatic-control | 96 | 0 (`failedCond=3`, `nOblique=1`) | **R2** | `smoothPlanes 0`, reverted 1 |
 | handle-lock | 908 | **1** | **P** | `nCyl=15 nPlane=13 nCap=3 nLat=10` |
-| Body11 | 15300 | — | G | reference itself builds only 127 of 583 cylinders |
-| Body28 | — | — | G | |
+| Body11 | 15300 | — | **G exploded** | planes 1344, cyl 419, facetFaces 1513, **built 0**, reverted 2, `facesBeforeUnify == 15300` |
+| Body28 | 14126 | — | **G exploded** | planes 499, cyl 340, facetFaces 4613, **built 0**, reverted 1, `facesBeforeUnify == 14126` |
+
+**The consequence for this port, and it is large.** No fixture in the corpus needs
+plane|cylinder or cylinder|cylinder intersection curves, partial-cylinder faces, pcurves
+or seams. Two fixtures are planes-only, one is prismatic, and the remaining three end
+faceted — one by R2 revert and two by exploding. Everything M3b's cylinder-face work and
+all of M3c were built for is **off the parity path**. What parity needs instead is
+segmentation that produces the right *counts* (1344 planes / 419 cylinders on Body11), a
+build that explodes correctly, and route P for handle-lock.
+
+That is also the road the reference itself abandoned: lanes A, C, E, F, G, CYLEDGES,
+PARTIALFACES and RIDS drove route G at handle-lock to 16 built cylinders with a 121%
+volume blowout, VOLUMEFIX retreated to one cylinder to keep the volume honest, and only
+then was route P written. The FINDINGS files are not documentation of how the code works
+— they are a record of which paths lead nowhere.
 
 **Only handle-lock takes route P.** Its golden decodes directly from the prism build:
 
@@ -121,6 +203,55 @@ So for a prismatic component the `smooth*` counters are **counted off the rebuil
 solid** (`refit_prism_build.cpp:1137,1167` `countSurf` -> `rs.stats`), *not* off
 segmentation. No amount of fixing general-path face building can make our
 segmentation-derived counters reach them.
+
+## 4b. Route P in full — why it is the easy route, not the exotic one
+
+Read whole: `refit_prism.cpp` (377), `refit_prism_build.cpp` (1188), `refit_profile.cpp`
+(1290). It is arm **E**'s sidestep, and every part of it is a consequence of the arms.
+
+**Selection is a cheap predicate over the RegionSet, not geometry.** `detectPrismatic`
+(RULE 5.1) is six conditions, all with self-computed tolerances (RULE 4.2a — "no degree
+constants"): (1) at least two cylinders; (2) common axis, max pairwise `sin < tauAx`;
+(3) no oblique planes — each plane is a cap (`|n·â| > 1-tauAx`) or a lateral
+(`|n·â| < tauAx`); (4) at least two distinct cap levels, clustered at `tauLvl`; (5) every
+cylinder spans a contiguous run of levels; (6) signed cap-area closure,
+`|Σ area·(n·â)| < tauFit · Σ perimeter`. `tauSurf = max(5e-5, 4·weldTol, 1e-6·diag)`,
+`tauAx = max(1e-6, 2·tauSurf/hMin)`. Our fixtures fail at 1 (cube, S09: no cylinders) and
+3 (nonprismatic-control: `nOblique=1`); handle-lock passes all six.
+
+**Then it changes the problem's domain.** Slice the mesh at each cap level, chain the
+2D segments into closed loops, and fit *there*. Two dimensions is where closure is
+checkable — signed area, exact loop closure, area reconciled against the measured cap.
+
+**The alphabet is closed: line or arc, nothing else.** A profile that cannot be said in
+two primitives is not said at all. This is why route P cannot fail the way route G
+fails: there is no seam, no pcurve, no surface-surface intersection to miss.
+
+**Arc radii are not fitted from the slice.** The slice points lie on mesh chords, not on
+the circle. They are used only to *associate* a run of the loop with a recognised
+cylinder region (`cylAssocTol = max(tauFit, 4·chordSagitta, 4·maxVertexDev)`); the radius
+then comes from that region's law-recovered value. Arm A: measure by inversion, never by
+re-fitting a chord chain.
+
+**Ambiguity resolves to the safe primitive.** RULE 5.3a: if the candidate arc's sagitta
+`R(1-cos(φ/2))` is below `tauFit`, it is indistinguishable from a line at mesh
+resolution, so emit a **line** and flag `declinedAmbiguous`. Never guess a radius.
+
+**Construction is then trivial and total**: wire per loop, planar face with holes,
+`BRepPrimAPI_MakePrism` per slab, deterministic `Fuse` with `GlueShift`, one
+`UnifySameDomain`. Curved walls exist as cylinders by construction.
+
+**Acceptance uses the law a second time.** `tryStageP` accepts only if the solid is
+closed, BRepCheck-valid, and the volume is off by *exactly* the predicted arc-versus-chord
+defect: `vRef = meshVol - Σ(R²/2)(θ - sin θ)·h`, then `|vol - vRef| ≤ budget` **and**
+`|vol - meshVol| ≤ 1.05·dAbs`. It never asks "is the volume close"; it asks "is it wrong
+by the amount the law says it must be". Failing that, `prismNoteStageP(false, true, ...)`
+and the component falls back — arm E's firewall.
+
+**And only on acceptance** does it write `rs.stats.planes = nPlanes;
+rs.stats.cylinders = nCyls` from `countSurf` on the built solid, zeroing the facet
+counters. That single assignment is why handle-lock's golden is unreachable from
+segmentation.
 
 ## 5. Cross-cutting rules that bite
 
@@ -170,6 +301,32 @@ Targets to not chase past their real ceiling:
 
 Ours: `segment.py` 2981, `build.py` 2161, `lawband.py` 738, `mesh_view.py` 149,
 `stats.py` 34 — about 6.9k Python against 17.9k C++.
+
+## 7b. The work order, derived from §0
+
+Not "what failed last", but what the arms say must be true first. Each item names the arm
+it serves; if an item cannot be justified by an arm, it is not on the list.
+
+1. **`adaptCoarseSegmentParams`** (D). Nothing in the coarse regime can be judged while
+   the port grows planes at 2° where the reference uses 15°. Every measurement taken on
+   handle-lock so far was taken in the wrong regime, so this precedes all diagnosis of
+   it. ~10 lines.
+2. **`peelLargeArcStripsA2b`** (C). Absorption is the named failure mode and this is the
+   reference's answer to it — called from inside `commitPlanesA3`, not before B1. Missing
+   entirely from our port.
+3. **Route P: `refit_prism.cpp` + `refit_prism_build.cpp` + `refit_profile.cpp`** (E's
+   sidestep). What handle-lock's golden actually measures. 2855 lines that *remove*
+   difficulty: a six-condition predicate, 2D fitting with a two-primitive alphabet, and
+   prism+fuse construction. No pcurves, no seams, no surface intersections.
+4. **Segmentation accuracy at scale** (C, D) — Body11 and Body28 need the right region
+   *counts*, not analytic faces, since both end faceted. This is a recognition problem,
+   not a construction one.
+5. **`refit_fillet.cpp`** (C), then **`dxf_export.cpp`** (a report on route P's profiles,
+   so it follows 3).
+
+**Route G construction — the hard half of E — is not on this list.** No corpus fixture
+reaches it. It was items 1 through 3 of the old plan, and it was the reference's own
+abandoned road.
 
 ## 8. Method rules, learned the expensive way
 
