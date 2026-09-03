@@ -36,18 +36,26 @@ close `S09.stl` in trueform mode. Four things must hold:
    `partialFaceTolCap` are part of this. Seamed 360-degree cylinders and the two-halves
    fallback are in `refit_build.cpp`.
 
-4. **The revert path must reproduce the verbatim build exactly.** Measured 2026-09-03, this
-   is currently WRONG and it is in scope:
+4. ~~**The revert path must reproduce the verbatim build exactly.**~~ **WITHDRAWN
+   2026-09-03 — this item was my error and is NOT in scope.** It read:
 
    | fixture / mode | facesBeforeUnify | facesAfterUnify | stepVolumeMM3 |
    |---|---|---|---|
-   | handle-lock / verbatim (correct, matches golden) | 908 | **194** | 16038.862197 |
-   | handle-lock / trueform, reverted (ours today) | 908 | **180** | 16042.022724 |
+   | handle-lock / verbatim | 908 | **194** | 16038.862197 |
+   | handle-lock / trueform, reverted (ours) | 908 | **180** | 16042.022724 |
 
-   A component that reverts must yield the byte-equivalent faceted solid the verbatim engine
-   produces — same face count after unify, same volume. Today it does not, so a revert
-   silently changes the geometry. Find out why the faceted faces built through
-   `refit/build.py`'s explode path differ from `brep_build.py`'s and make them agree.
+   I read the 194-vs-180 gap as a defect in our revert path. It is not. `stl2step.cpp:914-931`
+   runs a **second** coplanar merge — "smooth-flat", at a mesh-jitter-derived angle — guarded
+   by `smooth && !forceSew && nTri >= 500 && nTri <= 1200`, and its own comment says it exists
+   for *"faceted islands (revert fallback and analytic+facet mixes)"*. handle-lock has 908
+   triangles, so the reference would run it too on a reverted component. The 194 figure comes
+   from **verbatim** mode, where the `smooth &&` guard keeps the pass off entirely.
+
+   So the two numbers were never comparable, and a reverted component is deliberately *not*
+   byte-equivalent to verbatim. There is no bug here to fix. `convert.py:493-506` already
+   ports this pass faithfully; the only fidelity gaps left are that ours omits `weldTol` from
+   `epsMesh` and omits the `!forceSew` guard, both of which are M4 housekeeping, not this
+   milestone.
 
 **Ground truth.** `handle-lock.trueform` golden, every field gated:
 
@@ -156,9 +164,10 @@ Iterate until termination criteria hold, ceiling **6** iterations:
 3. **PARSE:** consume the structured payload — failing assertions, stack traces, ruff records.
 4. **PATCH:** derive root cause from the parsed diagnostics and refine the edit.
 
-Suggested order of attack: the faceted-revert fix FIRST, because it is a bounded bug and it
-makes every later failure readable; then the G1-G4 gates, which close S09 on their own and
-cost nothing in geometry; then law-band recognition and the cylindrical face build together,
+Suggested order of attack: the G1-G4 gates FIRST, since they close S09 on their own and cost
+nothing in geometry — that slice is now split out as
+`.claude/loopspec/m3a-cylinder-recognition.spec.md`; then law-band recognition and the
+cylindrical face build together,
 checked against `STL2STEP_SEGMENT_SUMMARY` region by region before you look at the assertion.
 
 On ceiling without convergence: stop, do **not** report success, return the last diff plus the
