@@ -44,6 +44,8 @@ K_G5_NBANDS_MIN = 4
 # refit_grow.cpp kRingResidualFrac (D1.3-A3, file-local B1 residual)
 K_RING_RESIDUAL_FRAC = 0.25
 K_TINY = 1e-30
+# refit_math.cpp kPrattNewtonCap -- Chernov reports 4-6 iterations typical.
+K_PRATT_NEWTON_CAP = 20
 
 
 class SurfType(IntEnum):
@@ -1210,12 +1212,417 @@ def _members_edge_connected(adj: list, members: list) -> bool:
     return n_seen == len(members)
 
 
+def _pratt_fit2(xs, ys):
+    """Pratt algebraic circle fit (refit_math.cpp prattFit2).
+
+    Kasa biases the radius low on a short arc, which is exactly the case here: a
+    tessellated band covering a fraction of a turn. Pratt's constraint removes that
+    bias, so the reference uses it for the ring re-fit while keeping Kasa for the
+    bulk Eberly solve.
+    """
+    n = len(xs)
+    if n < 3:
+        return None
+    inv = 1.0 / n
+    mx = sum(xs) * inv
+    my = sum(ys) * inv
+    mxx = myy = mxy = mxz = myz = mzz = 0.0
+    for x, y in zip(xs, ys, strict=True):
+        xi = x - mx
+        yi = y - my
+        zi = xi * xi + yi * yi
+        mxx += xi * xi
+        myy += yi * yi
+        mxy += xi * yi
+        mxz += xi * zi
+        myz += yi * zi
+        mzz += zi * zi
+    mxx *= inv
+    myy *= inv
+    mxy *= inv
+    mxz *= inv
+    myz *= inv
+    mzz *= inv
+
+    mz = mxx + myy
+    cov_xy = mxx * myy - mxy * mxy
+    mxz2 = mxz * mxz
+    myz2 = myz * myz
+    a2 = 4.0 * cov_xy - 3.0 * mz * mz - mzz
+    a1 = mzz * mz + 4.0 * cov_xy * mz - mxz2 - myz2 - mz * mz * mz
+    a0 = mxz2 * myy + myz2 * mxx - mzz * cov_xy - 2.0 * mxz * myz * mxy + mz * mz * cov_xy
+    a22 = a2 + a2
+
+    xnew = 0.0
+    ynew = 1.0e20
+    for _ in range(K_PRATT_NEWTON_CAP):
+        yold = ynew
+        ynew = a0 + xnew * (a1 + xnew * (a2 + 4.0 * xnew * xnew))
+        if not math.isfinite(ynew) or abs(ynew) > abs(yold):
+            xnew = 0.0
+            break
+        dy = a1 + xnew * (a22 + 16.0 * xnew * xnew)
+        if dy == 0.0 or not math.isfinite(dy):
+            xnew = 0.0
+            break
+        xold = xnew
+        xnew = xold - ynew / dy
+        if not math.isfinite(xnew) or xnew < 0.0:
+            xnew = 0.0
+            break
+        if abs(xnew) > 1e-15 and abs((xnew - xold) / xnew) < 1e-12:
+            break
+        if abs(xnew - xold) < 1e-15:
+            break
+
+    det = xnew * xnew - xnew * mz + cov_xy
+    if not math.isfinite(det) or abs(det) <= 1e-16 * (1.0 + abs(mz) + abs(cov_xy)):
+        return None
+    xc = (mxz * (myy - xnew) - myz * mxy) / det / 2.0
+    yc = (myz * (mxx - xnew) - mxz * mxy) / det / 2.0
+    r2 = xc * xc + yc * yc + mz + 2.0 * xnew
+    if not (math.isfinite(xc) and math.isfinite(yc) and math.isfinite(r2)) or r2 <= 0.0:
+        return None
+    cx = mx + xc
+    cy = my + yc
+    radius = math.sqrt(r2)
+    if not (math.isfinite(cx) and math.isfinite(cy) and math.isfinite(radius)):
+        return None
+    if not (radius > 0.0):
+        return None
+    return cx, cy, radius
+
+
+def _radius_from_chord_length(chord_len: float, n_sides: int) -> float:
+    if n_sides < 3 or not (chord_len > 0.0) or not math.isfinite(chord_len):
+        return 0.0
+    s = math.sin(K_PI / n_sides)
+    if s <= 1e-15:
+        return 0.0
+    r = chord_len / (2.0 * s)
+    return r if (math.isfinite(r) and r > 0.0) else 0.0
+
+
+def _circumradius_from_inscribed(r_inscribed: float, n_sides: int) -> float:
+    if n_sides < 3 or not (r_inscribed > 0.0) or not math.isfinite(r_inscribed):
+        return 0.0
+    c = math.cos(K_PI / n_sides)
+    if c <= 1e-15:
+        return 0.0
+    r = r_inscribed / c
+    return r if (math.isfinite(r) and r > 0.0) else 0.0
+
+
+def _shared_edge_pairs(mv: MeshView, ids: list):
+    """Yield (t, u, edge_id) for every pair of triangles in `ids` sharing an edge.
+
+    The reference compares corner pairs in an O(n^2 * 9) scan; sharing an undirected
+    edge is the same predicate as sharing an entry in `tri_edges`, since comp_edges
+    is keyed on (vLo, vHi). Same answer, without the quadratic corner comparison.
+    """
+    owner: dict[int, list] = {}
+    for t in ids:
+        for k in range(3):
+            owner.setdefault(int(mv.tri_edges[t, k]), []).append(t)
+    for e, ts in owner.items():
+        for i in range(len(ts)):
+            for j in range(i + 1, len(ts)):
+                yield ts[i], ts[j], e
+
+
+def _estimate_full_circle_sides(mv: MeshView, tris: list) -> int:
+    """Turns per full circle implied by the median dihedral angle across the patch
+    (refit_math.cpp estimateFullCircleSides). A tessellated cylinder bends by a
+    constant angle per facet, so 2*pi over that angle recovers the generating
+    polygon even when only a few degrees of arc are present."""
+    ids = sorted(set(tris))
+    if not ids:
+        return 0
+    phis = []
+    for t, u, _e in _shared_edge_pairs(mv, ids):
+        n0 = tri_normal(mv, t)
+        n1 = tri_normal(mv, u)
+        m0 = float(np.linalg.norm(n0))
+        m1 = float(np.linalg.norm(n1))
+        if m0 < 1e-15 or m1 < 1e-15:
+            continue
+        dot = float(np.dot(n0 / m0, n1 / m1))
+        phi = math.acos(max(-1.0, min(1.0, dot)))
+        if 0.05 < phi < K_PI - 0.05:
+            phis.append(phi)
+    if not phis:
+        return 0
+    med = _median_of(phis)
+    if med < 1e-6:
+        return 0
+    return max(3, _llround(2.0 * K_PI / med))
+
+
+def _ring_chord_radii(mv, ids, c0, aw, u, v, r_lo, r_hi, only_boundary=False):
+    """Radii implied by facet chords: R = chord / (2 sin(dtheta/2)).
+
+    This is the tessellation law read backwards. `only_boundary` selects the
+    partial-arc pass, where the circumferential edges are patch boundaries rather
+    than interior ones.
+    """
+    out = []
+    idset = set(ids)
+    interior = set()
+    for t, uT, e in _shared_edge_pairs(mv, ids):
+        if t in idset and uT in idset:
+            interior.add(e)
+    for t in ids:
+        for k in range(3):
+            e = int(mv.tri_edges[t, k])
+            if only_boundary and e in interior:
+                continue
+            if not only_boundary and e not in interior:
+                continue
+            gv0, gv1 = mv.comp_edges[e]
+            p0 = mv.pts[gv0]
+            p1 = mv.pts[gv1]
+            chord = float(np.linalg.norm(p1 - p0))
+            if not (chord > 0.0):
+                continue
+            d0 = p0 - c0
+            d1 = p1 - c0
+            r0 = d0 - aw * float(np.dot(d0, aw))
+            r1 = d1 - aw * float(np.dot(d1, aw))
+            rad0 = float(np.linalg.norm(r0))
+            rad1 = float(np.linalg.norm(r1))
+            if not (rad0 > 0.0) or not (rad1 > 0.0):
+                continue
+            ang0 = math.atan2(float(np.dot(r0, v)), float(np.dot(r0, u)))
+            ang1 = math.atan2(float(np.dot(r1, v)), float(np.dot(r1, u)))
+            d_ang = abs(ang1 - ang0)
+            if d_ang > K_PI:
+                d_ang = 2.0 * K_PI - d_ang
+            # Skip axial seams (dtheta ~ 0) and near-diameter spans.
+            if d_ang < 0.09 or d_ang >= K_PI - 0.09:
+                continue
+            if not only_boundary and abs(rad0 - rad1) > 0.05 * max(rad0, rad1):
+                continue
+            s = math.sin(0.5 * d_ang)
+            if s <= 1e-9:
+                continue
+            r_chord = chord / (2.0 * s)
+            if r_lo < r_chord < r_hi:
+                out.append(r_chord)
+    return out
+
+
 def _refine_cylinder_radius(
     mv: MeshView, tris: list, axis, center, radius, n_sides, span, r_hint
-) -> bool:
-    # ponytail: coarse band only (500..1200 tris); no in-scope fixture lands here.
-    # Fill in refit_math.cpp refineCylinderRadius when a coarse fixture appears.
-    return False
+):
+    """Coarse-band radius refinement (refit_math.cpp refineCylinderRadius).
+
+    Returns ``(ok, center, radius)`` — Python cannot mutate the caller's floats the
+    way the C++ reference mutates its reference parameters.
+
+    Why it exists: on a coarsely tessellated bore the bulk Eberly fit is dragged
+    below the true radius by the axial extent of the patch, while the facet chords
+    around the circumference still carry the right answer through the tessellation
+    law. This re-reads the radius from those chords and lifts the fit, under a cap.
+    """
+    c0 = np.asarray(center, dtype=float)
+    if not (radius > 0.0) or not math.isfinite(radius) or n_sides < 3:
+        return False, c0, radius
+    if mv.n_tri < 500 or mv.n_tri > 1200:
+        return False, c0, radius
+
+    ids = sorted(set(tris))
+    if len(ids) < 2:
+        return False, c0, radius
+
+    aw = np.asarray(axis, dtype=float)
+    am = float(np.linalg.norm(aw))
+    if am < 1e-15:
+        return False, c0, radius
+    aw = aw / am
+    frame = _axis_frame(aw)
+    if frame is None:
+        return False, c0, radius
+    u, v = frame
+    r_eberly = radius
+
+    gids = sorted({int(mv.tris[t, k]) for t in ids for k in range(3)})
+    ring = []
+    for gi in gids:
+        p = mv.pts[gi]
+        d = p - c0
+        radial = d - aw * float(np.dot(d, aw))
+        rr = float(np.linalg.norm(radial))
+        if not (rr > 0.0):
+            continue
+        ang = math.atan2(float(np.dot(radial, v)), float(np.dot(radial, u)))
+        ring.append((ang, rr, p))
+    if len(ring) < 3:
+        return False, c0, radius
+    ring.sort(key=lambda e: e[0])
+
+    n_dihedral = _estimate_full_circle_sides(mv, ids)
+    n_eff = n_dihedral if n_dihedral > 0 else n_sides
+    n_eff = max(4, min(48, n_eff))
+
+    # Growth R_ref from an early circumferential band can exceed the axial-dragged
+    # Eberly fit; widen chord acceptance toward r_hint when present.
+    r_anchor = r_hint if r_hint > radius * 1.02 else radius
+    r_chord_lo = min(radius * 0.90, r_anchor * 0.88)
+    r_chord_hi = max(radius * 1.42, r_anchor * 1.08)
+
+    n_v = len(ring)
+    skip_edge = n_v
+    max_gap = -1.0
+    for i in range(n_v):
+        j = (i + 1) % n_v
+        gap = (ring[0][0] + 2.0 * K_PI) - ring[n_v - 1][0] if j == 0 else ring[j][0] - ring[i][0]
+        if gap > max_gap:
+            max_gap = gap
+            skip_edge = i
+
+    chord_radii = _ring_chord_radii(mv, ids, c0, aw, u, v, r_chord_lo, r_chord_hi)
+
+    # Fallback: angularly consecutive vertices when no internal mesh chords found.
+    if not chord_radii:
+        for i in range(n_v):
+            if i == skip_edge:
+                continue
+            j = (i + 1) % n_v
+            d_ang = (
+                (ring[0][0] + 2.0 * K_PI) - ring[n_v - 1][0] if j == 0
+                else ring[j][0] - ring[i][0]
+            )
+            if d_ang < 1e-6 or d_ang >= K_PI:
+                continue
+            chord = float(np.linalg.norm(ring[j][2] - ring[i][2]))
+            if not (chord > 0.0):
+                continue
+            s = math.sin(0.5 * d_ang)
+            if s <= 1e-9:
+                continue
+            r_chord = chord / (2.0 * s)
+            if r_chord_lo < r_chord < r_chord_hi:
+                chord_radii.append(r_chord)
+
+    # Partial arcs: circumferential edges are often patch boundaries (thin axial bands).
+    if not chord_radii and 0.05 < span < 2.8:
+        chord_radii = _ring_chord_radii(
+            mv, ids, c0, aw, u, v, r_chord_lo, r_chord_hi, only_boundary=True
+        )
+
+    r_inscribed = _circumradius_from_inscribed(radius, n_eff)
+    r_pick = radius
+    if chord_radii:
+        r_chord_med = _median_of(chord_radii)
+        if r_chord_med > radius:
+            r_pick = r_chord_med
+    if r_inscribed > r_pick * 1.003 and r_inscribed <= radius * 1.20 and n_eff <= 12:
+        r_pick = max(r_pick, r_inscribed)
+    # Axially-grown large-bore patch: bulk Eberly drags below the circumferential band.
+    if r_hint > radius * 1.08 and r_hint <= radius * 1.38 and radius >= 11.0:
+        chords_low = (not chord_radii) or _median_of(chord_radii) < radius * 1.05
+        if chords_low:
+            r_pick = max(r_pick, r_hint)
+
+    if r_pick <= radius * 1.01:
+        return True, c0, radius
+
+    cap = radius * 1.25
+    if r_hint > radius * 1.02:
+        cap = max(cap, r_hint * 1.03)
+    if chord_radii:
+        r_chord_med = _median_of(chord_radii)
+        cap = max(cap, max(r_pick * 1.02, r_chord_med * 1.02))
+    radius = min(r_pick, cap)
+
+    # After an r_hint lift, snap back to tight circumferential chords on the patch.
+    if r_hint > r_eberly * 1.08 and radius > r_eberly * 1.05:
+        snap = _all_chord_radii(mv, ids, c0, aw, u, v, radius * 0.92, radius * 1.06)
+        if snap:
+            med = _median_of(snap)
+            if med > r_eberly * 1.02 and med < radius:
+                radius = med
+        elif n_eff >= 4:
+            max_chord = _max_circumferential_chord(mv, ids, c0, aw, u, v)
+            r_nom = _radius_from_chord_length(max_chord, n_eff)
+            if r_nom > r_eberly * 1.02 and r_nom < radius:
+                radius = r_nom
+
+    xs = [float(np.dot(p - c0, u)) for _a, _r, p in ring]
+    ys = [float(np.dot(p - c0, v)) for _a, _r, p in ring]
+    fit = _pratt_fit2(xs, ys)
+    if fit is not None:
+        cx, cy, r2 = fit
+        c_new = c0 + cx * u + cy * v
+        if all(math.isfinite(x) for x in c_new) and r2 > 0.0:
+            c0 = c_new
+            if radius * 0.97 < r2 < radius * 1.06:
+                radius = 0.5 * (radius + r2)
+            elif r_hint > r_eberly * 1.08 and r2 > r_eberly * 1.02:
+                radius = r2
+    return (math.isfinite(radius) and radius > 0.0), c0, radius
+
+
+def _all_chord_radii(mv, ids, c0, aw, u, v, r_lo, r_hi):
+    """Every facet chord on the patch, interior or boundary, inside [r_lo, r_hi]."""
+    out = []
+    for t in ids:
+        for k in range(3):
+            gv0 = int(mv.tris[t, k])
+            gv1 = int(mv.tris[t, (k + 1) % 3])
+            p0 = mv.pts[gv0]
+            p1 = mv.pts[gv1]
+            chord = float(np.linalg.norm(p1 - p0))
+            if not (chord > 0.0):
+                continue
+            d0 = p0 - c0
+            d1 = p1 - c0
+            r0 = d0 - aw * float(np.dot(d0, aw))
+            r1 = d1 - aw * float(np.dot(d1, aw))
+            if not (float(np.linalg.norm(r0)) > 0.0) or not (float(np.linalg.norm(r1)) > 0.0):
+                continue
+            ang0 = math.atan2(float(np.dot(r0, v)), float(np.dot(r0, u)))
+            ang1 = math.atan2(float(np.dot(r1, v)), float(np.dot(r1, u)))
+            d_ang = abs(ang1 - ang0)
+            if d_ang > K_PI:
+                d_ang = 2.0 * K_PI - d_ang
+            if d_ang < 0.09 or d_ang >= K_PI - 0.09:
+                continue
+            s = math.sin(0.5 * d_ang)
+            if s <= 1e-9:
+                continue
+            r_chord = chord / (2.0 * s)
+            if r_lo < r_chord < r_hi:
+                out.append(r_chord)
+    return out
+
+
+def _max_circumferential_chord(mv, ids, c0, aw, u, v) -> float:
+    best = 0.0
+    for t in ids:
+        for k in range(3):
+            gv0 = int(mv.tris[t, k])
+            gv1 = int(mv.tris[t, (k + 1) % 3])
+            p0 = mv.pts[gv0]
+            p1 = mv.pts[gv1]
+            chord = float(np.linalg.norm(p1 - p0))
+            if not (chord > 0.0):
+                continue
+            d0 = p0 - c0
+            d1 = p1 - c0
+            r0 = d0 - aw * float(np.dot(d0, aw))
+            r1 = d1 - aw * float(np.dot(d1, aw))
+            if not (float(np.linalg.norm(r0)) > 0.0) or not (float(np.linalg.norm(r1)) > 0.0):
+                continue
+            ang0 = math.atan2(float(np.dot(r0, v)), float(np.dot(r0, u)))
+            ang1 = math.atan2(float(np.dot(r1, v)), float(np.dot(r1, u)))
+            d_ang = abs(ang1 - ang0)
+            if d_ang > K_PI:
+                d_ang = 2.0 * K_PI - d_ang
+            if d_ang < 0.09 or d_ang >= K_PI - 0.09:
+                continue
+            best = max(best, chord)
+    return best
 
 
 def _arch_chain_radius_from_patch(
@@ -1253,11 +1660,13 @@ def _evaluate_commit(
     r_before_refine = ev.radius
     arch_chain_applied = False
     coarse = coarse_fusion_band(mv)
-    if coarse and ev.d2.n_sides >= 3 and not ev.d2.span_reject:
-        if _refine_cylinder_radius(
+    if not law_band and coarse and ev.d2.n_sides >= 3 and not ev.d2.span_reject:
+        # refit_grow.cpp:834 ignores the return value and recomputes d2 either way:
+        # the centre may have moved even when the radius did not.
+        _ok, ev.center, ev.radius = _refine_cylinder_radius(
             mv, tris, axis, ev.center, ev.radius, ev.d2.n_sides, ev.d2.span, r_hint
-        ):
-            ev.d2 = _compute_d2(mv, tris, axis, ev.center, ev.radius, tol)
+        )
+        ev.d2 = _compute_d2(mv, tris, axis, ev.center, ev.radius, tol)
     if ev.d2.span_reject:
         ev.fail_gate = Gate.G1
         return ev
@@ -2189,6 +2598,7 @@ def _build_topology_d(mv: MeshView, tol: DerivedTols, work: _SegmentWork, out: R
 
     max_dev = 0.0
     dvol = 0.0
+    radii = []
     for r in out.regions:
         if r.origin == Origin.FILLET_STRIP:
             st.fillets += 1
@@ -2198,8 +2608,21 @@ def _build_topology_d(mv: MeshView, tol: DerivedTols, work: _SegmentWork, out: R
             st.cylinders += 1
         max_dev = max(max_dev, r.max_vertex_dev)
         dvol += r.dvol_predicted
+        if (r.type == SurfType.CYLINDER or r.origin == Origin.FILLET_STRIP) and r.radius > 0:
+            radii.append(r.radius)
     st.max_vertex_dev = max_dev
     st.dvol_predicted = dvol
+
+    # Distinct radii (refit_chains.cpp:1008-1015): sorted radii, counting a new one
+    # whenever the step exceeds the mesh epsilon. Two bores that agree to within the
+    # mesh's own resolution are one radius, not two.
+    radii.sort()
+    if radii:
+        eps = max(tol.eps_mesh, 1e-9)
+        st.distinct_radii = 1
+        for i in range(1, len(radii)):
+            if abs(radii[i] - radii[i - 1]) > eps:
+                st.distinct_radii += 1
 
     max_edge = 0.0
     for c in out.chains:
