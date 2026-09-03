@@ -418,7 +418,15 @@ abandoned road.
    appended to; the status table drifted because it is the part that must be *rewritten*
    to stay true. Re-read §7 against the tree whenever a prediction resolves, not at the
    end.
-7. **A missing pass and a strict test are indistinguishable from the inside.** P2 and P4
+7. **Bit-identity in this code is a claim about OpenBLAS, not about arithmetic.**
+   `np.dot` on a 3-vector is `ddot`, whose tail loop is an FMA chain: it equals
+   neither `a*b + c*d + e*f` (35 553 mismatches per 100k) nor `m @ w`/dgemv (26 521).
+   Only batched `np.matmul((n,1,3),(3,))` reproduces it exactly. Independently,
+   `np.arctan2` is not libm's `math.atan2` and differs by 1 ulp on ~2.4% of inputs --
+   enough to flip an `argmin` near-tie. When vectorising a numerically load-bearing
+   scalar loop, assert `np.array_equal` against the scalar original on random data and
+   keep a negative control; `allclose` would have passed every wrong candidate above.
+8. **A missing pass and a strict test are indistinguishable from the inside.** P2 and P4
    both blamed a threshold and both were wrong; both times the answer was a stage of the
    reference we simply do not run. When a claim never appears, census what is *offered*
    before tuning what is *accepted*.

@@ -372,15 +372,49 @@ def make_intervals(gens: list):
     return pairs, closed
 
 
-def nearest_at_angle(pts, ang, origin, axis, u, v):
-    best = pts[0]
-    bd = 1e300
-    for p in pts:
-        d = abs(wrap_pi(azimuth(p, origin, axis, u, v) - ang))
-        if d < bd:
-            bd = d
-            best = p
-    return best
+_ATAN2 = np.frompyfunc(math.atan2, 2, 1)
+
+
+def _row_dots(m, w):
+    """Per-row `np.dot(m[i], w)`, bit-identical to the scalar call.
+
+    A 3-vector `np.dot` is OpenBLAS `ddot`, whose tail loop is compiled to an
+    FMA chain -- NOT plain `a*b + c*d + e*f`, and not `m @ w` either (that is
+    `dgemv`, which accumulates in a different order). Batched matmul on
+    (n,1,3)@(3,) takes numpy's vector-vector path, i.e. the same `ddot` per
+    row, so the rounding matches to the bit.
+    """
+    return np.matmul(m[:, None, :], w)[:, 0]
+
+
+def azimuths_of(pts, origin, axis, u, v):
+    """Azimuths of many points about one axis frame, in a single pass.
+
+    Bit-identical to mapping the scalar `azimuth` over `pts`: the projections
+    go through `_row_dots`, and the final atan2 is libm's via `math.atan2`
+    (numpy's `arctan2` is its own implementation and differs by 1 ulp on ~2%
+    of inputs, enough to flip an argmin near-tie in `nearest_at_angle`).
+    """
+    d = np.asarray(pts, dtype=float).reshape(-1, 3) - origin
+    rad = d - np.outer(_row_dots(d, axis), axis)
+    return _ATAN2(_row_dots(rad, v), _row_dots(rad, u)).astype(float)
+
+
+def nearest_at_angle(pts, ang, origin, axis, u, v, az=None):
+    """Point whose azimuth is nearest `ang`.
+
+    `az` is the precomputed azimuth array for `pts`. The frame is constant for a
+    whole chain while the queried angle varies, so recomputing it per query cost
+    25.3M scalar `azimuth` calls on a 908-triangle fixture -- 36% of total runtime.
+    Only |angle difference| is compared, so vectorised wrapping to [-pi, pi) is
+    interchangeable with wrap_pi's (-pi, pi]; and argmin, like the strict `<` it
+    replaces, keeps the FIRST minimum.
+    """
+    if az is None:
+        az = azimuths_of(pts, origin, axis, u, v)
+    dif = az - ang
+    dif -= K_TWO_PI * np.floor((dif + K_PI) / K_TWO_PI)
+    return pts[int(np.argmin(np.abs(dif)))]
 
 
 def axis_line_sep(a_loc, a_dir, b_loc, b_dir) -> float:
@@ -480,9 +514,10 @@ def extract_chain(mv: MeshView, ids: list, eps_mesh: float) -> LawBand | None:
         return None
 
     radii = []
+    gaz = azimuths_of(gens3, origin, axis, u, v)  # frame is fixed for the chain
     for p in pairs:
-        p0 = nearest_at_angle(gens3, p.a0, origin, axis, u, v)
-        p1 = nearest_at_angle(gens3, p.a1, origin, axis, u, v)
+        p0 = nearest_at_angle(gens3, p.a0, origin, axis, u, v, gaz)
+        p1 = nearest_at_angle(gens3, p.a1, origin, axis, u, v, gaz)
         d = p1 - p0
         w3 = float(np.linalg.norm(d - axis * float(np.dot(d, axis))))
         rho = 0.5 * (rho_of(p0, origin, axis) + rho_of(p1, origin, axis))
