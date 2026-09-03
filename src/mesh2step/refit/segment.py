@@ -10,6 +10,7 @@ rebuild is likewise out of scope.
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -31,6 +32,18 @@ from .stats import RefitStats
 K_PI = math.pi
 K_DEG3 = 3.0 * K_PI / 180.0
 INT_MAX = 2**31 - 1
+
+# refit_internal.hpp DerivedTols static constants (D5.2, verbatim)
+K_GAUSS_PLANARITY = 0.05
+K_G3_LO = 0.35
+K_G3_HI = 2.00
+K_G5_SPAN_CLOSED_DEG = 300.0
+K_G5_SPAN_PARTIAL_DEG = 40.0
+K_G5_NSIDES_MIN = 6
+K_G5_NBANDS_MIN = 4
+# refit_grow.cpp kRingResidualFrac (D1.3-A3, file-local B1 residual)
+K_RING_RESIDUAL_FRAC = 0.25
+K_TINY = 1e-30
 
 
 class SurfType(IntEnum):
@@ -89,6 +102,15 @@ class ProvClaim(IntEnum):
     COMMITTED_PLANE = 5
 
 
+class Gate(IntEnum):
+    G1 = 0
+    G2 = 1
+    G3 = 2
+    G4 = 3
+    G5 = 4
+    PASS = 5
+
+
 @dataclass
 class SegmentParams:
     """Port of refit::SegmentParams at the golden defaults.
@@ -112,6 +134,12 @@ class DerivedTols:
     theta_cyl_lo: float = 0.0
     theta_cyl_hi: float = 0.0
     theta_bin: float = 0.0
+
+    def gauss_axis_tilt_sin(self) -> float:
+        return math.sin(K_DEG3)
+
+    def eps_cyl_accept(self, r: float) -> float:
+        return max(self.eps_mesh, 0.01 * r)
 
 
 @dataclass
@@ -186,6 +214,72 @@ class _SegmentWork:
     provisionals: list = field(default_factory=list)
     accepted: list = field(default_factory=list)
     rejected: list = field(default_factory=list)
+
+
+@dataclass
+class _GaussResult:
+    ok: bool = False
+    degenerate: bool = False
+    axis: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    mu1: float = 0.0
+    mu2: float = 0.0
+    mu3: float = 0.0
+    flat: float = 0.0
+    patch: float = 0.0
+    c: float = 0.0
+    dev: float = 0.0
+
+
+@dataclass
+class _D2Metrics:
+    n_bands: int = 0
+    span: float = 0.0
+    n_sides: int = 0
+    u_min: float = 0.0
+    u_max: float = 0.0
+    v_min: float = 0.0
+    v_max: float = 0.0
+    closed360: bool = False
+    ax: gp_Ax3 | None = None
+    center: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    radius: float = 0.0
+    span_reject: bool = False
+
+
+@dataclass
+class _CommitEval:
+    fail_gate: int = Gate.G1
+    eberly_ok: bool = False
+    center: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    radius: float = 0.0
+    d2: _D2Metrics = field(default_factory=_D2Metrics)
+    g: _GaussResult = field(default_factory=_GaussResult)
+    arch_chain: bool = False
+
+
+@dataclass
+class _ProvAdj:
+    other: int = -1
+    phi: float = 0.0
+    length: int = 0
+
+
+@dataclass
+class _Seed:
+    p: int = -1
+    q: int = -1
+    neg_area_sum: float = 0.0
+    min_tri: int = -1
+    max_tri: int = -1
+    adj_lo: int = -1
+    adj_hi: int = -1
+
+
+@dataclass
+class _GrowCand:
+    x: int = -1
+    neg_len: int = 0
+    min_tri: int = -1
 
 
 # --- tolerance derivation (refit_segment.cpp deriveTols, verbatim) -------------
@@ -484,6 +578,940 @@ def _grow_provisional_a2(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> 
             work.provisionals.append(prov)
 
     work.provisionals.sort(key=lambda p: p.tris[0] if p.tris else INT_MAX)
+    return True
+
+
+# --- B1: cylinder claim (refit_grow.cpp claimCylindersB1 + gate chain) ---------
+# Port of the whole provisional-merge cylinder recognition path: seed pairs,
+# grow members, evaluateCommit (G1..G5), and the reject census. The coarse-band
+# radius refinement / arch-chain helpers below are band-guarded no-ops for
+# n_tri < 500 (ponytail: coarse band 500..1200 is not exercised by any in-scope
+# fixture — fill in _refine_cylinder_radius when a coarse fixture lands).
+
+
+def _llround(x: float) -> int:
+    return math.floor(x + 0.5)
+
+
+def _median_of(v: list) -> float:
+    if not v:
+        return 0.0
+    s = sorted(v)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _percentile75(v: list) -> float:
+    if not v:
+        return 0.0
+    s = sorted(v)
+    idx = math.floor(0.75 * (len(s) - 1))
+    return s[idx]
+
+
+def _wrap_to_pi(t: float) -> float:
+    while t <= -K_PI:
+        t += 2.0 * K_PI
+    while t > K_PI:
+        t -= 2.0 * K_PI
+    return t
+
+
+def _angle_band_eps(theta_rad: float) -> float:
+    k_abs = 1e-12
+    ulp = sys.float_info.epsilon * max(1.0, abs(theta_rad))
+    return max(k_abs, 8.0 * ulp)
+
+
+def _eigen_axis_sign(w: np.ndarray) -> float:
+    for k in range(3):
+        if abs(w[k]) > 1e-9:
+            return 1.0 if w[k] > 0.0 else -1.0
+    return 1.0
+
+
+def _canonical_axis(w: np.ndarray) -> np.ndarray:
+    m = float(np.linalg.norm(w))
+    if m < K_TINY:
+        return np.array([1.0, 0.0, 0.0])
+    return (w * _eigen_axis_sign(w)) / m
+
+
+def _gp_dir(v: np.ndarray) -> gp_Dir:
+    return gp_Dir(float(v[0]), float(v[1]), float(v[2]))
+
+
+def _gp_pnt(v: np.ndarray) -> gp_Pnt:
+    return gp_Pnt(float(v[0]), float(v[1]), float(v[2]))
+
+
+def _np_dir(d: gp_Dir) -> np.ndarray:
+    return np.array([d.X(), d.Y(), d.Z()])
+
+
+def _np_pnt(p: gp_Pnt) -> np.ndarray:
+    return np.array([p.X(), p.Y(), p.Z()])
+
+
+def _axis_frame(a_unit: np.ndarray):
+    nx, ny, nz = abs(a_unit[0]), abs(a_unit[1]), abs(a_unit[2])
+    if nx <= ny and nx <= nz:
+        w = np.array([1.0, 0.0, 0.0])
+    elif ny <= nz:
+        w = np.array([0.0, 1.0, 0.0])
+    else:
+        w = np.array([0.0, 0.0, 1.0])
+    u = np.cross(a_unit, w)
+    um = float(np.linalg.norm(u))
+    if um < 1e-15:
+        return None
+    u = u / um
+    v = np.cross(a_unit, u)
+    vm = float(np.linalg.norm(v))
+    if vm < 1e-15:
+        return None
+    v = v / vm
+    return u, v
+
+
+def _solve2x2(a00, a01, a11, b0, b1):
+    det = a00 * a11 - a01 * a01
+    scale = abs(a00) + abs(a11) + 2.0 * abs(a01)
+    if not (math.isfinite(det) and math.isfinite(scale)):
+        return None
+    if scale <= 0.0 or abs(det) <= 1e-14 * scale * scale:
+        return None
+    x0 = (a11 * b0 - a01 * b1) / det
+    x1 = (-a01 * b0 + a00 * b1) / det
+    if not (math.isfinite(x0) and math.isfinite(x1)):
+        return None
+    return x0, x1
+
+
+def _kasa_fit2(xs, ys):
+    n = len(xs)
+    if n < 3:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sxy = syy = sxrr = syrr = 0.0
+    for x, y in zip(xs, ys, strict=True):
+        x -= mx
+        y -= my
+        rr = x * x + y * y
+        sxx += x * x
+        sxy += x * y
+        syy += y * y
+        sxrr += x * rr
+        syrr += y * rr
+    sol = _solve2x2(sxx, sxy, syy, 0.5 * sxrr, 0.5 * syrr)
+    if sol is None:
+        return None
+    dcx, dcy = sol
+    cx = mx + dcx
+    cy = my + dcy
+    acc = 0.0
+    for x, y in zip(xs, ys, strict=True):
+        acc += (x - cx) ** 2 + (y - cy) ** 2
+    radius = math.sqrt(acc / n)
+    if not (math.isfinite(cx) and math.isfinite(cy) and math.isfinite(radius)):
+        return None
+    if not (radius > 0.0):
+        return None
+    return cx, cy, radius
+
+
+def _eberly_center_radius(mv: MeshView, tris: list, axis: np.ndarray):
+    ids = sorted(set(tris))
+    if not ids:
+        return False, np.zeros(3), 0.0
+    a = np.asarray(axis, dtype=float)
+    am = float(np.linalg.norm(a))
+    if am < 1e-15:
+        return False, np.zeros(3), 0.0
+    a = a / am
+    frame = _axis_frame(a)
+    if frame is None:
+        return False, np.zeros(3), 0.0
+    u, v = frame
+    gids = sorted({mv.tris[t, k] for t in ids for k in range(3)})
+    if len(gids) < 3:
+        return False, np.zeros(3), 0.0
+    xs, ys = [], []
+    mean = np.zeros(3)
+    for gi in gids:
+        p = mv.pts[gi]
+        mean = mean + p
+        xs.append(float(np.dot(p, u)))
+        ys.append(float(np.dot(p, v)))
+    mean = mean / len(gids)
+    fit = _kasa_fit2(xs, ys)
+    if fit is None:
+        return False, np.zeros(3), 0.0
+    cx, cy, radius = fit
+    c = cx * u + cy * v + (float(np.dot(mean, a)) * a)
+    if not (math.isfinite(c[0]) and math.isfinite(c[1]) and math.isfinite(c[2])):
+        return False, np.zeros(3), 0.0
+    if not (radius > 0.0) or not math.isfinite(radius):
+        return False, np.zeros(3), 0.0
+    return True, c, radius
+
+
+def _area_weighted_nbar(mv: MeshView, tris: list) -> np.ndarray:
+    A = 0.0
+    nbar = np.zeros(3)
+    for lt in tris:
+        n = tri_normal(mv, lt)
+        a = tri_area(mv, lt)
+        A += a
+        nbar += n * a
+    if A < K_TINY:
+        return np.zeros(3)
+    return nbar / A
+
+
+def _centered_gauss(
+    mv: MeshView, tris: list, seed_axis: np.ndarray, tol: DerivedTols
+) -> _GaussResult:
+    r = _GaussResult()
+    if not tris:
+        return r
+    A = 0.0
+    nbar = np.zeros(3)
+    for lt in tris:
+        n = tri_normal(mv, lt)
+        a = tri_area(mv, lt)
+        A += a
+        nbar += n * a
+    if A < K_TINY:
+        return r
+    nbar = nbar / A
+
+    C = np.zeros((3, 3))
+    for lt in tris:
+        n = tri_normal(mv, lt)
+        a = tri_area(mv, lt)
+        d = n - nbar
+        C += a * np.outer(d, d)
+    try:
+        evals, evecs = np.linalg.eigh(C)
+    except np.linalg.LinAlgError:
+        return r
+    r.mu1 = float(evals[0])
+    r.mu2 = float(evals[1])
+    r.mu3 = float(evals[2])
+    r.flat = r.mu1 / max(r.mu2, 1e-300)
+    r.patch = r.mu2 / max(r.mu3, 1e-300)
+
+    L = max(mv.diag, tol.eps_mesh)
+    theta = (tol.eps_mesh / L) if L > 0.0 else 0.0
+    mu2_floor = A * theta * theta
+    few_normals = r.mu2 <= 1e-12 * r.mu3
+    mu2_below_noise = r.mu2 <= mu2_floor
+    if few_normals or mu2_below_noise:
+        r.degenerate = True
+        r.axis = _canonical_axis(np.asarray(seed_axis, dtype=float))
+        r.c = 0.0
+        r.dev = 0.0
+        r.flat = 0.0
+        r.patch = 0.0
+        r.ok = True
+        return r
+
+    w1 = evecs[:, 0]
+    r.axis = _canonical_axis(w1)
+    r.c = float(np.dot(nbar, r.axis))
+    r.dev = 0.0
+    for lt in tris:
+        d = float(np.dot(tri_normal(mv, lt), r.axis))
+        r.dev = max(r.dev, abs(d - r.c))
+    r.ok = True
+    return r
+
+
+def _axis_tilt_stats(mv: MeshView, tris: list, axis: np.ndarray):
+    nbar = _area_weighted_nbar(mv, tris)
+    if float(np.dot(nbar, nbar)) <= 0.0 and not tris:
+        return 0.0, 0.0
+    c_out = float(np.dot(nbar, axis))
+    dev_out = 0.0
+    for lt in tris:
+        d = float(np.dot(tri_normal(mv, lt), axis))
+        dev_out = max(dev_out, abs(d - c_out))
+    return c_out, dev_out
+
+
+def _test_t1_running(g: _GaussResult) -> bool:
+    return g.ok and g.flat < K_GAUSS_PLANARITY
+
+
+def _test_g1_commit_seed_axis(
+    g: _GaussResult, tol: DerivedTols, c_tilt: float, dev_tilt: float
+) -> bool:
+    sin3 = tol.gauss_axis_tilt_sin()
+    return g.ok and g.flat < K_GAUSS_PLANARITY and dev_tilt < sin3 and abs(c_tilt) < sin3
+
+
+def _eps_cyl_ring(tol: DerivedTols, R: float) -> float:
+    return max(tol.eps_mesh, K_RING_RESIDUAL_FRAC * R)
+
+
+def _max_vertex_residual(
+    mv: MeshView, tris: list, axis: np.ndarray, center: np.ndarray, radius: float
+) -> float:
+    a = np.asarray(axis, dtype=float)
+    c = np.asarray(center, dtype=float)
+    max_r = 0.0
+    for lt in tris:
+        for k in range(3):
+            p = tri_corner(mv, lt, k)
+            d = p - c
+            radial = float(np.linalg.norm(np.cross(a, d)))
+            max_r = max(max_r, abs(radial - radius))
+    return max_r
+
+
+def _median_centroid_residual(
+    mv: MeshView, tris: list, axis: np.ndarray, center: np.ndarray, radius: float
+) -> float:
+    a = np.asarray(axis, dtype=float)
+    c = np.asarray(center, dtype=float)
+    vals = []
+    for lt in tris:
+        cent = tri_centroid(mv, lt)
+        d = cent - c
+        vals.append(abs(float(np.linalg.norm(np.cross(a, d))) - radius))
+    return _median_of(vals)
+
+
+def _classify_g1_reject(g: _GaussResult, tol: DerivedTols) -> int:
+    sin3 = tol.gauss_axis_tilt_sin()
+    c1 = g.flat < K_GAUSS_PLANARITY
+    c2 = g.dev < sin3
+    if c1 and c2 and abs(g.c) >= sin3:
+        return Reject.CONE_NYI
+    if not c1 and g.patch >= 0.25:
+        return Reject.SPHERE_NYI
+    return Reject.GAUSS_PLANARITY
+
+
+def _chord_sagitta(radius: float, n_sides: int) -> float:
+    if n_sides < 1 or not math.isfinite(radius):
+        return 0.0
+    return radius * (1.0 - math.cos(K_PI / n_sides))
+
+
+def _compute_d2(
+    mv: MeshView,
+    tris: list,
+    axis_in: np.ndarray,
+    center_in: np.ndarray,
+    radius_in: float,
+    tol: DerivedTols,
+) -> _D2Metrics:
+    m = _D2Metrics()
+    m.center = center_in
+    m.radius = radius_in
+    aw = np.asarray(axis_in, dtype=float)
+
+    centroid = np.zeros(3)
+    total_area = 0.0
+    for lt in tris:
+        ar = tri_area(mv, lt)
+        centroid = centroid + tri_centroid(mv, lt) * ar
+        total_area += ar
+    if total_area > K_TINY:
+        centroid = centroid / total_area
+
+    cxyz = np.asarray(center_in, dtype=float)
+    t_loc = float(np.dot(centroid - cxyz, aw))
+    loc = cxyz + aw * t_loc
+
+    uniq = []
+    for lt in tris:
+        for k in range(3):
+            lv = mv.tris[lt, k]
+            uniq.append((lv, tri_corner(mv, lt, k)))
+    uniq.sort(key=lambda x: x[0])
+    dedup = []
+    last = -1
+    for lv, pos in uniq:
+        if lv != last:
+            dedup.append((lv, pos))
+            last = lv
+
+    min_lv = INT_MAX
+    ps = np.zeros(3)
+    for lv, pos in dedup:
+        if lv < min_lv:
+            min_lv = lv
+            ps = pos
+    dps = ps - loc
+    ads = float(np.dot(dps, aw))
+    x_dir = dps - aw * ads
+    if float(np.linalg.norm(x_dir)) < 1e-12:
+        tmp = np.array([1.0, 0.0, 0.0]) if abs(aw[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        x_dir = np.cross(aw, tmp)
+    xD = _canonical_axis(x_dir)
+
+    m.ax = gp_Ax3(_gp_pnt(loc), _gp_dir(aw), _gp_dir(xD))
+    x_ax = _np_dir(m.ax.XDirection())
+    y_ax = _np_dir(m.ax.YDirection())
+
+    psi = []
+    for lt in tris:
+        n = tri_normal(mv, lt)
+        pu = float(np.dot(n, x_ax))
+        pv = float(np.dot(n, y_ax))
+        psi.append(_wrap_to_pi(math.atan2(pv, pu)))
+    psi.sort()
+
+    n_bands = 1
+    if len(psi) >= 2:
+        gaps = [psi[i + 1] - psi[i] for i in range(len(psi) - 1)]
+        gaps.append(2.0 * K_PI - psi[-1] + psi[0])
+        gap_input = list(gaps)
+        if gap_input:
+            gap_input.pop(max(range(len(gap_input)), key=lambda i: gap_input[i]))
+        theta_bin = max(tol.theta_bin, 0.5 * _percentile75(gap_input))
+        n_bands = 1
+        for i in range(1, len(psi)):
+            if psi[i] - psi[i - 1] > theta_bin:
+                n_bands += 1
+    m.n_bands = n_bands
+
+    chi = []
+    for _, pos in dedup:
+        d = pos - loc
+        chi.append(_wrap_to_pi(math.atan2(float(np.dot(d, y_ax)), float(np.dot(d, x_ax)))))
+    chi.sort()
+
+    if len(chi) < 2:
+        m.span_reject = True
+        return m
+
+    jmax = 0
+    max_gap_v = chi[1] - chi[0]
+    for j in range(1, len(chi) - 1):
+        g = chi[j + 1] - chi[j]
+        if g > max_gap_v:
+            max_gap_v = g
+            jmax = j
+    wrap_gap = 2.0 * K_PI - chi[-1] + chi[0]
+    if wrap_gap > max_gap_v:
+        max_gap_v = wrap_gap
+        jmax = len(chi) - 1
+
+    band_arc = (2.0 * K_PI / n_bands) if n_bands > 0 else 2.0 * K_PI
+    m.closed360 = n_bands >= 3 and max_gap_v <= 1.5 * band_arc
+    m.span = 2.0 * K_PI if m.closed360 else (2.0 * K_PI - max_gap_v)
+
+    if m.span <= 0 or n_bands < 1:
+        m.span_reject = True
+    else:
+        m.n_sides = _llround(2.0 * K_PI * n_bands / m.span)
+
+    if m.closed360:
+        m.u_min = 0.0
+        m.u_max = 2.0 * K_PI
+    else:
+        u_idx = (jmax + 1) % len(chi)
+        m.u_min = _wrap_to_pi(chi[u_idx])
+        m.u_max = m.u_min + m.span
+
+    m.v_min = math.inf
+    m.v_max = -math.inf
+    for _, pos in dedup:
+        v = float(np.dot(pos - loc, aw))
+        m.v_min = min(m.v_min, v)
+        m.v_max = max(m.v_max, v)
+    return m
+
+
+def _compute_outward_cylinder(mv: MeshView, tris: list, axis: np.ndarray, loc: np.ndarray) -> bool:
+    aw = np.asarray(axis, dtype=float)
+    lxyz = np.asarray(loc, dtype=float)
+    sigma = 0.0
+    for lt in tris:
+        a = tri_area(mv, lt)
+        cent = tri_centroid(mv, lt)
+        d = cent - lxyz
+        ad = float(np.dot(d, aw))
+        radial = d - aw * ad
+        rm = float(np.linalg.norm(radial))
+        if rm < K_TINY:
+            continue
+        radial = radial / rm
+        sigma += a * float(np.dot(tri_normal(mv, lt), radial))
+    return sigma > 0.0
+
+
+def _dvol_cylinder_sector(area: float, radius: float, n_sides: int, outward: bool) -> float:
+    if n_sides < 3 or not (radius > 0.0) or not math.isfinite(area) or not math.isfinite(radius):
+        return 0.0
+    gamma = 2.0 * K_PI / n_sides
+    if not (gamma < K_PI):
+        return 0.0
+    s = math.sin(0.5 * gamma)
+    if abs(s) < 1e-15:
+        return 0.0
+    sigma = 1.0 if outward else -1.0
+    dvol = sigma * area * radius * (gamma - math.sin(gamma)) / (4.0 * s)
+    return dvol if math.isfinite(dvol) else 0.0
+
+
+def _fill_cylinder_region(mv: MeshView, ev: _CommitEval, axis: np.ndarray, tris: list) -> Region:
+    area = 0.0
+    for lt in tris:
+        area += tri_area(mv, lt)
+    reg = Region()
+    reg.type = SurfType.CYLINDER
+    reg.origin = Origin.CYL_GROW
+    reg.tris = list(tris)
+    reg.ax = ev.d2.ax
+    reg.radius = ev.radius
+    reg.closed360 = ev.d2.closed360
+    reg.n_sides = ev.d2.n_sides
+    reg.chord_sagitta = _chord_sagitta(ev.radius, ev.d2.n_sides)
+    reg.outward_normal = _compute_outward_cylinder(mv, tris, axis, _np_pnt(ev.d2.ax.Location()))
+    reg.dvol_predicted = _dvol_cylinder_sector(area, ev.radius, ev.d2.n_sides, reg.outward_normal)
+    reg.max_vertex_dev = _max_vertex_residual(mv, tris, axis, ev.center, ev.radius)
+    a = np.asarray(axis, dtype=float)
+    c = np.asarray(ev.center, dtype=float)
+    sum_sq = 0.0
+    n_v = 0
+    for lt in tris:
+        for k in range(3):
+            p = tri_corner(mv, lt, k)
+            rr = float(np.linalg.norm(np.cross(a, p - c)))
+            d = rr - ev.radius
+            sum_sq += d * d
+            n_v += 1
+    reg.rms_vertex_dev = math.sqrt(sum_sq / n_v) if n_v > 0 else 0.0
+    return reg
+
+
+def _merge_member_tris(provs: list, members: list) -> list:
+    tris = set()
+    for m in members:
+        tris.update(provs[m].tris)
+    return sorted(tris)
+
+
+def _min_tri_id(p: Provisional) -> int:
+    return p.tris[0] if p.tris else INT_MAX
+
+
+def _seed_pair_axis(P: Provisional, Q: Provisional) -> np.ndarray:
+    n_p = _np_dir(P.plane.Direction())
+    n_q = _np_dir(Q.plane.Direction())
+    cross = np.cross(n_p, n_q)
+    if float(np.dot(cross, cross)) <= 1e-18:
+        return np.array([0.0, 0.0, 1.0])
+    return _canonical_axis(cross)
+
+
+def _axis_of(mv: MeshView, provs: list, members: list, seed_axis: np.ndarray, tol: DerivedTols):
+    tris = _merge_member_tris(provs, members)
+    g = _centered_gauss(mv, tris, seed_axis, tol)
+    _, sc_seed = _axis_tilt_stats(mv, tris, seed_axis)
+    sc_w1 = g.dev if (g.ok and not g.degenerate) else 0.0
+    if len(members) <= 3 or g.degenerate or not g.ok:
+        return seed_axis, g, False, sc_w1, sc_seed
+    if sc_w1 <= sc_seed:
+        return g.axis, g, True, sc_w1, sc_seed
+    return seed_axis, g, False, sc_w1, sc_seed
+
+
+def _build_prov_adjacency(mv: MeshView, tri_to_prov: list, n_prov: int) -> list:
+    adj = build_edge_adj(mv)
+    raw = []
+    for e in range(mv.n_edge):
+        t0, t1 = adj[e]
+        if t0 < 0 or t1 < 0:
+            continue
+        p0, p1 = tri_to_prov[t0], tri_to_prov[t1]
+        if p0 < 0 or p1 < 0 or p0 == p1:
+            continue
+        lo, hi = (p0, p1) if p0 < p1 else (p1, p0)
+        raw.append((lo, hi, edge_dihedral_abs(mv, e, adj)))
+    raw.sort(key=lambda x: (x[0], x[1], x[2]))
+
+    prov_adj = [[] for _ in range(n_prov)]
+    i = 0
+    while i < len(raw):
+        lo, hi, _ = raw[i]
+        phis = []
+        while i < len(raw) and raw[i][0] == lo and raw[i][1] == hi:
+            phis.append(raw[i][2])
+            i += 1
+        phi = _median_of(phis)
+        prov_adj[lo].append(_ProvAdj(other=hi, phi=phi, length=len(phis)))
+        prov_adj[hi].append(_ProvAdj(other=lo, phi=phi, length=len(phis)))
+    for p in range(n_prov):
+        prov_adj[p].sort(key=lambda a: a.other)
+    return prov_adj
+
+
+def _phi_to_set(adj: list, x: int, members: list) -> float:
+    phis = []
+    for m in members:
+        for a in adj[x]:
+            if a.other == m:
+                phis.append(a.phi)
+    return _median_of(phis)
+
+
+def _shared_len(adj: list, x: int, members: list) -> int:
+    total = 0
+    for m in members:
+        for a in adj[x]:
+            if a.other == m:
+                total += a.length
+    return total
+
+
+def _adjacent_to_set(adj: list, x: int, members: list) -> bool:
+    for m in members:
+        for a in adj[x]:
+            if a.other == m:
+                return True
+    return False
+
+
+def _seed_in_band(phi: float, tol: DerivedTols) -> bool:
+    lo_eps = _angle_band_eps(tol.theta_cyl_lo)
+    hi_eps = _angle_band_eps(tol.theta_cyl_hi)
+    return phi >= tol.theta_cyl_lo - lo_eps and phi <= tol.theta_cyl_hi + hi_eps
+
+
+def _members_edge_connected(adj: list, members: list) -> bool:
+    if len(members) <= 1:
+        return True
+    n = len(adj)
+    in_s = [False] * n
+    for m in members:
+        if 0 <= m < n:
+            in_s[m] = True
+    seen = [False] * n
+    q = [members[0]]
+    seen[members[0]] = True
+    n_seen = 1
+    i = 0
+    while i < len(q):
+        for a in adj[q[i]]:
+            if 0 <= a.other < n and in_s[a.other] and not seen[a.other]:
+                seen[a.other] = True
+                q.append(a.other)
+                n_seen += 1
+        i += 1
+    return n_seen == len(members)
+
+
+def _refine_cylinder_radius(
+    mv: MeshView, tris: list, axis, center, radius, n_sides, span, r_hint
+) -> bool:
+    # ponytail: coarse band only (500..1200 tris); no in-scope fixture lands here.
+    # Fill in refit_math.cpp refineCylinderRadius when a coarse fixture appears.
+    return False
+
+
+def _arch_chain_radius_from_patch(
+    mv: MeshView, tris: list, axis, radius, chain_score, r_hint
+) -> bool:
+    # ponytail: arch-chain band only (n_tri >= 500); no in-scope fixture lands here.
+    return False
+
+
+def _evaluate_commit(
+    mv: MeshView,
+    tol: DerivedTols,
+    tris: list,
+    axis: np.ndarray,
+    r_hint: float = 0.0,
+    law_band: bool = False,
+) -> _CommitEval:
+    ev = _CommitEval()
+    ev.g = _centered_gauss(mv, tris, axis, tol)
+    c_tilt, dev_tilt = _axis_tilt_stats(mv, tris, axis)
+    if not law_band:
+        ok, center, radius = _eberly_center_radius(mv, tris, axis)
+        ev.eberly_ok = ok
+        if ok:
+            ev.center = center
+            ev.radius = radius
+    ev.fail_gate = Gate.PASS
+    if not _test_g1_commit_seed_axis(ev.g, tol, c_tilt, dev_tilt):
+        ev.fail_gate = Gate.G1
+        return ev
+    if not law_band and not ev.eberly_ok:
+        ev.fail_gate = Gate.G4
+        return ev
+    ev.d2 = _compute_d2(mv, tris, axis, ev.center, ev.radius, tol)
+    r_before_refine = ev.radius
+    arch_chain_applied = False
+    coarse = coarse_fusion_band(mv)
+    if coarse and ev.d2.n_sides >= 3 and not ev.d2.span_reject:
+        if _refine_cylinder_radius(
+            mv, tris, axis, ev.center, ev.radius, ev.d2.n_sides, ev.d2.span, r_hint
+        ):
+            ev.d2 = _compute_d2(mv, tris, axis, ev.center, ev.radius, tol)
+    if ev.d2.span_reject:
+        ev.fail_gate = Gate.G1
+        return ev
+    lift = max(0.0, ev.radius - r_before_refine)
+    if coarse:
+        g2_tol = tol.eps_cyl_accept(ev.radius)
+        n_est_sides = max(ev.d2.n_sides, max(6, len(tris)))
+        g2_tol = max(g2_tol, _chord_sagitta(ev.radius, n_est_sides))
+        if lift > 0.0:
+            g2_tol = max(g2_tol, lift * 1.15 + _chord_sagitta(ev.radius, n_est_sides))
+        if len(tris) <= 8:
+            g2_tol = max(g2_tol, _eps_cyl_ring(tol, ev.radius))
+        if not arch_chain_applied and _max_vertex_residual(
+            mv, tris, axis, ev.center, ev.radius
+        ) > g2_tol:
+            ev.fail_gate = Gate.G2
+            return ev
+    elif _max_vertex_residual(mv, tris, axis, ev.center, ev.radius) > tol.eps_cyl_accept(ev.radius):
+        ev.fail_gate = Gate.G2
+        return ev
+    delta = _chord_sagitta(ev.radius, ev.d2.n_sides)
+    if delta > tol.eps_mesh and (
+        not coarse or (ev.d2.span >= 0.35 and lift <= 0.0 and not arch_chain_applied)
+    ):
+        s = _median_centroid_residual(mv, tris, axis, ev.center, ev.radius)
+        if s < K_G3_LO * delta or s > K_G3_HI * delta:
+            ev.fail_gate = Gate.G3
+    if ev.fail_gate == Gate.PASS and not (2.0 * tol.eps_plane < ev.radius < 2.0 * mv.diag):
+        ev.fail_gate = Gate.G4
+    if ev.fail_gate == Gate.PASS:
+        span_deg = ev.d2.span * 180.0 / K_PI
+        n_bands_use = ev.d2.n_bands
+        g5_closed = span_deg >= K_G5_SPAN_CLOSED_DEG and ev.d2.n_sides >= K_G5_NSIDES_MIN
+        g5_partial_deg = 30.0 if coarse else K_G5_SPAN_PARTIAL_DEG
+        g5_partial = span_deg >= g5_partial_deg and n_bands_use >= K_G5_NBANDS_MIN
+        g5_micro = (
+            coarse
+            and ev.radius >= 5.0
+            and len(tris) <= 8
+            and span_deg >= 12.0
+            and n_bands_use >= 2
+        )
+        if not (g5_closed or g5_partial or g5_micro) and not arch_chain_applied:
+            ev.fail_gate = Gate.G5
+    return ev
+
+
+def _claim_cylinders_b1(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
+    for p in work.provisionals:
+        if not p.tris:
+            p.claim = ProvClaim.CONSUMED_CYLINDER
+    if not work.provisionals:
+        return True
+
+    tri_to_prov = [-1] * mv.n_tri
+    for pi, prov in enumerate(work.provisionals):
+        for t in prov.tris:
+            tri_to_prov[t] = pi
+
+    prov_adj = _build_prov_adjacency(mv, tri_to_prov, len(work.provisionals))
+    lateral_sin = math.sin(tol.theta_sharp)
+
+    seeds = []
+    for i in range(len(work.provisionals)):
+        for a in prov_adj[i]:
+            j = a.other
+            if j <= i:
+                continue
+            if not _seed_in_band(a.phi, tol):
+                continue
+            P, Q = work.provisionals[i], work.provisionals[j]
+            if P.seed_tried or Q.seed_tried:
+                continue
+            if P.claim != ProvClaim.UNCLAIMED or Q.claim != ProvClaim.UNCLAIMED:
+                continue
+            mt_p, mt_q = _min_tri_id(P), _min_tri_id(Q)
+            seeds.append(
+                _Seed(
+                    i,
+                    j,
+                    -(P.area + Q.area),
+                    min(mt_p, mt_q),
+                    max(mt_p, mt_q),
+                    min(i, j),
+                    max(i, j),
+                )
+            )
+    seeds.sort(
+        key=lambda s: (s.neg_area_sum, s.min_tri, s.max_tri, s.adj_lo, s.adj_hi)
+    )
+
+    for seed in seeds:
+        P = work.provisionals[seed.p]
+        Q = work.provisionals[seed.q]
+        if P.claim != ProvClaim.UNCLAIMED or Q.claim != ProvClaim.UNCLAIMED:
+            continue
+        if P.seed_tried or Q.seed_tried:
+            continue
+
+        seed_axis = _seed_pair_axis(P, Q)
+        members = [seed.p, seed.q]
+        in_claim = [False] * len(work.provisionals)
+        dead = [False] * len(work.provisionals)
+        in_claim[seed.p] = True
+        in_claim[seed.q] = True
+        P.claim = ProvClaim.IN_CYLINDER_CLAIM
+        Q.claim = ProvClaim.IN_CYLINDER_CLAIM
+
+        r_ref = 0.0
+        have_rref = False
+        dead_cleared = False
+
+        while True:
+            aS, _, used_w1, _, _ = _axis_of(
+                mv, work.provisionals, members, seed_axis, tol
+            )
+            if not dead_cleared and used_w1:
+                dead = [False] * len(work.provisionals)
+                dead_cleared = True
+            s_tris_now = _merge_member_tris(work.provisionals, members)
+            cS, _ = _axis_tilt_stats(mv, s_tris_now, aS)
+            sin3 = tol.gauss_axis_tilt_sin()
+            mem_areas = [work.provisionals[m].area for m in members]
+            med_area = _median_of(mem_areas)
+
+            cands = []
+            for xi in range(len(work.provisionals)):
+                if in_claim[xi] or dead[xi]:
+                    continue
+                X = work.provisionals[xi]
+                if X.claim != ProvClaim.UNCLAIMED:
+                    continue
+                if not _adjacent_to_set(prov_adj, xi, members):
+                    continue
+                phi = _phi_to_set(prov_adj, xi, members)
+                if phi < tol.theta_cyl_lo - _angle_band_eps(tol.theta_cyl_lo):
+                    continue
+                nX = _np_dir(X.plane.Direction())
+                if abs(float(np.dot(nX, aS))) > lateral_sin:
+                    continue
+                if med_area > 0.0 and X.area * K_GAUSS_PLANARITY > med_area:
+                    continue
+                nXbar = _area_weighted_nbar(mv, X.tris)
+                g5_bound = sin3 + _angle_band_eps(sin3)
+                g5v = abs(float(np.dot(nXbar, aS)) - cS)
+                if g5v > g5_bound:
+                    dead[xi] = True
+                    continue
+                cands.append(_GrowCand(xi, -_shared_len(prov_adj, xi, members), _min_tri_id(X)))
+            if not cands:
+                break
+            cands.sort(key=lambda g: (g.neg_len, g.min_tri))
+
+            progressed = False
+            for gc in cands:
+                xi = gc.x
+                trial_members = [*members, xi]
+                U = _merge_member_tris(work.provisionals, trial_members)
+                aU, gU, _, _, _ = _axis_of(mv, work.provisionals, trial_members, seed_axis, tol)
+                if not _test_t1_running(gU):
+                    dead[xi] = True
+                    continue
+                ok, center, radius = _eberly_center_radius(mv, U, aU)
+                if not ok or not (radius > 0.0 and radius < 2.0 * mv.diag):
+                    dead[xi] = True
+                    continue
+                t3R = r_ref if have_rref else radius
+                res_u = _max_vertex_residual(mv, U, aU, center, radius)
+                if res_u > _eps_cyl_ring(tol, t3R):
+                    dead[xi] = True
+                    continue
+                if have_rref and abs(radius - r_ref) > K_RING_RESIDUAL_FRAC * r_ref:
+                    dead[xi] = True
+                    continue
+                members.append(xi)
+                in_claim[xi] = True
+                work.provisionals[xi].claim = ProvClaim.IN_CYLINDER_CLAIM
+                if not have_rref and len(members) == 3:
+                    r_ref = radius
+                    have_rref = True
+                elif have_rref and radius > r_ref:
+                    r_ref = radius
+                progressed = True
+                break
+            if not progressed:
+                break
+
+        pre_peel_tris = _merge_member_tris(work.provisionals, members)
+        axis_final, _, _, _, _ = _axis_of(
+            mv, work.provisionals, members, seed_axis, tol
+        )
+        grow_hint = r_ref if (have_rref and r_ref > 0.0) else 0.0
+        ev = _evaluate_commit(mv, tol, pre_peel_tris, axis_final, grow_hint)
+
+        if ev.fail_gate == Gate.PASS:
+            reg = _fill_cylinder_region(mv, ev, axis_final, pre_peel_tris)
+            work.accepted.append(reg)
+            for m in members:
+                work.provisionals[m].claim = ProvClaim.CONSUMED_CYLINDER
+            continue
+
+        if ev.fail_gate == Gate.G2 and len(members) >= 3:
+            peel_x = members[0]
+            best_res = -1.0
+            best_min_tri = INT_MAX
+            for m in members:
+                res = _max_vertex_residual(
+                    mv, work.provisionals[m].tris, axis_final, ev.center, ev.radius
+                )
+                mt = _min_tri_id(work.provisionals[m])
+                if res > best_res or (res == best_res and mt < best_min_tri):
+                    best_res = res
+                    best_min_tri = mt
+                    peel_x = m
+            peeled = [m for m in members if m != peel_x]
+            if _members_edge_connected(prov_adj, peeled):
+                peel_tris = _merge_member_tris(work.provisionals, peeled)
+                axis_peel, _, _, _, _ = _axis_of(
+                    mv, work.provisionals, peeled, seed_axis, tol
+                )
+                ev_p = _evaluate_commit(mv, tol, peel_tris, axis_peel)
+                if ev_p.fail_gate == Gate.PASS:
+                    reg = _fill_cylinder_region(mv, ev_p, axis_peel, peel_tris)
+                    work.accepted.append(reg)
+                    for m in peeled:
+                        work.provisionals[m].claim = ProvClaim.CONSUMED_CYLINDER
+                    work.provisionals[peel_x].claim = ProvClaim.UNCLAIMED
+                    work.provisionals[peel_x].seed_tried = True
+                    continue
+
+        for m in members:
+            work.provisionals[m].claim = ProvClaim.UNCLAIMED
+            work.provisionals[m].seed_tried = True
+
+        if ev.fail_gate != Gate.G5:
+            rej = Region()
+            rej.id = len(work.rejected)
+            rej.type = SurfType.CYLINDER
+            rej.origin = Origin.CYL_GROW
+            rej.tris = pre_peel_tris
+            if ev.fail_gate == Gate.G1:
+                rej.reject = Reject.SPAN if ev.d2.span_reject else _classify_g1_reject(ev.g, tol)
+            elif ev.fail_gate == Gate.G2:
+                rej.reject = Reject.VERTEX_RESIDUAL
+            elif ev.fail_gate == Gate.G3:
+                rej.reject = Reject.CHORD_CONSISTENCY
+            elif ev.fail_gate == Gate.G4:
+                rej.reject = Reject.RADIUS_SANITY
+            else:
+                rej.reject = Reject.GAUSS_PLANARITY
+            work.rejected.append(rej)
+
+    work.accepted.sort(key=lambda r: r.tris[0] if r.tris else INT_MAX)
+    work.rejected.sort(key=lambda r: r.tris[0] if r.tris else INT_MAX)
     return True
 
 
@@ -1208,8 +2236,11 @@ def segment(mv: MeshView, params: SegmentParams | None = None) -> RegionSet | No
         # A2 provisional plane growth (running PCA per chart; TOTAL partition)
         if not _grow_provisional_a2(mv, tol, work):
             return None
-        # B1 / L / C1: cylinder, law-band and fillet claiming — M3-M5 stubs that
-        # claim nothing, so every provisional is still Unclaimed here.
+        # B1 cylinder claim (M3a): seeds provisional pairs, grows members, runs the
+        # G1-G5 gate chain and fills the reject census. Cylinder face building is
+        # M3b and not performed here.
+        if not _claim_cylinders_b1(mv, tol, work):
+            return None
         # A3 plane commit
         if not _commit_planes_a3(mv, tol, work):
             return None
