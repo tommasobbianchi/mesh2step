@@ -434,6 +434,47 @@ that is a repo-structure call, not one to make mid-port.
 reaches it. It was items 1 through 3 of the old plan, and it was the reference's own
 abandoned road.
 
+## 7c. The Body11 route divergence, resolved (2026-09-04)
+
+The open question was: ours builds Body11 (263 planes, 140 cylinders, 1 component built,
+1 reverted) where the reference explodes both components (0 built, 2 reverted,
+`facesBeforeUnify == triangles`). Two readings were on the table — (a) we over-segment and
+the surplus lets a component pass a build the reference declines, or (b) our construction
+genuinely succeeds and the golden encodes the reference's own retreat.
+
+**Neither. The reference's own diagnostics name the cause, and it is topological.** One
+`STL2STEP_P2_DIAG=1` run (95 s) yields 187 warnings whose tally is the whole answer:
+
+| count | warning |
+|---:|---|
+| 93 | `smooth: IntAna cyl\|cyl empty/same — keeping mesh polyline` |
+| 78 | `smooth: analytic MakeEdge failed — keeping mesh polyline` |
+| 4 | `seamed360: BRepCheck invalid` / `cap wire does not pass seam vertex` |
+| 4 | `J6: shell not closed freeEdges=46/45/274/130` |
+
+The reference **builds the seamed 360-degree cylinders, then cannot close the shell** —
+free edges survive J6, so it reverts. `smoothBuiltComponents: 0` in the golden is not a
+verdict that its analytic fit was bad; it is a **construction failure being recorded**.
+
+So our "success" is not better engineering: **we succeed because we attempt a strictly
+easier subset.** `_build_cylindrical_face` has no seam machinery (the same gap that sank
+M3c), so we never build the faces that produce the reference's free edges, and the smaller
+bet closes. Arm E once more, and the sharpest form of it yet: *we are not being graded on
+the same attempt.*
+
+Two consequences, and they point in opposite directions:
+
+1. **The segmentation gap is real and is ours to close** — 1639 vs 1344 planes, 472 vs 419
+   cylinders, 17 vs 11 distinct radii, 668 vs 333 rejected. That is honest recognition
+   work (work order item 4), independent of any build decision. Note `smoothMaxDevMM`
+   already agrees to six decimals (0.069631), so the *fitting* is right; it is the
+   partitioning that differs.
+2. **Matching `smoothBuiltComponents: 0` means reproducing a topological failure.** Doing
+   it faithfully requires building the seamed faces *and then failing to close the shell*
+   the same way. That is real work whose only product is a worse output — precedent
+   (FINDINGS-VOLUMEFIX) chose the honest geometry over the matching counter. This one is
+   the user's call, and it is not blocking: it is behind route P in the order.
+
 ## 8. Method rules, learned the expensive way
 
 1. **The reference is a deterministic source of truth. Read it before instrumenting.**
