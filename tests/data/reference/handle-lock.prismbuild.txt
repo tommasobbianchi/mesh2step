@@ -1,0 +1,9 @@
+DIAG_PRISMBUILD slab=0 faces=30 vol=14668.268953 valid=1
+DIAG_PRISMBUILD slab=1 faces=10 vol=1200.563063 valid=1
+DIAG_PRISMBUILD fuse-k=1 faces=40
+DIAG_PRISMBUILD usd-try faces P=23->23 C=17->15 V=15868.832006->15868.832005
+DIAG_PRISMBUILD plane-adj nAdj=41 nExact=0 nPlanes=23
+DIAG_PRISMBUILD unify faces=40 G1=1 G2=1 G4=0 V_before=15868.832006 V_after=15868.832006 planes=23->23 cyls=17->17
+DIAG_PRISMBUILD vol D_signed=-5.652672 D_abs=10.616932 V_ref=15874.537189 budget=31.850748 envelope=11.147779 |s-Vref|=5.705183 |s-mesh|=0.052511 cond1=1 cond2=1
+DIAG_PRISMBUILD G1=1 G2=1 G3_planes=23 G4=0 cyls=17->17 V_before=15868.832006 V_after=15868.832006
+DIAG_PRISMBUILD comp=0 slabs=2 faces=40 planes=23 cyls=17 vol=15868.832006 watertight=1 valid=1 reverted=0

@@ -128,6 +128,20 @@ One unported seeding pass was setting the accuracy ceiling for the whole part.
 each band's own edges instead of the reference's per-band O(nTri) scan. Body11 (15300
 tris) and Body28 (14126) are the real test of whether that scoping is enough.
 
+- `P6: handle-lock's remaining parity gap is ENTIRELY route P, not segmentation. The
+  reference's own DIAG_PRISM census for it is nPlane=13 nCyl=15 -- identical to ours. Its
+  reported smoothPlanes=23/smoothCylinders=17/facesBeforeUnify=40 are the OUTPUT of
+  buildPrismatic (2 slabs, 30+10 faces, fuse to 40), not of segmentation. So when route P
+  lands, handle-lock's counters jump 13->23 and 15->17 and the overlay volume moves
+  16038.862197 -> 15868.832006 with no segmentation change at all | check:
+  STL2STEP_PRISM_DIAG=1 on handle-lock, compare DIAG_PRISM census vs RESULT counters |
+  result: pending`
+
+**I spent a session tuning the wrong stage.** The handle-lock law-band work was measured
+against 23/17 -- numbers the reference produces on a route we do not implement. Its
+segmentation agrees with ours to the unit. Arm E again, from the other side: I compared our
+*recognition* against their *construction* and read the difference as a recognition defect.
+
 **Where the time actually was — measured, not guessed.** I predicted the absorption loop
 was the bottleneck and was *refuted twice over*: `_absorb_leftover_into_bands` is 13.0% on
 handle-lock and **0.1%** on Body11 (4.3 s of 3189 s). The cost is `law_chain_accept`

@@ -1,0 +1,39 @@
+DIAG_PROFILE comp=0 slab=0 loop=0 outer=1 nSeg=27 nLine=15 nArc=12 nDecl=0 area=1855.303553
+DIAG_PROFILE  seg slab=0 loop=0 i=0 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=1 kind=arc R=3.787149 phi=1.570803 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=2 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=3 kind=arc R=3.787125 phi=1.570813 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=4 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=5 kind=arc R=20.001531 phi=0.174520 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=6 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=7 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=8 kind=arc R=5.000012 phi=1.396259 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=9 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=10 kind=arc R=10.000060 phi=0.802699 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=11 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=12 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=13 kind=arc R=29.999752 phi=0.458916 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=14 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=15 kind=arc R=9.999985 phi=1.227009 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=16 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=17 kind=arc R=9.999991 phi=1.570799 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=18 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=19 kind=arc R=15.000012 phi=1.121466 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=20 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=21 kind=arc R=5.000000 phi=1.570796 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=22 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=23 kind=arc R=5.999989 phi=1.539788 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=24 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=25 kind=arc R=0.499993 phi=1.574066 decl=0
+DIAG_PROFILE  seg slab=0 loop=0 i=26 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE comp=0 slab=0 loop=1 outer=0 nSeg=1 nLine=0 nArc=1 nDecl=0 area=103.868926
+DIAG_PROFILE  seg slab=0 loop=1 i=0 kind=arc R=5.750001 phi=6.283185 decl=0
+DIAG_PROFILE comp=0 slab=1 loop=0 outer=1 nSeg=8 nLine=4 nArc=4 nDecl=0 area=424.977623
+DIAG_PROFILE  seg slab=1 loop=0 i=0 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=1 kind=arc R=10.000060 phi=0.802699 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=2 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=3 kind=arc R=9.000004 phi=1.953483 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=4 kind=arc R=15.999988 phi=1.544861 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=5 kind=line R=0.000000 phi=0.000000 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=6 kind=arc R=5.000012 phi=1.396259 decl=0
+DIAG_PROFILE  seg slab=1 loop=0 i=7 kind=line R=0.000000 phi=0.000000 decl=0
