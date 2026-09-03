@@ -128,6 +128,16 @@ One unported seeding pass was setting the accuracy ceiling for the whole part.
 each band's own edges instead of the reference's per-band O(nTri) scan. Body11 (15300
 tris) and Body28 (14126) are the real test of whether that scoping is enough.
 
+**Where the time actually was — measured, not guessed.** I predicted the absorption loop
+was the bottleneck and was *refuted twice over*: `_absorb_leftover_into_bands` is 13.0% on
+handle-lock and **0.1%** on Body11 (4.3 s of 3189 s). The cost is `law_chain_accept`
+(71.1% on Body11) and inside it `nearest_at_angle`, which rescanned every chain point
+recomputing `azimuth` per query: 25.3M scalar calls on a 908-triangle fixture, 36% of
+runtime, for a frame that is **constant for the whole chain**. Hoisting the azimuth array
+out of `extract_chain` gave 171 s -> 82.5 s, i.e. it also paid back the 96 s baseline that
+predates the new pass. Third refuted prediction in a row, all with the same shape: I
+reached for the explanation from whatever area I had most recently worked in.
+
 ---
 
 ## 1. What the engine is
