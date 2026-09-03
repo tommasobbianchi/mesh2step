@@ -407,15 +407,28 @@ it serves; if an item cannot be justified by an arm, it is not on the list.
    (P4/P5). Not on the original list at all: it was invisible until the reference's own
    `DIAG_LAWCLAIM` census named the band we were missing. Recovered the 15th cylinder,
    the 11th radius, and four orders of magnitude of `smoothMaxDevMM`.
-3. **Route P: `refit_prism.cpp` + `refit_prism_build.cpp` + `refit_profile.cpp`** (E's
-   sidestep). What handle-lock's golden actually measures. 2855 lines that *remove*
-   difficulty: a six-condition predicate, 2D fitting with a two-primitive alphabet, and
-   prism+fuse construction. No pcurves, no seams, no surface intersections.
+3. **Route P** (E's sidestep). What handle-lock's golden actually measures — and P6
+   showed it measures *only* that: the reference's segmentation census for handle-lock is
+   nPlane=13 nCyl=15, identical to ours. 2855 lines that *remove* difficulty: a
+   six-condition predicate, 2D fitting with a two-primitive alphabet, and prism+fuse
+   construction. No pcurves, no seams, no surface intersections. `refit_prism.hpp` splits
+   it into exactly four entry points, and one `STL2STEP_PRISM_DIAG=1` run yields the
+   oracle for all four:
+   - ~~P1 `detectPrismatic`~~ — **DONE** (`d17daa2`), exact on all five components.
+   - **P2 `sliceProfiles` + `fitProfile`** — in flight. Gate:
+     `tests/data/reference/handle-lock.profile.txt`.
+   - **P3 `buildPrismSolid`** + wiring route P into the engine. Gate:
+     `tests/data/reference/handle-lock.prismbuild.txt`, and P6 comes due here.
+   - **P4 `writeProfileDxf`** — this IS `dxf_export.cpp`, not a separate track.
 4. **Segmentation accuracy at scale** (C, D) — Body11 and Body28 need the right region
    *counts*, not analytic faces, since both end faceted. This is a recognition problem,
    not a construction one.
-5. **`refit_fillet.cpp`** (C), then **`dxf_export.cpp`** (a report on route P's profiles,
-   so it follows 3).
+5. **`refit_fillet.cpp`** (C). `dxf_export.cpp` is no longer a separate item — it is P4.
+
+**Tracking note.** `~/projects/CLAUDE.md` mandates `bd` for all task tracking, but
+mesh2step is its own git repo with no `.beads/`, and the parent's database belongs to a
+different repo. This section is the work order until someone decides to `bd init` here;
+that is a repo-structure call, not one to make mid-port.
 
 **Route G construction — the hard half of E — is not on this list.** No corpus fixture
 reaches it. It was items 1 through 3 of the old plan, and it was the reference's own
