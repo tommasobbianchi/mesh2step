@@ -63,6 +63,38 @@ not move under any local change is a routing error, not a tuning problem.
 **E**, in the wrong order, without **D**'s parameters, for a fixture whose answer is
 **E**'s sidestep.
 
+### Prediction log
+
+Written before the check, per `ai-intuition`. A `pending` line is the only proof a
+prediction was a prediction.
+
+- `P1: adaptCoarseSegmentParams (arm D) moves handle-lock's segmentation toward the
+  reference's 13 planes / 15 cylinders | check: pytest -k "handle-lock and trueform" |
+  result: CONFIRMED — planes 15 -> 13, exactly the reference's segmentation; cylinders
+  14 vs 15, radii 10 vs 11 still short.`
+- `P2: the one missing cylinder and eleventh radius on handle-lock are a large-R arc
+  absorbed into a plane, so porting peelLargeArcStripsA2b (arm C, absorption) raises
+  smoothCylinders 14 -> 15 and smoothDistinctRadii 10 -> 11 | check: pytest -k
+  "handle-lock and trueform", read the mismatch dict | result: REFUTED — cylinders
+  stayed 14, radii 10. The peel runs, sees 6 unclaimed provisionals of >=3 triangles,
+  and BOTH detectors reject all 6. Nothing was absorbed.`
+- `P3: raising thetaPlane to 15 degrees makes plane growth more absorptive, so the peel
+  matters more after P1 than before | result: MOOT — P2's refutation makes the premise
+  irrelevant; nothing is being absorbed either way.`
+
+**Arm correction forced by P2.** Instrumented after the refutation: all 14 cylinders come
+from stage **L**, and B1 contributes **zero**. The reference accepts **15** law bands where
+we accept 14. So the missing cylinder is a missing law band — the gap is in arm **A/B**
+(the tessellation law and its per-export calibration), not arm **C** (absorption). I had
+attributed a recognition shortfall to a grouping stage because grouping was the arm I had
+most recently been working in.
+
+- `P4: the 15th band is a chain our lawChainAccept rejects at one of the four Tier-1
+  tests (equal-theta, R-consistency, common-axis, on-surface), not one we never seed —
+  since our calibration already reproduces the reference's dLo/dHi exactly, the seeding
+  and the export-level fit are right | check: instrument law_chain_accept on handle-lock
+  and count accept/reject per test | result: pending`
+
 ---
 
 ## 1. What the engine is

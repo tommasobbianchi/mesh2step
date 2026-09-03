@@ -21,6 +21,7 @@ from .lawband import (
     law_bands_mergeable,
     law_calibrate,
     law_chain_accept,
+    sign_normalize,
 )
 from .mesh_view import (
     MeshView,
@@ -2249,6 +2250,590 @@ def _claim_cylinders_b1(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> b
 
 # --- A3: plane commit (refit_grow.cpp commitPlanesA3) ---------------------------
 
+@dataclass
+class _ArcStripDetect:
+    """refit_internal.hpp ArcStripDetect."""
+
+    ok: bool = False
+    axis: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 1.0]))
+    center: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    radius: float = 0.0
+    span_rad: float = 0.0
+    static_normals: bool = False
+    chain_score: float = 0.0
+    from_arch_chain: bool = False
+    area_cv: float = 0.0
+    ang_cv: float = 0.0
+    chain_n: int = 0
+
+
+def _unit_tri_normal(mv: MeshView, lt: int):
+    n = tri_normal(mv, lt)
+    area = tri_area(mv, lt)
+    if not area > 0.0:
+        return None
+    return n, area
+
+
+def _edge_dihedral_tri_pair(mv: MeshView, t0: int, t1: int) -> float:
+    a = _unit_tri_normal(mv, t0)
+    b = _unit_tri_normal(mv, t1)
+    if a is None or b is None:
+        return 0.0
+    return math.acos(max(-1.0, min(1.0, float(np.dot(a[0], b[0])))))
+
+
+def _normal_covariance(mv: MeshView, tris: list):
+    """Area-weighted covariance of the facet normals (refit_math.cpp)."""
+    nbar = np.zeros(3)
+    area_sum = 0.0
+    for lt in tris:
+        r = _unit_tri_normal(mv, lt)
+        if r is None:
+            continue
+        n, area = r
+        area_sum += area
+        nbar = nbar + n * area
+    if not area_sum > 0.0:
+        return None
+    nbar = nbar / area_sum
+    cov = np.zeros((3, 3))
+    for lt in tris:
+        r = _unit_tri_normal(mv, lt)
+        if r is None:
+            continue
+        n, area = r
+        d = n - nbar
+        cov += area * np.outer(d, d)
+    return nbar, cov, area_sum
+
+
+def _max_cyl_residual(mv, tris, axis, center, radius) -> float:
+    a = np.asarray(axis, dtype=float)
+    c = np.asarray(center, dtype=float)
+    worst = 0.0
+    for lt in tris:
+        for k in range(3):
+            v = tri_corner(mv, lt, k)
+            rr = float(np.linalg.norm(np.cross(a, v - c)))
+            worst = max(worst, abs(rr - radius))
+    return worst
+
+
+def _monotonic_normal_span(mv: MeshView, order: list, axis: np.ndarray):
+    """Do the facet normals rotate monotonically about the axis, and by how much?"""
+    if len(order) < 3:
+        return False, 0.0, 0.0
+    frame = _axis_frame(axis)
+    if frame is None:
+        return False, 0.0, 0.0
+    u, v = frame
+    ang = []
+    for lt in order:
+        r = _unit_tri_normal(mv, lt)
+        if r is None:
+            continue
+        n = r[0]
+        pp = n - axis * float(np.dot(n, axis))
+        pm = float(np.linalg.norm(pp))
+        if pm < 1e-12:
+            continue
+        pp = pp / pm
+        ang.append(_wrap_to_pi(math.atan2(float(np.dot(pp, v)), float(np.dot(pp, u)))))
+    if len(ang) < 3:
+        return False, 0.0, 0.0
+    s = sorted(ang)
+    pos = neg = tot = 0
+    for i in range(1, len(s)):
+        d = s[i] - s[i - 1]
+        if abs(d) < 1e-4:
+            continue
+        tot += 1
+        if d > 0.0:
+            pos += 1
+        else:
+            neg += 1
+    mono_frac = max(pos, neg) / tot if tot > 0 else 1.0
+    span = s[-1] - s[0]
+    wrap_gap = 2.0 * K_PI - s[-1] + s[0]
+    if wrap_gap > span:
+        span = wrap_gap
+    return (span >= 0.14 and mono_frac >= 0.70), span, mono_frac
+
+
+def _tris_share_edge_verts(mv: MeshView, t0: int, t1: int):
+    T0 = mv.tris[t0]
+    T1 = mv.tris[t1]
+    for k in range(3):
+        a, b = int(T0[k]), int(T0[(k + 1) % 3])
+        for j in range(3):
+            c, d = int(T1[j]), int(T1[(j + 1) % 3])
+            if (a == c and b == d) or (a == d and b == c):
+                return a, b
+    return None
+
+
+def _strip_width_along_axis(mv: MeshView, t0: int, t1: int, axis: np.ndarray) -> float:
+    """Circumferential width of a strip: area divided by axial extent.
+
+    Deriving the width from area rather than from the shared edge is what makes
+    R = w / (2 sin(theta/2)) read the arc rather than the seam: on a Fusion export the
+    shared edge is often an axial generator, whose length says nothing about the arc.
+    """
+    ax = np.asarray(axis, dtype=float)
+    am = float(np.linalg.norm(ax))
+    if am < 1e-15:
+        return 0.0
+    ax = ax / am
+
+    def axial_extent(t):
+        pts = [tri_corner(mv, t, k) for k in range(3)]
+        d = [float(np.dot(ax, p)) for p in pts]
+        return max(d) - min(d)
+
+    def width_from_area(t):
+        r = _unit_tri_normal(mv, t)
+        if r is None:
+            return 0.0
+        h = axial_extent(t)
+        if h <= 1e-6:
+            return 0.0
+        return 2.0 * r[1] / h
+
+    w0 = width_from_area(t0)
+    w1 = width_from_area(t1)
+    if w0 > 0.0 and w1 > 0.0:
+        return 0.5 * (w0 + w1)
+    sh = _tris_share_edge_verts(mv, t0, t1)
+    if sh is None:
+        return 0.0
+    e = mv.pts[sh[1]] - mv.pts[sh[0]]
+    length = float(np.linalg.norm(e))
+    if not length > 0.0:
+        return 0.0
+    if abs(float(np.dot(e, ax))) / length > 0.82:
+        return 0.0
+    return length
+
+
+def _tri_in_patch_neighbors(mv: MeshView, t: int, in_patch: list) -> list:
+    nb = set()
+    for s in range(3):
+        e = int(mv.tri_edges[t, s])
+        for u in range(mv.n_tri):
+            if not in_patch[u] or u == t:
+                continue
+            if e in (int(mv.tri_edges[u, 0]), int(mv.tri_edges[u, 1]), int(mv.tri_edges[u, 2])):
+                nb.add(u)
+    return sorted(nb)
+
+
+def _build_tri_path_chain(mv: MeshView, tris: list) -> list:
+    """Longest walk through the patch that always steps across a real bend.
+
+    A tessellated arc is a *path* of strips, not a blob; recovering that order is what
+    lets the equal-step law be tested at all.
+    """
+    if len(tris) < 3:
+        return []
+    in_patch = [False] * mv.n_tri
+    for t in tris:
+        if 0 <= t < mv.n_tri:
+            in_patch[t] = True
+
+    def walk_from(start: int, arc_only: bool) -> list:
+        out = []
+        seen = [False] * mv.n_tri
+        cur, prev = start, -1
+        while cur >= 0 and not seen[cur]:
+            out.append(cur)
+            seen[cur] = True
+            nxt, best_phi = -1, 0.0
+            for u in _tri_in_patch_neighbors(mv, cur, in_patch):
+                if u == prev or seen[u]:
+                    continue
+                phi = _edge_dihedral_tri_pair(mv, cur, u)
+                if arc_only and (phi < 0.012 or phi > K_PI - 0.012):
+                    continue
+                if nxt < 0 or phi > best_phi:
+                    nxt, best_phi = u, phi
+            prev, cur = cur, nxt
+        return out
+
+    best: list = []
+    for t in tris:
+        if 0 <= t < mv.n_tri:
+            c = walk_from(t, True)
+            if len(c) > len(best):
+                best = c
+    if len(best) < 3:
+        for t in tris:
+            if 0 <= t < mv.n_tri:
+                c = walk_from(t, False)
+                if len(c) > len(best):
+                    best = c
+    return best if len(best) >= 3 else []
+
+
+def _cv_ok(vals: list, skip_ends: int, max_cv: float) -> bool:
+    cv = _cv_of(vals, skip_ends)
+    return cv is not None and cv <= max_cv
+
+
+def _cv_of(vals: list, skip_ends: int):
+    """Population CV over the interior of the list, or None if it cannot be formed."""
+    if len(vals) < 2:
+        return None
+    lo = max(0, skip_ends)
+    hi = len(vals) - max(0, skip_ends)
+    if hi <= lo + 1:
+        return None
+    seg = vals[lo:hi]
+    if any(not v > 0.0 for v in seg):
+        return None
+    if len(seg) < 2:
+        return None
+    mean = sum(seg) / len(seg)
+    if not mean > 0.0:
+        return None
+    var = sum(v * v for v in seg) / len(seg) - mean * mean
+    if var <= 0.0:
+        return 0.0
+    return math.sqrt(var) / mean
+
+
+def _chain_area_ang_cv(mv: MeshView, chain: list):
+    if len(chain) < 3:
+        return None
+    areas = []
+    for t in chain:
+        r = _unit_tri_normal(mv, t)
+        if r is None:
+            return None
+        areas.append(r[1])
+    arc_thetas = []
+    for i in range(1, len(chain)):
+        th = _edge_dihedral_tri_pair(mv, chain[i - 1], chain[i])
+        if 0.012 <= th <= K_PI - 0.04:
+            arc_thetas.append(th)
+    area_cv = _cv_of(areas, 2 if len(chain) >= 10 else 1)
+    if area_cv is None:
+        return None
+    ang_cv = _cv_of(arc_thetas, 0) if len(arc_thetas) >= 2 else 0.0
+    return area_cv, (ang_cv if ang_cv is not None else 0.0)
+
+
+def _radius_from_arch_chain(mv, chain, axis, r_hint=0.0):
+    """R = w / (2 sin(theta/2)) along an ordered strip chain, with equal-step gates."""
+    if len(chain) < 3:
+        return None
+    k_min_theta, k_max_theta = 0.012, K_PI - 0.04
+    areas = []
+    for t in chain:
+        r = _unit_tri_normal(mv, t)
+        if r is None:
+            return None
+        areas.append(r[1])
+    thetas = [_edge_dihedral_tri_pair(mv, chain[i - 1], chain[i]) for i in range(1, len(chain))]
+    if not _cv_ok(areas, 2 if len(chain) >= 10 else 1, 0.42):
+        return None
+    arc_thetas = [t for t in thetas if k_min_theta <= t <= k_max_theta]
+    if len(arc_thetas) < 2 or not _cv_ok(arc_thetas, 0, 0.45):
+        return None
+    radii = []
+    good = 0
+    for i in range(1, len(chain)):
+        theta = thetas[i - 1]
+        if theta < k_min_theta or theta > k_max_theta:
+            continue
+        w = _strip_width_along_axis(mv, chain[i - 1], chain[i], axis)
+        if not w > 0.0:
+            continue
+        s = math.sin(0.5 * theta)
+        if s <= 1e-9:
+            continue
+        r_chord = w / (2.0 * s)
+        if not (r_chord > 0.0) or not math.isfinite(r_chord):
+            continue
+        if r_hint > 0.0 and not (0.48 < r_chord / r_hint < 1.52):
+            continue
+        radii.append(r_chord)
+        good += 1
+    if len(radii) < 2:
+        return None
+    r_med = _median_of(radii)
+    if not r_med > 0.0:
+        return None
+    n_links = len(chain) - 1
+    link_frac = good / n_links if n_links > 0 else 0.0
+    score = link_frac * min(1.0, len(chain) / 5.0)
+    if score < 0.28:
+        return None
+    return r_med, score
+
+
+def _radius_from_arch_chain_pairs(mv, tris, axis, r_hint=0.0):
+    ids = sorted(set(tris))
+    if len(ids) < 3:
+        return None
+    ws, ths = [], []
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            if _tris_share_edge_verts(mv, ids[i], ids[j]) is None:
+                continue
+            theta = _edge_dihedral_tri_pair(mv, ids[i], ids[j])
+            if theta < 0.012 or theta > K_PI - 0.012:
+                continue
+            w = _strip_width_along_axis(mv, ids[i], ids[j], axis)
+            if not w > 0.0:
+                continue
+            s = math.sin(0.5 * theta)
+            if s <= 1e-9:
+                continue
+            r_chord = w / (2.0 * s)
+            if not (r_chord > 0.0) or not math.isfinite(r_chord):
+                continue
+            if r_hint > 0.0 and not (0.48 < r_chord / r_hint < 1.52):
+                continue
+            ws.append(w)
+            ths.append(theta)
+    if len(ws) < 2 or not _cv_ok(ws, 0, 0.45) or not _cv_ok(ths, 0, 0.45):
+        return None
+    s = math.sin(0.5 * _median_of(ths))
+    if s <= 1e-9:
+        return None
+    radius = _median_of(ws) / (2.0 * s)
+    if not radius > 0.0 or not math.isfinite(radius):
+        return None
+    return radius, min(1.0, len(ws) / 6.0)
+
+
+def _detect_arch_chain(mv: MeshView, tris: list, tol: DerivedTols) -> _ArcStripDetect:
+    """Point-to-point arch chain: equal-area strips joined at uniform dihedral steps."""
+    out = _ArcStripDetect()
+    if not law_band_applicable(mv):
+        return out
+    ids = sorted(set(tris))
+    if len(ids) < 3:
+        return out
+    nc = _normal_covariance(mv, ids)
+    if nc is None:
+        return out
+    _evals, evecs = np.linalg.eigh(nc[1])
+    w1 = evecs[:, 0]
+    wm = float(np.linalg.norm(w1))
+    if wm < 1e-15:
+        return out
+    axis = sign_normalize(w1 / wm)
+
+    chain = _build_tri_path_chain(mv, ids)
+    if not chain:
+        return out
+    rc = _radius_from_arch_chain(mv, chain, axis, 0.0)
+    if rc is None:
+        return out
+    chain_r, chain_score = rc
+
+    cv = _chain_area_ang_cv(mv, chain)
+    if cv is not None:
+        out.area_cv, out.ang_cv = cv
+    out.chain_n = len(chain)
+    out.chain_score = chain_score
+
+    _mono, span, _frac = _monotonic_normal_span(mv, chain, axis)
+
+    ok, center, radius = _eberly_center_radius(mv, ids, axis)
+    if not ok:
+        return out
+    if chain_score >= 0.45:
+        radius = chain_r
+
+    # Coarse band keeps the shipped R >= 8 floor; outside it a high-confidence chain
+    # may go down to R >= 2.
+    r_floor = 2.0 if (not coarse_fusion_band(mv) and chain_score >= 0.85) else 8.0
+    if not (radius >= r_floor) or radius > 55.0:
+        return out
+
+    accept = tol.eps_cyl_accept(radius)
+    accept = max(accept, _chord_sagitta(radius, max(6, len(ids))))
+    if coarse_fusion_band(mv):
+        accept = max(accept, 0.05 * radius)
+    if _max_cyl_residual(mv, ids, axis, center, radius) > accept:
+        return out
+
+    out.ok = True
+    out.axis = axis
+    out.center = center
+    out.radius = radius
+    out.span_rad = span
+    out.from_arch_chain = True
+    return out
+
+
+def _order_tris_bfs(mv: MeshView, tris: list, max_phi: float) -> list:
+    in_patch = [False] * mv.n_tri
+    for t in tris:
+        if 0 <= t < mv.n_tri:
+            in_patch[t] = True
+    seed = min(tris)
+    seen = [False] * mv.n_tri
+    seen[seed] = True
+    q = [seed]
+    order = []
+    while q:
+        t = q.pop(0)
+        order.append(t)
+        for u in _tri_in_patch_neighbors(mv, t, in_patch):
+            if seen[u] or _edge_dihedral_tri_pair(mv, t, u) > max_phi:
+                continue
+            seen[u] = True
+            q.append(u)
+    return order if len(order) >= 3 else []
+
+
+def _detect_large_arc_strip(mv: MeshView, tris: list, tol: DerivedTols) -> _ArcStripDetect:
+    """Gauss-map strip detector: normals rotating about one axis, or a static-normal
+    ring on tessellation too coarse for the rotation to show (refit_math.cpp)."""
+    out = _ArcStripDetect()
+    ids = sorted(set(tris))
+    if len(ids) < 3:
+        return out
+    nc = _normal_covariance(mv, ids)
+    if nc is None:
+        return out
+    _nbar, cov, area_sum = nc
+    evals, evecs = np.linalg.eigh(cov)
+
+    length = max(mv.diag, tol.eps_mesh)
+    theta = (tol.eps_mesh / length) if length > 0.0 else 0.0
+    mu2_floor = area_sum * theta * theta
+    if evals[1] <= mu2_floor and evals[1] <= 1e-12 * max(evals[2], 1e-300):
+        return out
+
+    pca = pca_plane(mv, ids)
+    pdev = _max_vertex_plane_dev(mv, ids, pca) if pca is not None else 0.0
+
+    w1 = evecs[:, 0]
+    wm = float(np.linalg.norm(w1))
+    if wm < 1e-15:
+        return out
+    axis = sign_normalize(w1 / wm)
+
+    order = _order_tris_bfs(mv, ids, tol.theta_plane)
+    if not order:
+        return out
+    mono, span, _frac = _monotonic_normal_span(mv, order, axis)
+    static_normals = (not mono) and pdev > tol.eps_plane * 2.0
+    if not mono and not static_normals:
+        return out
+    if mono and span < 0.21:  # ~12 degrees
+        return out
+
+    ok, center, radius = _eberly_center_radius(mv, ids, axis)
+    if not ok or not (radius >= 15.0) or radius > 55.0:
+        return out
+
+    accept = tol.eps_cyl_accept(radius)
+    accept = max(accept, _chord_sagitta(radius, max(6, len(ids))))
+    if coarse_fusion_band(mv):
+        # Chordal rings on large-R partial arcs need slack beyond the sagitta floor.
+        accept = max(accept, 0.05 * radius)
+    if _max_cyl_residual(mv, ids, axis, center, radius) > accept:
+        return out
+
+    out.ok = True
+    out.axis = axis
+    out.center = center
+    out.radius = radius
+    out.span_rad = span
+    out.static_normals = static_normals
+    return out
+
+
+def _max_vertex_plane_dev(mv: MeshView, tris: list, ax: gp_Ax3) -> float:
+    n = _np_dir(ax.Direction())
+    loc = _np_pnt(ax.Location())
+    worst = 0.0
+    for lt in tris:
+        for k in range(3):
+            worst = max(worst, abs(float(np.dot(tri_corner(mv, lt, k) - loc, n))))
+    return worst
+
+
+def _peel_large_arc_strips_a2b(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
+    """Stage A2b (refit_grow.cpp:1838), called from INSIDE commitPlanesA3.
+
+    Absorption is the named failure mode of arm C: a large-radius arc spread over a few
+    coarse facets differs so little from a plane that A2 swallows it, and once the plane
+    is committed the arc is gone. This peels those strips back out of the unclaimed
+    provisionals before the commit, and only there -- it never touches a provisional a
+    later stage already claimed.
+    """
+    if not coarse_fusion_band(mv):
+        # Outside the coarse band, peel only high-confidence arch chains.
+        if not (law_band_applicable(mv) and not coarse_fusion_band(mv) and mv.n_tri <= 2500):
+            return True
+        for prov in work.provisionals:
+            if prov.claim != ProvClaim.UNCLAIMED or len(prov.tris) < 3:
+                continue
+            det = _detect_arch_chain(mv, prov.tris, tol)
+            if not det.ok or det.chain_score < 0.85:
+                continue
+            ev = _evaluate_commit(mv, tol, prov.tris, det.axis)
+            if ev.fail_gate != Gate.PASS:
+                continue
+            work.accepted.append(_fill_cylinder_region(mv, ev, det.axis, prov.tris))
+            prov.claim = ProvClaim.CONSUMED_CYLINDER
+            prov.tris = []
+            prov.area = 0.0
+        work.accepted.sort(key=lambda r: r.tris[0] if r.tris else INT_MAX)
+        return True
+
+    for prov in work.provisionals:
+        if prov.claim != ProvClaim.UNCLAIMED or len(prov.tris) < 3:
+            continue
+        arch = _detect_arch_chain(mv, prov.tris, tol)
+        gauss = _detect_large_arc_strip(mv, prov.tris, tol)
+        if not arch.ok and not gauss.ok:
+            continue
+        if arch.ok and arch.chain_score >= 0.45 and (
+            not gauss.ok or arch.chain_score >= gauss.chain_score + 0.05
+            or gauss.chain_score < 0.35
+        ):
+            det = arch
+        elif gauss.ok:
+            det = gauss
+        else:
+            det = arch
+
+        ev = _evaluate_commit(mv, tol, prov.tris, det.axis)
+        if ev.fail_gate != Gate.PASS:
+            # A coarse large-R partial arc can pass the detector and still miss B1's
+            # G3/G5 on a few-band span. The detector already gated it; accept on the
+            # Eberly solve rather than lose the arc to a plane.
+            if not coarse_fusion_band(mv) or det.radius < 15.0:
+                continue
+            ok, c, r = _eberly_center_radius(mv, prov.tris, det.axis)
+            if not ok:
+                continue
+            ev = _CommitEval()
+            ev.fail_gate = Gate.PASS
+            ev.radius = r
+            ev.center = c
+            ev.eberly_ok = True
+            ev.d2 = _compute_d2(mv, prov.tris, det.axis, c, r, tol)
+            if ev.d2.span_reject:
+                continue
+
+        work.accepted.append(_fill_cylinder_region(mv, ev, det.axis, prov.tris))
+        prov.claim = ProvClaim.CONSUMED_CYLINDER
+        prov.tris = []
+        prov.area = 0.0
+
+    work.accepted.sort(key=lambda r: r.tris[0] if r.tris else INT_MAX)
+    return True
+
+
 def _commit_planes_a3(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
     # Shatter-class unclaimed provisionals stay Unclaimed so stage D emits
     # islands (I1). Area floor is D5.2: epsPlane * diag.
@@ -2324,6 +2909,12 @@ def _commit_planes_a3(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> boo
                 dead = work.provisionals[k]
                 dead.tris = []
                 dead.area = 0.0
+
+    # A2b: peel absorbed large-R arc strips back out BEFORE the plane commit
+    # (refit_grow.cpp:2017 — inside A3, after the coplanar merge, so merged shards
+    # are visible to the detector).
+    if not _peel_large_arc_strips_a2b(mv, tol, work):
+        return False
 
     for prov in work.provisionals:
         if prov.claim != ProvClaim.UNCLAIMED:
