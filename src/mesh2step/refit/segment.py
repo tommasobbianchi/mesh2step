@@ -194,6 +194,10 @@ class Region:
     fillet_nbr_a: int = -1
     fillet_nbr_b: int = -1
     law_band: bool = False   # claimed by stage L rather than grown by B1
+    u_min: float = 0.0       # cylinder parametric extent (D2)
+    u_max: float = 0.0
+    v_min: float = 0.0
+    v_max: float = 0.0
 
 
 @dataclass
@@ -1092,6 +1096,10 @@ def _fill_cylinder_region(mv: MeshView, ev: _CommitEval, axis: np.ndarray, tris:
     reg.ax = ev.d2.ax
     reg.radius = ev.radius
     reg.closed360 = ev.d2.closed360
+    reg.u_min = ev.d2.u_min
+    reg.u_max = ev.d2.u_max
+    reg.v_min = ev.d2.v_min
+    reg.v_max = ev.d2.v_max
     reg.n_sides = ev.d2.n_sides
     reg.chord_sagitta = _chord_sagitta(ev.radius, ev.d2.n_sides)
     reg.outward_normal = _compute_outward_cylinder(mv, tris, axis, _np_pnt(ev.d2.ax.Location()))

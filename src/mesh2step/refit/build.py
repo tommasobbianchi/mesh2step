@@ -22,9 +22,9 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepLib import BRepLib
 from OCP.BRepTools import BRepTools_WireExplorer
 from OCP.ElCLib import ElCLib
-from OCP.Geom import Geom_Line, Geom_Plane
-from OCP.GeomAbs import GeomAbs_Plane
-from OCP.gp import gp_Dir, gp_Lin, gp_Pln, gp_Pnt
+from OCP.Geom import Geom_CylindricalSurface, Geom_Line, Geom_Plane
+from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
+from OCP.gp import gp_Ax1, gp_Ax3, gp_Cylinder, gp_Dir, gp_Lin, gp_Pln, gp_Pnt, gp_Vec
 from OCP.IntAna import IntAna_QuadQuadGeo, IntAna_ResultType
 from OCP.Precision import Precision
 from OCP.ShapeFix import ShapeFix_Face
@@ -150,6 +150,14 @@ def _ensure_face_valid(face: TopoDS_Face, cap: float) -> bool:
         def dev_pnt(p: gp_Pnt) -> float:
             if surf.GetType() == GeomAbs_Plane:
                 return surf.Plane().Distance(p)
+            if surf.GetType() == GeomAbs_Cylinder:
+                # |rho(p) - R|. Without this branch a cylindrical face measures zero
+                # deviation everywhere, so nothing is ever absorbed and the repair
+                # cannot succeed -- which is how every partial arc band was failing.
+                cyl = surf.Cylinder()
+                v = gp_Vec(cyl.Location(), p)
+                axis = gp_Vec(cyl.Axis().Direction())
+                return abs(axis.Crossed(v).Magnitude() - cyl.Radius())
             return 0.0
 
         vx = TopExp_Explorer(face, TopAbs_VERTEX)
@@ -481,6 +489,102 @@ def _make_wire_closed_from_edges(edges: list):
     except Standard_Failure:
         return None
     return w
+
+
+def _cyl_surface_for_region(region: Region) -> Geom_CylindricalSurface:
+    """refit_build.cpp:1779. For a partial band the surface frame is rotated so the
+    region's own u_min becomes u = 0, which keeps the face's parametric window away
+    from the seam at +/-pi instead of straddling it."""
+    ax = gp_Ax3(region.ax.Location(), region.ax.Direction(), region.ax.XDirection())
+    if not region.closed360:
+        u0 = region.u_min
+        while u0 > math.pi:
+            u0 -= 2.0 * math.pi
+        while u0 <= -math.pi:
+            u0 += 2.0 * math.pi
+        if abs(u0) > 1e-14:
+            ax.Rotate(gp_Ax1(ax.Location(), ax.Direction()), u0)
+    return Geom_CylindricalSurface(gp_Cylinder(ax, region.radius))
+
+
+def _build_cylindrical_face(
+    region: Region, rs: RegionSet, mv: MeshView, geom, collapsed, mesh_e, edge_ok
+):
+    """A Geom_CylindricalSurface face bounded by the region's own boundary loops.
+
+    Same loop machinery as the planar builder; the difference is that a cylinder is
+    periodic in u, so the edges need parametric curves and OCCT will not infer them
+    from 3D geometry alone. ShapeFix_Face builds the missing pcurves by projection,
+    which is sound here precisely because every boundary vertex is already known to
+    lie on the surface to within the mesh budget.
+    """
+    if region.max_vertex_dev > _mesh_tol_cap(mv, region):
+        return None
+    if not region.radius > 0.0 or region.ax is None:
+        return None
+
+    outer = None
+    inners = []
+    for lp in region.loops:
+        if lp.role == LoopRole.OUTER:
+            outer = lp
+        elif lp.role == LoopRole.INNER:
+            inners.append(lp)
+    if outer is None:
+        return None
+
+    ow = _build_loop_wire(outer, rs, mv, geom, collapsed, mesh_e, edge_ok)
+    if ow is None:
+        return None
+
+    cap = _mesh_tol_cap(mv, region)
+
+    def attempt(outer_wire: TopoDS_Wire, force_fix_orientation: bool):
+        surf = _cyl_surface_for_region(region)
+        mf = BRepBuilderAPI_MakeFace(surf, outer_wire, True)
+        if not mf.IsDone():
+            return None
+        for ip in inners:
+            iw = _build_loop_wire(ip, rs, mv, geom, collapsed, mesh_e, edge_ok)
+            if iw is None:
+                return None
+            mf.Add(iw)
+        if not mf.IsDone():
+            return None
+        face = mf.Face()
+        # Give every edge its pcurve on this surface first: without them BRepCheck
+        # complains the wire is not on the surface, which is a missing-representation
+        # problem rather than a geometric one.
+        fix = ShapeFix_Face(face)
+        if force_fix_orientation:
+            fix.FixOrientationMode = 1
+        fix.Perform()
+        face = fix.Face()
+        BRepLib.SameParameter_s(face, cap, True)
+        out = _set_face_outward(face, region.outward_normal)
+        if out.IsNull():
+            return None
+        if not _face_is_valid(out) and not _ensure_face_valid(out, cap):
+            return None
+        return out
+
+    # A cylinder is periodic in u, so which way round the outer wire runs in (u, v)
+    # is not fixed by the 3D mesh walk that produced it. The reference resolves this
+    # the same way (refit_build.cpp:2166, 2206): force FixOrientation, and failing
+    # that rebuild on the reversed wire, keeping whichever face checks out.
+    try:
+        for wire, forced in (
+            (ow, False),
+            (ow, True),
+            (TopoDS.Wire_s(ow.Reversed()), False),
+            (TopoDS.Wire_s(ow.Reversed()), True),
+        ):
+            face = attempt(wire, forced)
+            if face is not None:
+                return face
+    except Standard_Failure:
+        return None
+    return None
 
 
 def _build_planar_face(
@@ -925,7 +1029,12 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
                 )
                 return False
             if r.type == SurfType.CYLINDER:
-                return False  # M3-M5 stub: never built
+                f = _build_cylindrical_face(r, rs, mv, geom, collapsed, mesh_e, edge_ok)
+                if f is None:
+                    return False
+                r.built_as = BuiltAs.SINGLE
+                acc.append(f)
+                return True
             if r.type == SurfType.PLANE:
                 f = _build_planar_face(r, rs, mv, geom, collapsed, mesh_e, edge_ok)
                 if f is None:
