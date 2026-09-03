@@ -10,15 +10,18 @@ for the stage-by-stage port notes.
 """
 from .build import build_faces
 from .mesh_view import MeshView, build_mesh_view
+from .prism import PrismLevels, detect_prismatic
 from .segment import RegionSet, SegmentParams, segment
 from .stats import RefitStats
 
 __all__ = [
     "MeshView",
+    "PrismLevels",
     "RefitStats",
     "RegionSet",
     "SegmentParams",
     "build_faces",
     "build_mesh_view",
+    "detect_prismatic",
     "segment",
 ]
