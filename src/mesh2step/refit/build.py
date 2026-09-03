@@ -24,7 +24,19 @@ from OCP.BRepTools import BRepTools_WireExplorer
 from OCP.ElCLib import ElCLib
 from OCP.Geom import Geom_CylindricalSurface, Geom_Line, Geom_Plane
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
-from OCP.gp import gp_Ax1, gp_Ax3, gp_Cylinder, gp_Dir, gp_Lin, gp_Pln, gp_Pnt, gp_Vec
+from OCP.gp import (
+    gp_Ax1,
+    gp_Ax2,
+    gp_Ax3,
+    gp_Circ,
+    gp_Cylinder,
+    gp_Dir,
+    gp_Elips,
+    gp_Lin,
+    gp_Pln,
+    gp_Pnt,
+    gp_Vec,
+)
 from OCP.IntAna import IntAna_QuadQuadGeo, IntAna_ResultType
 from OCP.Precision import Precision
 from OCP.ShapeFix import ShapeFix_Face
@@ -208,22 +220,87 @@ def _mesh_component_closed(mv: MeshView) -> bool:
 # --- analytic curves (plane|plane only in M2) ----------------------------------
 
 class _Curve:
-    __slots__ = ("kind", "lin")
+    __slots__ = ("circ", "elips", "kind", "lin")
 
-    NONE, LIN = 0, 1
+    NONE, LIN, CIRC, ELIPS = 0, 1, 2, 3
 
     def __init__(self):
         self.kind = _Curve.NONE
         self.lin: gp_Lin | None = None
+        self.circ: gp_Circ | None = None
+        self.elips: gp_Elips | None = None
 
 
 def _curve_residual(curve: _Curve, p: gp_Pnt) -> float:
     try:
         if curve.kind == _Curve.LIN and curve.lin is not None:
             return curve.lin.Distance(p)
+        if curve.kind == _Curve.CIRC and curve.circ is not None:
+            t = ElCLib.Parameter_s(curve.circ, p)
+            return ElCLib.Value_s(t, curve.circ).Distance(p)
+        if curve.kind == _Curve.ELIPS and curve.elips is not None:
+            t = ElCLib.Parameter_s(curve.elips, p)
+            return ElCLib.Value_s(t, curve.elips).Distance(p)
     except Standard_Failure:
         return 1e300
     return 1e300
+
+
+def _cylinder_iso_circle(cyl: Region, v: float) -> gp_Circ:
+    """refit_build.cpp:517 — the iso-parameter circle at height v on a cylinder."""
+    loc = cyl.ax.Location().Translated(gp_Vec(cyl.ax.Direction()).Multiplied(v))
+    return gp_Circ(gp_Ax2(loc, cyl.ax.Direction(), cyl.ax.XDirection()), cyl.radius)
+
+
+def _plane_perp_cylinder(pln: Region, cyl: Region) -> bool:
+    """refit_build.cpp:522 — plane normal within 3 deg of the cylinder axis."""
+    c = abs(pln.ax.Direction().Dot(cyl.ax.Direction()))
+    return c >= math.cos(3.0 * K_PI / 180.0)
+
+
+def _plane_v_on_cylinder(pln: Region, cyl: Region) -> float:
+    """refit_build.cpp:527 — the cylinder v at which a plane cuts the axis."""
+    n = pln.ax.Direction()
+    a = cyl.ax.Direction()
+    na = n.Dot(a)
+    if abs(na) < 1e-12:
+        return 0.0
+    return gp_Vec(cyl.ax.Location(), pln.ax.Location()).Dot(gp_Vec(n)) / na
+
+
+def _constructed_plane_cyl_cap(pln: Region, cyl: Region) -> _Curve:
+    """refit_build.cpp:759 — plane perpendicular to a cylinder -> its cap circle."""
+    out = _Curve()
+    if not _plane_perp_cylinder(pln, cyl):
+        return out
+    out.kind = _Curve.CIRC
+    out.circ = _cylinder_iso_circle(cyl, _plane_v_on_cylinder(pln, cyl))
+    return out
+
+
+def _constructed_generator(cyl: Region, pln: Region) -> _Curve:
+    """refit_build.cpp:767 — plane containing the axis direction -> a generator line.
+
+    The reference leaves the parallel-to-axis precondition to its caller
+    (planeCylSideContact); here the constructor itself declines for a plane that
+    does not contain the axis, otherwise it would return a line at distance < R
+    from the axis (a plausible wrong answer).
+    """
+    out = _Curve()
+    n = pln.ax.Direction()
+    a = cyl.ax.Direction()
+    if abs(n.Dot(a)) > math.sin(3.0 * K_PI / 180.0) + 1e-15:
+        return out
+    axp = cyl.ax.Location()
+    sd = gp_Vec(pln.ax.Location(), axp).Dot(gp_Vec(n))
+    toward = gp_Vec(n).Reversed() if sd >= 0.0 else gp_Vec(n)
+    mag = toward.Magnitude()
+    if mag < _confusion():
+        return out
+    origin = axp.Translated(toward.Multiplied(cyl.radius))
+    out.kind = _Curve.LIN
+    out.lin = gp_Lin(origin, a)
+    return out
 
 
 def _chain_residual(curve: _Curve, mv: MeshView, chain: BoundaryChain) -> float:
@@ -336,6 +413,18 @@ def _make_edge_from_curve(curve: _Curve, v1: TopoDS_Vertex, v2: TopoDS_Vertex, c
             if abs(p1 - p2) <= _confusion():
                 return None
             return _bind_edge_by_param(Geom_Line(curve.lin), v1, v2, p1, p2)
+        if curve.kind == _Curve.CIRC and curve.circ is not None:
+            if closed_full or v1.IsSame(v2):
+                me = BRepBuilderAPI_MakeEdge(curve.circ, v1, v1)
+                if me.IsDone():
+                    return me.Edge()
+                me = BRepBuilderAPI_MakeEdge(curve.circ)
+                if me.IsDone():
+                    return me.Edge()
+            else:
+                me = BRepBuilderAPI_MakeEdge(curve.circ, v1, v2)
+                if me.IsDone():
+                    return me.Edge()
     except Standard_Failure:
         pass
     return None
