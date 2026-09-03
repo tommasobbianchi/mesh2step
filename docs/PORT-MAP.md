@@ -93,7 +93,40 @@ most recently been working in.
   tests (equal-theta, R-consistency, common-axis, on-surface), not one we never seed —
   since our calibration already reproduces the reference's dLo/dHi exactly, the seeding
   and the export-level fit are right | check: instrument law_chain_accept on handle-lock
-  and count accept/reject per test | result: pending`
+  and count accept/reject per test | result: REFUTED — the seeding is exactly what is
+  wrong. DIAG_LAWCLAIM on the reference names its 15 bands; ours reproduces 14 of them
+  to 5 decimals and misses precisely rid=443, n=6 tris, N=3, R=20.001531. Censused every
+  chain we ever offer lawChainAccept: ZERO with R in (19,21) accepted, and the eight
+  rejected there are different triangle sets (nearest: 6 tris from 216, R=20.403). That
+  chain is never offered.`
+
+**Arm correction forced by P4.** The gap is not a test being too strict, it is a whole
+seeding pass that was never ported: `refit_grow.cpp:2255`, a SECOND law pass over the
+triangles the first pass left, re-clustered with the TIGHT normal gate held against the
+seed normal rather than the running mean, plus two absorption loops that pull still-loose
+facets into an accepted band. A three-generator arc cannot survive the first pass — its
+strips are a minority inside a chart whose running mean is set by the long bands, so the
+gate walks past it. Our `_cluster_law_strips` already carried the `seed_only` parameter
+and both constants: the pass was anticipated and then forgotten. Twice now the answer has
+been "a stage of the reference we do not run", not "a threshold we set wrong" — arm E's
+firewall (recognition is not construction) has a sibling: **a missing pass looks exactly
+like a strict test, and only the reference's own census tells them apart.**
+
+- `P5: porting the leftover second pass raises handle-lock smoothCylinders 14 -> 15 and
+  smoothDistinctRadii 10 -> 11, the new band being R~20.0015 over 6 triangles | check:
+  pytest -k "handle-lock and trueform", read the mismatch dict | result: CONFIRMED —
+  smoothCylinders 14 -> 15, smoothDistinctRadii 10 -> 11, exactly the two counters named.`
+
+**The unpredicted half is the larger one.** `smoothMaxDevMM` fell from **0.6295 to
+2.32e-05** — four orders of magnitude — and `smoothMaxEdgeTolMM` with it (0.5960 ->
+2.12e-05). The missing band was not a sixteenth face nobody would notice: those six
+triangles were being absorbed into a *neighbouring* surface whose fit then had to
+stretch 0.63 mm to cover them, and that stretch was the fixture's worst deviation.
+One unported seeding pass was setting the accuracy ceiling for the whole part.
+
+**Cost:** 96 s -> 171 s on handle-lock (908 tris), after scoping the absorption ring to
+each band's own edges instead of the reference's per-band O(nTri) scan. Body11 (15300
+tris) and Body28 (14126) are the real test of whether that scoping is enough.
 
 ---
 
@@ -321,8 +354,8 @@ Targets to not chase past their real ceiling:
 
 | reference file | lines | ported | notes |
 |---|---:|---|---|
-| `refit_segment.cpp` | 85 | partial | **`adaptCoarseSegmentParams` missing** |
-| `refit_grow.cpp` | 2512 | partial | A1/A2/B1/gates + L driver; `peelLargeArcStripsA2b` missing |
+| `refit_segment.cpp` | 85 | **done** | `adaptCoarseSegmentParams` ported (P1) |
+| `refit_grow.cpp` | 2512 | partial | A1/A2/B1/gates, L driver, `peelLargeArcStripsA2b` (P2), leftover 2nd law pass + absorption (P5). Remaining: C1 call site |
 | `refit_lawband.cpp` | 979 | most | `lawband.py`; calibration matches reference exactly |
 | `refit_math.cpp` | 1846 | partial | `refineCylinderRadius`, Pratt done; arch-chain family missing |
 | `refit_chains.cpp` | 1046 | most | D stage in `segment.py` |
@@ -331,21 +364,25 @@ Targets to not chase past their real ceiling:
 | `refit_prism.cpp` + `refit_prism_build.cpp` + `refit_profile.cpp` | 2855 | **no** | route P — required for handle-lock |
 | `dxf_export.cpp` | 326 | no | `--dxf` |
 
-Ours: `segment.py` 2981, `build.py` 2161, `lawband.py` 738, `mesh_view.py` 149,
-`stats.py` 34 — about 6.9k Python against 17.9k C++.
+Ours (2026-09-03): `segment.py` 3753, `build.py` 1299, `lawband.py` 738,
+`mesh_view.py` 149, `stats.py` 34 — about 6.0k Python against 17.9k C++. (The earlier
+"build.py 2161" in this table was never true of any commit; `git show HEAD:` reads 1299.
+A line count nobody re-measures is how a map starts lying.)
 
 ## 7b. The work order, derived from §0
 
 Not "what failed last", but what the arms say must be true first. Each item names the arm
 it serves; if an item cannot be justified by an arm, it is not on the list.
 
-1. **`adaptCoarseSegmentParams`** (D). Nothing in the coarse regime can be judged while
-   the port grows planes at 2° where the reference uses 15°. Every measurement taken on
-   handle-lock so far was taken in the wrong regime, so this precedes all diagnosis of
-   it. ~10 lines.
-2. **`peelLargeArcStripsA2b`** (C). Absorption is the named failure mode and this is the
-   reference's answer to it — called from inside `commitPlanesA3`, not before B1. Missing
-   entirely from our port.
+1. ~~**`adaptCoarseSegmentParams`** (D)~~ — **DONE** (P1). Planes 15 -> 13, the
+   reference's exact segmentation.
+2. ~~**`peelLargeArcStripsA2b`** (C)~~ — **DONE, and it was not the answer** (P2). It
+   runs, sees 6 unclaimed provisionals, and both detectors reject all 6. Absorption was
+   the wrong arm; the gap was a missing seeding pass, not a missing rescue.
+2b. ~~**Leftover second law pass + absorption**~~ (`refit_grow.cpp:2255`) — **DONE**
+   (P4/P5). Not on the original list at all: it was invisible until the reference's own
+   `DIAG_LAWCLAIM` census named the band we were missing. Recovered the 15th cylinder,
+   the 11th radius, and four orders of magnitude of `smoothMaxDevMM`.
 3. **Route P: `refit_prism.cpp` + `refit_prism_build.cpp` + `refit_profile.cpp`** (E's
    sidestep). What handle-lock's golden actually measures. 2855 lines that *remove*
    difficulty: a six-condition predicate, 2D fitting with a two-primitive alphabet, and
@@ -374,3 +411,14 @@ abandoned road.
 4. **Milestones are a delegation unit, not a porting unit.** Porting a function and
    then discovering it needs its caller is the signature of working without this map.
 5. **A counter that cannot move is a routing error, not a tuning problem.**
+6. **The map decays fastest exactly where work is happening.** On 2026-09-03 §7 still
+   listed `adaptCoarseSegmentParams` and `peelLargeArcStripsA2b` as missing after both
+   had shipped, and carried a `build.py` line count that matched no commit. The
+   prediction log stayed honest because each entry is written once and then only
+   appended to; the status table drifted because it is the part that must be *rewritten*
+   to stay true. Re-read §7 against the tree whenever a prediction resolves, not at the
+   end.
+7. **A missing pass and a strict test are indistinguishable from the inside.** P2 and P4
+   both blamed a threshold and both were wrong; both times the answer was a stage of the
+   reference we simply do not run. When a claim never appears, census what is *offered*
+   before tuning what is *accepted*.

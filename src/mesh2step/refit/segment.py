@@ -1879,6 +1879,163 @@ def _fill_law_band_region(mv: MeshView, tol: DerivedTols, band) -> Region:
     return reg
 
 
+def _grow_leftover_law_bands(mv: MeshView, tol: DerivedTols, accepted, taken, adj_e) -> None:
+    """Second law-band pass over the triangles the first pass left (refit_grow.cpp:2255).
+
+    A short arc -- three generators, six facets -- never survives the first pass:
+    its strips are a minority inside a chart whose mean normal is dominated by the
+    long bands, so the running-mean gate walks straight past it. The leftovers are
+    therefore re-clustered with the TIGHT normal gate held against the SEED normal
+    instead of the running mean, seeded again, and whatever is still loose is then
+    absorbed into a band already accepted.
+    """
+    left = [t for t in range(mv.n_tri) if not taken[t]]
+    if not left:
+        return
+
+    left_s: list = []
+    _cluster_law_strips(mv, left, 0, left_s, K_LAW_STRIP_NORMAL_COS_TIGHT, True)
+    n_l = len(left_s)
+    tri_s = [-1] * mv.n_tri
+    for i, st in enumerate(left_s):
+        for t in st.tris:
+            if 0 <= t < mv.n_tri:
+                tri_s[t] = i
+    ladj = [set() for _ in range(n_l)]
+    for e in range(mv.n_edge):
+        t0, t1 = adj_e[e]
+        if t0 < 0 or t1 < 0:
+            continue
+        a, b = tri_s[t0], tri_s[t1]
+        if a < 0 or b < 0 or a == b:
+            continue
+        ladj[a].add(b)
+        ladj[b].add(a)
+    ladj = [sorted(x) for x in ladj]
+
+    def union_left(mem):
+        ts = set()
+        for m in mem:
+            ts.update(left_s[m].tris)
+        return sorted(ts)
+
+    ltrip = set()
+    for a in range(n_l):
+        for b in ladj[a]:
+            for c in ladj[b]:
+                if c == a:
+                    continue
+                t = tuple(sorted((a, b, c)))
+                if t[0] != t[1] and t[1] != t[2]:
+                    ltrip.add(t)
+
+    for trip in sorted(ltrip):
+        mem = list(trip)
+        sb = law_chain_accept(mv, union_left(mem), tol.eps_mesh)
+        if sb is None:
+            continue
+        in_set = set(mem)
+        changed = True
+        while changed:
+            changed = False
+            for m in list(mem):
+                for nb in ladj[m]:
+                    if nb in in_set:
+                        continue
+                    tb = law_chain_accept(mv, union_left([*mem, nb]), tol.eps_mesh)
+                    if tb is None:
+                        continue
+                    mem.append(nb)
+                    in_set.add(nb)
+                    sb = tb
+                    changed = True
+                    break
+                if changed:
+                    break
+        if any(0 <= t < mv.n_tri and taken[t] for t in sb.tris):
+            continue
+        accepted.append(sb)
+        for t in sb.tris:
+            if 0 <= t < mv.n_tri:
+                taken[t] = True
+
+    _absorb_leftover_into_bands(mv, tol, accepted, taken, adj_e)
+
+
+def _absorb_leftover_into_bands(mv: MeshView, tol: DerivedTols, accepted, taken, adj_e) -> None:
+    """Pull still-unclaimed neighbours into an accepted band (refit_grow.cpp:2344)."""
+
+    def ring_of(b_tris, in_b):
+        """Unclaimed triangles edge-adjacent to the band, in ascending order.
+
+        The reference scans all nTri per band per round; walking the band's own
+        edges is the same set and keeps Body-scale meshes tractable.
+        """
+        ring = set()
+        for t in b_tris:
+            if t < 0 or t >= mv.n_tri:
+                continue
+            for s in range(3):
+                e = int(mv.tri_edges[t, s])
+                t0, t1 = adj_e[e]
+                u = t1 if t0 == t else t0
+                if u >= 0 and not taken[u] and not in_b[u]:
+                    ring.add(u)
+        return sorted(ring)
+
+    grew = True
+    while grew:
+        grew = False
+        for bi in range(len(accepted)):
+            b = accepted[bi]
+            # Membership is fixed at entry, as in the reference: a band that grows
+            # mid-round does not widen its own candidate ring until the next round.
+            b0_tris = list(b.tris)
+            in_b = [False] * mv.n_tri
+            for t in b0_tris:
+                if 0 <= t < mv.n_tri:
+                    in_b[t] = True
+
+            for t_add in ring_of(b0_tris, in_b):
+                nb = law_chain_accept(mv, [*b.tris, t_add], tol.eps_mesh)
+                if nb is None:
+                    continue
+                taken[t_add] = True
+                b = nb
+                accepted[bi] = b
+                grew = True
+
+            # Staggered interiors reject a single-tri add but accept the leftover
+            # on-cylinder ring as one batch.
+            ax = b.axis_dir
+            loc = b.axis_loc
+            tau = max(5e-5, 4.0 * mv.weld_tol, 1e-6 * mv.diag, K_LAW_R_REL_GROW * b.radius)
+            batch = []
+            for t in ring_of(b0_tris, in_b):
+                # End caps sit on the same circle but are axial; a neighbouring wall
+                # of another radius is radial but fails the rho test below.
+                if abs(float(np.dot(tri_normal(mv, t), ax))) > 0.35:
+                    continue
+                on_cyl = True
+                for c in range(3):
+                    d = tri_corner(mv, t, c) - loc
+                    rad = d - ax * float(np.dot(d, ax))
+                    if abs(float(np.linalg.norm(rad)) - b.radius) > tau:
+                        on_cyl = False
+                        break
+                if on_cyl:
+                    batch.append(t)
+            if not batch:
+                continue
+            nb = law_chain_accept(mv, [*b.tris, *batch], tol.eps_mesh)
+            if nb is None:
+                continue
+            for t in batch:
+                taken[t] = True
+            accepted[bi] = nb
+            grew = True
+
+
 def _claim_law_bands_l(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bool:
     """Stage L (refit_grow.cpp:2057). Runs BEFORE B1 and A3.
 
@@ -1994,6 +2151,8 @@ def _claim_law_bands_l(mv: MeshView, tol: DerivedTols, work: _SegmentWork) -> bo
         for t in b.tris:
             if 0 <= t < mv.n_tri:
                 taken[t] = True
+
+    _grow_leftover_law_bands(mv, tol, accepted, taken, adj_e)
 
     # Merge neighbouring bands that are coaxial, same-radius and still equal-theta.
     merged = True
