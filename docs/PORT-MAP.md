@@ -733,7 +733,22 @@ cos(15°) = 0.9659, and `axisOf` therefore keeps the seed axis where we adopt `w
   Body11 cylinder deficit (332/419 and 140/164) closes substantially, since B1 axis
   selection is what decides how far each claim grows |
   check: MESH2STEP_P1_DIAG=1 on nonprismatic-control, diff the commit lines against the
-  reference | result: pending`
+  reference | result: **CONFIRMED**, both halves. The two commit lines now match the
+  reference exactly (axis=seed, scW1=0.9659, g.dev=0.9659, R_w1 8.2406 and 4.9494). On
+  Body11 every counter moved toward the reference in one step:
+
+  | | before | after | reference |
+  |---|---:|---:|---:|
+  | comp0 cylinders | 332 | 389 | 419 |
+  | comp0 planes | 1376 | 1355 | 1344 |
+  | comp0 rejected | 434 | 373 | 333 |
+  | comp0 regions | 1708 | 1744 | 1763 |
+  | comp1 cylinders | 140 | 154 | 164 |
+  | comp1 rejected | 234 | 219 | 206 |
+  | smoothCylinders | 472 | 543 | 583 |
+
+  The deficit went from 111 short to 40 short -- roughly two thirds of it, from one line.
+  Runtime 3189s -> 1681s. Fast suite unchanged at 78 passed / 3 failed.`
 
 ### §7g — nonprismatic-control: we explode where the reference builds (2026-09-04)
 
