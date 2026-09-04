@@ -42,12 +42,21 @@ def test_real_mesh_end_to_end(mesh_path, tmp_step):
     n_faces = res["facesBeforeUnify"]
     if n_faces <= MAX_FACES_FOR_STEP_READBACK:
         volume = read_step_volume(tmp_step)
+        rel_err = abs(volume - ref.volume) / ref.volume
+        assert rel_err < 1e-3, f"{mesh_path.name}: mesh volume={ref.volume} step volume={volume}"
     else:
-        # Above the read-back ceiling the in-memory volume proxy is used instead;
-        # for watertight input it equals the built solid's volume to < 1e-3.
-        volume = res["meshVolumeMM3"]
-
-    rel_err = abs(volume - ref.volume) / ref.volume
-    assert rel_err < 1e-3, f"{mesh_path.name}: mesh volume={ref.volume} step volume={volume}"
+        # No volume check is available above the ceiling: OCCT's reader has not
+        # finished this file after 300s, and the engine's own --verify re-read hit
+        # an 800s timeout on it (measured). Comparing the engine's *input* mesh
+        # volume against trimesh's would compare the fixture to itself, so instead
+        # count what actually reached the file: one ADVANCED_FACE per triangle
+        # inside exactly one CLOSED_SHELL. Scanning 145 MB costs ~1s.
+        n_af = n_shell = 0
+        with open(tmp_step, "r", errors="ignore") as fh:
+            for line in fh:
+                n_af += line.count("ADVANCED_FACE")
+                n_shell += line.count("CLOSED_SHELL")
+        assert n_af == res["triangles"], f"{n_af} ADVANCED_FACE for {res['triangles']} triangles"
+        assert n_shell == 1, f"{n_shell} CLOSED_SHELL, expected exactly 1"
 
     print(f"{mesh_path.name}: {res['triangles']} tris -> {n_faces} faces in {elapsed:.2f}s")
