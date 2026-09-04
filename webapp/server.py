@@ -68,7 +68,9 @@ def convert(
 
     parsed_cuts = _parse_cuts(cuts)
 
-    if engine == "trueform":
+    if engine == "trueform" and not native_available():
+        # only the Python trueform engine cannot take these; the native one can,
+        # because they are applied to the mesh before it ever sees the file.
         if repair is not None:
             raise HTTPException(400, "repair is not available with the trueform engine")
         if parsed_cuts is not None:
@@ -91,7 +93,10 @@ def convert(
 
     # repair and cuts have no native equivalent; route those requests through the
     # Python engine so a knob the user set is never silently dropped.
-    use_native = native_available() and repair is None and parsed_cuts is None
+    # cuts and repair are MESH preprocessing (trimesh surgery on verts/tris), not
+    # conversion features -- so they run here, on the mesh, and the native engine
+    # converts the result. They no longer force the whole request onto Python.
+    use_native = native_available()
     if use_native:
         # ALWAYS normalise through our own loader, not just for non-STL input.
         # The binary takes STL only, and it also rejects an STL whose facet
@@ -102,6 +107,35 @@ def convert(
         # Round-tripping costs one load+write and makes the two engines accept
         # exactly the same inputs.
         verts, tris = load_mesh(in_path)
+        n_in_verts, n_in_tris = len(verts), len(tris)
+        cut_before = cut_after = None
+        repair_info = None
+
+        if parsed_cuts:
+            cr = apply_cuts(verts, tris, parsed_cuts)
+            verts, tris = cr.verts, cr.tris
+            cut_before, cut_after = cr.n_tris_before, cr.n_tris_after
+            if len(tris) == 0:
+                __import__("shutil").rmtree(workdir, ignore_errors=True)
+                return {"ok": False, "stats": {
+                    "engine": engine, "backend": "native",
+                    "error": "cut operations removed all triangles",
+                    "input_path": file.filename, "output_path": f"{stem}.step",
+                }}
+
+        if repair is not None:
+            from mesh2step import repair as _repair
+
+            rr = _repair.repair_mesh(verts, tris, level=repair)
+            verts, tris = rr.verts, rr.tris
+            repair_info = {
+                "repair_level": repair,
+                "n_repair_faces_before": rr.n_faces_before,
+                "n_repair_faces_after": rr.n_faces_after,
+                "repair_holes_filled": rr.holes_filled,
+                "repair_watertight_after": rr.watertight_after,
+            }
+
         stl_path = workdir / "native_input.stl"
         trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
         native_engine = "trueform" if engine == "trueform" else "verbatim"
@@ -118,6 +152,15 @@ def convert(
         )
         d = _native_stats(res, engine, schema)
         d["backend"] = "native"
+        # the counts the client renders come from BEFORE the native step, because
+        # the binary only ever sees the already-cut, already-repaired mesh.
+        d["n_input_verts"] = n_in_verts
+        d["n_input_tris"] = n_in_tris
+        if cut_before is not None:
+            d["n_cut_tris_before"] = cut_before
+            d["n_cut_tris_after"] = cut_after
+        if repair_info is not None:
+            d.update(repair_info)
         if engine == "faceted" and merge_coplanar_angle is not None:
             d["n_faces_before_merge"] = res.get("facesBeforeUnify")
             d["n_faces_after_merge"] = res.get("facesAfterUnify")

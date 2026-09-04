@@ -201,27 +201,38 @@ def test_convert_trueform_cube(client, cube_stl_bytes):
     assert abs(s["volume"] - 1000.0) < 1e-3
 
 
-def test_trueform_repair_rejected(client, cube_stl_bytes):
+def test_trueform_repair_is_honoured(client, cube_stl_bytes):
+    """repair is mesh surgery applied BEFORE conversion, so trueform can take it.
+
+    It used to be refused with 400 because the Python trueform engine has no
+    place to apply it. The native engine converts an already-repaired mesh, so
+    the refusal is gone and the request must now succeed and report the repair.
+    """
     resp = client.post(
         "/api/convert",
         files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
-        data={"engine": "trueform", "tolerance": "0.01", "schema": "ap214", "repair": "weld"},
+        data={"engine": "trueform", "repair": "weld", "schema": "ap214"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["stats"]["repair_level"] == "weld"
+    assert body["stats"]["backend"] == "native"
 
 
-def test_trueform_cuts_rejected(client, cube_stl_bytes):
+def test_trueform_cuts_are_honoured(client, cube_stl_bytes):
+    """cuts are mesh surgery too, and are likewise no longer refused."""
+    cuts = json.dumps([{"type": "plane", "axis": "z", "offset": 5.0, "keep": "min"}])
     resp = client.post(
         "/api/convert",
         files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
-        data={
-            "engine": "trueform",
-            "tolerance": "0.01",
-            "schema": "ap214",
-            "cuts": json.dumps([{"type": "largest"}]),
-        },
+        data={"engine": "trueform", "cuts": cuts, "schema": "ap214"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["stats"]["backend"] == "native"
+    assert body["stats"]["n_cut_tris_before"] is not None
 
 
 def test_bogus_engine_rejected(client, cube_stl_bytes):
@@ -288,16 +299,21 @@ def test_native_trueform_cube(client, cube_stl_bytes):
     assert abs(s["volume"] - 1000.0) < 1e-3
 
 
-def test_native_repair_falls_back_to_python(client, cube_stl_bytes):
+def test_repair_runs_on_the_native_backend(client, holed_cube_stl_bytes):
+    """repair no longer forces the Python conversion engine.
+
+    The mesh is repaired here and the native engine converts the result, so the
+    backend stays native and the repair is still reported.
+    """
     resp = client.post(
         "/api/convert",
-        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
-        data={"engine": "faceted", "tolerance": "0.01", "schema": "ap214", "repair": "weld"},
+        files={"file": ("holed.stl", holed_cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted", "repair": "fill", "schema": "ap214"},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["ok"] is True
-    assert body["stats"]["backend"] == "python"
+    assert body["stats"]["backend"] == "native"
+    assert body["stats"]["repair_level"] == "fill"
 
 
 def test_native_non_stl_obj(client, cube_obj_bytes):
