@@ -247,3 +247,68 @@ def test_trueform_download_roundtrip(client, cube_stl_bytes):
     resp = client.get(f"/api/download/{token}")
     assert resp.status_code == 200
     assert resp.content.startswith(b"ISO-10303-21")
+
+
+@pytest.fixture(scope="module")
+def cube_obj_bytes(tmp_path_factory):
+    mesh = trimesh.creation.box((10, 10, 10))
+    p = tmp_path_factory.mktemp("data") / "cube.obj"
+    mesh.export(str(p))
+    return p.read_bytes()
+
+
+def test_native_faceted_cube(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted", "tolerance": "0.01", "schema": "ap214"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    s = body["stats"]
+    assert s["backend"] == "native"
+    assert s["is_solid"] is True
+    assert abs(s["volume"] - 1000.0) < 1e-3
+
+
+def test_native_trueform_cube(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform", "tolerance": "0.01", "schema": "ap214"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    s = body["stats"]
+    assert s["engine"] == "trueform"
+    assert s["backend"] == "native"
+    assert s["is_solid"] is True
+    assert abs(s["volume"] - 1000.0) < 1e-3
+
+
+def test_native_repair_falls_back_to_python(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted", "tolerance": "0.01", "schema": "ap214", "repair": "weld"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["stats"]["backend"] == "python"
+
+
+def test_native_non_stl_obj(client, cube_obj_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.obj", cube_obj_bytes, "application/octet-stream")},
+        data={"engine": "faceted", "tolerance": "0.01", "schema": "ap214"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    s = body["stats"]
+    assert s["backend"] == "native"
+    assert s["is_solid"] is True

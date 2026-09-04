@@ -21,6 +21,7 @@ import trimesh
 from mesh2step.convert import convert_file, convert_trueform
 from mesh2step.cut import apply_cuts, component_labels
 from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, load_mesh
+from mesh2step.native import convert_native, native_available
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
 RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S3 if multi-worker.
@@ -88,11 +89,50 @@ def convert(
                 raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
             fh.write(chunk)
 
+    # repair and cuts have no native equivalent; route those requests through the
+    # Python engine so a knob the user set is never silently dropped.
+    use_native = native_available() and repair is None and parsed_cuts is None
+    if use_native:
+        stl_path = in_path
+        if suffix != ".stl":
+            # the binary takes STL only; transcode through the existing loader.
+            verts, tris = load_mesh(in_path)
+            stl_path = workdir / "input.stl"
+            trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
+        native_engine = "trueform" if engine == "trueform" else "verbatim"
+        native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
+        # Faceted with no merge requested must keep one face per triangle, which
+        # is what the Python engine does and what the client already contracts for.
+        res = convert_native(
+            stl_path,
+            out_path,
+            engine=native_engine,
+            schema=schema,
+            unify_angle=native_unify,
+            no_unify=(engine == "faceted" and merge_coplanar_angle is None),
+        )
+        d = _native_stats(res, engine, schema)
+        d["backend"] = "native"
+        if engine == "faceted" and merge_coplanar_angle is not None:
+            d["n_faces_before_merge"] = res.get("facesBeforeUnify")
+            d["n_faces_after_merge"] = res.get("facesAfterUnify")
+        # don't leak server temp paths to the client
+        d["input_path"] = file.filename
+        d["output_path"] = f"{stem}.step"
+        if not res.get("ok"):
+            __import__("shutil").rmtree(workdir, ignore_errors=True)
+            return {"ok": False, "stats": d}
+
+        token = uuid.uuid4().hex
+        _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
+        return {"ok": True, "stats": d, "download_token": token}
+
     if engine == "trueform":
         # tolerance and the two merge_coplanar_* fields are slider defaults the browser
         # always sends; under trueform they are accepted and ignored.
         res = convert_trueform(in_path, out_path, unify_angle=unify_angle, schema=schema)
         d = _trueform_stats(res, schema)
+        d["backend"] = "python"
         # don't leak server temp paths to the client
         d["input_path"] = file.filename
         d["output_path"] = f"{stem}.step"
@@ -123,6 +163,7 @@ def convert(
     )
     d = stats.as_dict()
     d["engine"] = "faceted"
+    d["backend"] = "python"
     # don't leak server temp paths to the client
     d["input_path"] = file.filename
     d["output_path"] = f"{stem}.step"
@@ -166,6 +207,46 @@ def _trueform_stats(res, schema: str) -> dict:
         "engine": "trueform",
         "error": res.error,
     }
+
+
+def _native_stats(res: dict, engine: str, schema: str) -> dict:
+    """Map the native RESULT payload onto the stats keys the client renders.
+
+    The reference emits camelCase names (solids, openShells, stepVolumeMM3,
+    facesBeforeUnify/facesAfterUnify/facesAfterSmooth, smoothPlanes...); the
+    client renders the snake_case names _trueform_stats produces. ``is_solid`` is
+    derived, not emitted by the binary.
+    """
+    smooth = engine == "trueform"
+    solids = res.get("solids", 0)
+    open_shells = res.get("openShells", 0)
+    n_faces_built = res.get("facesAfterSmooth", 0) if smooth else res.get("facesBeforeUnify", 0)
+    d = {
+        "is_solid": solids > 0 and open_shells == 0,
+        "watertight": res.get("watertight", False),
+        "n_faces_built": n_faces_built,
+        "volume": res.get("stepVolumeMM3", 0.0),
+        "n_input_tris": res.get("triangles", 0),
+        "n_input_verts": res.get("vertices", 0),
+        "schema": schema,
+        "seconds": res.get("seconds", 0.0),
+        "warnings": res.get("warnings", []),
+        "volume_delta_pct": res.get("volumeDeltaPct", -1.0),
+        "engine": engine,
+        "error": res.get("error"),
+    }
+    if smooth:
+        d.update(
+            {
+                "smooth_planes": res.get("smoothPlanes", 0),
+                "smooth_cylinders": res.get("smoothCylinders", 0),
+                "smooth_fillets": res.get("smoothFillets", 0),
+                "smooth_built_components": res.get("smoothBuiltComponents", 0),
+                "smooth_reverted_components": res.get("smoothRevertedComponents", 0),
+                "faces_after_smooth": res.get("facesAfterSmooth", 0),
+            }
+        )
+    return d
 
 
 def _parse_cuts(cuts_str: str | None) -> list | None:
