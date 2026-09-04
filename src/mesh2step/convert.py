@@ -1,5 +1,7 @@
 """Single-file conversion orchestration + structured stats for logging."""
 import math
+import os
+import sys as _sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -399,6 +401,40 @@ def _count_cylindrical_faces(shape) -> int:
     return n
 
 
+def _segment_summary_stderr(root, rs) -> None:
+    """Port of ``segmentSummaryStderr`` (stl2step.cpp:503), gated on
+    MESH2STEP_SEGMENT_SUMMARY exactly as the reference gates on
+    STL2STEP_SEGMENT_SUMMARY.
+
+    The reference's most useful diagnostic, and the one we lacked: every
+    per-component question -- which component got a plan, which used the refit,
+    where the region counts diverge -- is answerable in one run with it and
+    guesswork without it. Same line format, so the two can be diffed directly.
+    """
+    from .refit.segment import SurfType
+
+    ty_of = {
+        SurfType.PLANE: "plane",
+        SurfType.CYLINDER: "cylinder",
+        SurfType.CONE: "cone",
+        SurfType.SPHERE: "sphere",
+        SurfType.TORUS: "torus",
+    }
+    st = rs.stats
+    print(
+        f"engine segment root={root} regions={len(rs.regions)} "
+        f"rejected={len(rs.rejected)} planes={st.planes} cylinders={st.cylinders} "
+        f"fillets={st.fillets} facetIslands={st.facet_islands}",
+        file=_sys.stderr,
+    )
+    for r in rs.regions:
+        print(
+            f"  id={r.id} type={ty_of.get(r.type, 'plane')} tris={len(r.tris)} "
+            f"radius={r.radius:.6g} closed360={1 if r.closed360 else 0}",
+            file=_sys.stderr,
+        )
+
+
 def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dxf_dir=None):
     verts, tris = io_mesh.load_mesh(input_path)
     out.triangles = len(tris)
@@ -483,6 +519,10 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dx
                         shape = wrapped
                     else:
                         shape = _make_compound([shape, wrapped])
+        _sum_on = os.environ.get("MESH2STEP_SEGMENT_SUMMARY", "") not in ("", "0")
+        if plan is not None and _sum_on:
+            _segment_summary_stderr(idx, plan[1])
+            print(f"  usedRefit={1 if used_refit else 0}", file=_sys.stderr)
         if used_refit:
             # Accepted analytic shells are closed by the probe; count as solids
             # exactly like the faceted path does.
