@@ -3704,24 +3704,54 @@ def _build_topology_d(mv: MeshView, tol: DerivedTols, work: _SegmentWork, out: R
                             vs.append(c.mesh_verts[-1])
             if len(vs) >= 2 and vs[0] == vs[-1]:
                 vs.pop()
-            uv = [_project_plane(reg.ax, _local_pnt(mv, lv)) for lv in vs]
-            scored.append((abs(_shoelace(uv)), min_ch, lp))
+            if reg.closed360:
+                # refit_chains.cpp:744-753 — closed360 loops are classified by the
+                # mean axial position (CapLow/CapHigh), not by shoelace area.
+                a = _np_dir(reg.ax.Direction())
+                o = _np_pnt(reg.ax.Location())
+                n = len(vs)
+                mean_v = (
+                    sum(float(np.dot(_local_pnt(mv, lv) - o, a)) for lv in vs) / n
+                    if n
+                    else 0.0
+                )
+                scored.append((0.0, mean_v, min_ch, lp))
+            else:
+                uv = [_project_plane(reg.ax, _local_pnt(mv, lv)) for lv in vs]
+                scored.append((abs(_shoelace(uv)), 0.0, min_ch, lp))
 
-        # outer = max |area|, tie -> smaller minChainIdx
-        i_outer, best_abs = 0, -1.0
-        for i in range(len(scored)):
-            aa, min_ch, _ = scored[i]
-            if (
-                aa > best_abs + area_tie
-                or (abs(aa - best_abs) <= area_tie and min_ch < scored[i_outer][1])
-                or best_abs < 0
-            ):
-                best_abs = aa
-                i_outer = i
-        for i in range(len(scored)):
-            scored[i][2].role = LoopRole.OUTER if i == i_outer else LoopRole.INNER
-        scored.sort(key=lambda s: (int(s[2].role), s[1]))
-        reg.loops = [lp for _, _, lp in scored]
+        if reg.closed360:
+            # refit_chains.cpp:773-785.
+            if len(scored) < 2:
+                return False
+            i_low = min(range(len(scored)), key=lambda i: scored[i][1])
+            i_high = max(range(len(scored)), key=lambda i: scored[i][1])
+            if i_low == i_high:
+                return False
+            for i in range(len(scored)):
+                if i == i_low:
+                    scored[i][3].role = LoopRole.CAP_LOW
+                elif i == i_high:
+                    scored[i][3].role = LoopRole.CAP_HIGH
+                else:
+                    scored[i][3].role = LoopRole.INNER
+        else:
+            # outer = max |area|, tie -> smaller minChainIdx
+            i_outer, best_abs = 0, -1.0
+            for i in range(len(scored)):
+                aa = scored[i][0]
+                min_ch = scored[i][2]
+                if (
+                    aa > best_abs + area_tie
+                    or (abs(aa - best_abs) <= area_tie and min_ch < scored[i_outer][2])
+                    or best_abs < 0
+                ):
+                    best_abs = aa
+                    i_outer = i
+            for i in range(len(scored)):
+                scored[i][3].role = LoopRole.OUTER if i == i_outer else LoopRole.INNER
+        scored.sort(key=lambda s: (int(s[3].role), s[2]))
+        reg.loops = [lp for _, _, _, lp in scored]
         return True
 
     for reg in out.regions:
@@ -3806,14 +3836,22 @@ def _build_topology_d(mv: MeshView, tol: DerivedTols, work: _SegmentWork, out: R
         if not classify_and_push(reg, loops):
             return False
 
-        n_outer = sum(1 for lp in reg.loops if lp.role == LoopRole.OUTER)
-        n_cap = sum(
-            1
-            for lp in reg.loops
-            if lp.role in (LoopRole.CAP_LOW, LoopRole.CAP_HIGH)
-        )
-        if n_outer != 1 or n_cap != 0:
-            return False
+        # refit_chains.cpp:911-926 — the loop-role census is closed360-aware.
+        if reg.closed360:
+            n_low = sum(1 for lp in reg.loops if lp.role == LoopRole.CAP_LOW)
+            n_high = sum(1 for lp in reg.loops if lp.role == LoopRole.CAP_HIGH)
+            n_outer = sum(1 for lp in reg.loops if lp.role == LoopRole.OUTER)
+            if n_low != 1 or n_high != 1 or n_outer != 0:
+                return False
+        else:
+            n_outer = sum(1 for lp in reg.loops if lp.role == LoopRole.OUTER)
+            n_cap = sum(
+                1
+                for lp in reg.loops
+                if lp.role in (LoopRole.CAP_LOW, LoopRole.CAP_HIGH)
+            )
+            if n_outer != 1 or n_cap != 0:
+                return False
 
     # --- rejected[] (empty in the planar path; kept for contract parity) ------
     out.rejected = list(work.rejected)

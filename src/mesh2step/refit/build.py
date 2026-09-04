@@ -13,16 +13,31 @@ prismatic rebuild are M3-M5 stubs that build nothing.
 from __future__ import annotations
 
 import math
+import os
+import sys
 
 import numpy as np
 from OCP.BRep import BRep_Builder, BRep_Tool
-from OCP.BRepAdaptor import BRepAdaptor_Surface
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCP.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakeWire,
+)
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepLib import BRepLib
 from OCP.BRepTools import BRepTools_WireExplorer
 from OCP.ElCLib import ElCLib
-from OCP.Geom import Geom_CylindricalSurface, Geom_Line, Geom_Plane
+from OCP.GC import GC_MakeArcOfCircle
+from OCP.Geom import (
+    Geom_Circle,
+    Geom_CylindricalSurface,
+    Geom_Ellipse,
+    Geom_Line,
+    Geom_Plane,
+    Geom_TrimmedCurve,
+)
+from OCP.Geom2d import Geom2d_Line
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.gp import (
     gp_Ax1,
@@ -31,25 +46,31 @@ from OCP.gp import (
     gp_Circ,
     gp_Cylinder,
     gp_Dir,
+    gp_Dir2d,
     gp_Elips,
     gp_Lin,
     gp_Pln,
     gp_Pnt,
+    gp_Pnt2d,
     gp_Vec,
+    gp_Vec2d,
 )
 from OCP.IntAna import IntAna_QuadQuadGeo, IntAna_ResultType
 from OCP.Precision import Precision
-from OCP.ShapeFix import ShapeFix_Face
+from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_Face
 from OCP.Standard import Standard_Failure
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_FORWARD, TopAbs_REVERSED, TopAbs_VERTEX
-from OCP.TopExp import TopExp_Explorer
+from OCP.TopExp import TopExp, TopExp_Explorer
+from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import (
     TopoDS,
+    TopoDS_Edge,
     TopoDS_Face,
     TopoDS_Shell,
     TopoDS_Vertex,
     TopoDS_Wire,
 )
+from OCP.TopTools import TopTools_IndexedMapOfShape
 
 from .mesh_view import MeshView
 from .segment import (
@@ -323,6 +344,17 @@ def _int_ana_accept_residual(
             accept_r = max(accept_r, fit * 3.0 + derived_eps_plane(mv))
         elif len(chain.mesh_verts) <= 20:
             accept_r = max(accept_r, fit * 2.0 + derived_eps_plane(mv))
+        # Skew/near-tangent cyl|cyl and plane|cyl cap circles (refit_build.cpp:570-579):
+        # conics land off the mesh band on coarse exports — widen vs the fitted residual.
+        if a.type == SurfType.CYLINDER and b.type == SurfType.CYLINDER:
+            accept_r = max(accept_r, fit * 4.0 + derived_eps_plane(mv))
+            if len(chain.mesh_verts) <= 3:
+                accept_r = max(accept_r, fit * 5.0 + derived_eps_plane(mv) * 2.0)
+        if (a.type == SurfType.PLANE and b.type == SurfType.CYLINDER) or (
+            a.type == SurfType.CYLINDER and b.type == SurfType.PLANE
+        ):
+            if len(chain.mesh_verts) <= 3:
+                accept_r = max(accept_r, fit * 5.0 + derived_eps_plane(mv) * 2.0)
     return accept_r
 
 
@@ -340,6 +372,14 @@ def _pick_int_ana(
     ):
         return best
     best_r = 1e300
+
+    def consider(cand: _Curve) -> None:
+        nonlocal best_r, best
+        r = _chain_residual(cand, mv, chain)
+        if r < best_r:
+            best_r = r
+            best = cand
+
     n = iq.NbSolutions()
     if ty in (IntAna_ResultType.IntAna_Line, IntAna_ResultType.IntAna_PointAndCircle):
         for i in range(1, n + 1):
@@ -347,10 +387,25 @@ def _pick_int_ana(
             try:
                 cand.kind = _Curve.LIN
                 cand.lin = iq.Line(i)
-                r = _chain_residual(cand, mv, chain)
-                if r < best_r:
-                    best_r = r
-                    best = cand
+                consider(cand)
+            except Standard_Failure:
+                continue
+    if ty in (IntAna_ResultType.IntAna_Circle, IntAna_ResultType.IntAna_PointAndCircle):
+        for i in range(1, n + 1):
+            cand = _Curve()
+            try:
+                cand.kind = _Curve.CIRC
+                cand.circ = iq.Circle(i)
+                consider(cand)
+            except Standard_Failure:
+                continue
+    if ty == IntAna_ResultType.IntAna_Ellipse:
+        for i in range(1, n + 1):
+            cand = _Curve()
+            try:
+                cand.kind = _Curve.ELIPS
+                cand.elips = iq.Ellipse(i)
+                consider(cand)
             except Standard_Failure:
                 continue
     if best.kind != _Curve.NONE:
@@ -363,15 +418,51 @@ def _pick_int_ana(
 def _intersect_surfaces(
     a: Region, b: Region, mv: MeshView, chain: BoundaryChain, sew_tol: float
 ) -> _Curve:
-    """Plane|plane intersection (the only analytic|analytic class in M2)."""
+    """plane|plane, plane|cylinder and cylinder|cylinder intersection
+    (refit_build.cpp:950 intersectSurfaces)."""
     tol_ang = Precision.Angular_s()
     tol = max(sew_tol, _confusion())
     try:
-        iq = IntAna_QuadQuadGeo(_ax3_of(a), _ax3_of(b), tol_ang, tol)
-        accept_r = _int_ana_accept_residual(mv, chain, sew_tol, a, b)
-        return _pick_int_ana(iq, mv, chain, sew_tol, accept_r)
+        if a.type == SurfType.PLANE and b.type == SurfType.PLANE:
+            iq = IntAna_QuadQuadGeo(_ax3_of(a), _ax3_of(b), tol_ang, tol)
+            accept_r = _int_ana_accept_residual(mv, chain, sew_tol, a, b)
+            return _pick_int_ana(iq, mv, chain, sew_tol, accept_r)
+        if a.type == SurfType.PLANE and b.type == SurfType.CYLINDER:
+            h = abs(b.v_max - b.v_min)
+            iq = IntAna_QuadQuadGeo(_ax3_of(a), _cyl_for_intersect(b), tol_ang, tol, h)
+            accept_r = _int_ana_accept_residual(mv, chain, sew_tol, a, b)
+            c = _pick_int_ana(iq, mv, chain, sew_tol, accept_r)
+            # Oblique plane|cyl: IntAna ellipse on 2-vertex coarse chains often
+            # exceeds the first-pass residual gate (refit_build.cpp:972-977).
+            if (
+                c.kind == _Curve.NONE
+                and iq.IsDone()
+                and iq.TypeInter() == IntAna_ResultType.IntAna_Ellipse
+                and len(chain.mesh_verts) <= 3
+            ):
+                fit = max(a.max_vertex_dev, b.max_vertex_dev)
+                loose = max(accept_r, fit * 8.0 + derived_eps_plane(mv) * 3.0)
+                c = _pick_int_ana(iq, mv, chain, sew_tol, loose)
+            # Cap circle from the fitted cylinder when IntAna misses or picks the
+            # wrong branch (refit_build.cpp:986).
+            if c.kind == _Curve.NONE and _plane_perp_cylinder(a, b):
+                c = _constructed_plane_cyl_cap(a, b)
+            # Ellipse branch on a cap plane is often a noisy IntAna circle
+            # (refit_build.cpp:990).
+            if c.kind == _Curve.ELIPS and _plane_perp_cylinder(a, b) and not b.closed360:
+                cap = _constructed_plane_cyl_cap(a, b)
+                if cap.kind == _Curve.CIRC:
+                    c = cap
+            return c
+        if a.type == SurfType.CYLINDER and b.type == SurfType.PLANE:
+            return _intersect_surfaces(b, a, mv, chain, sew_tol)
+        if a.type == SurfType.CYLINDER and b.type == SurfType.CYLINDER:
+            iq = IntAna_QuadQuadGeo(_cyl_for_intersect(a), _cyl_for_intersect(b), tol)
+            accept_r = _int_ana_accept_residual(mv, chain, sew_tol, a, b)
+            return _pick_int_ana(iq, mv, chain, sew_tol, accept_r)
     except Standard_Failure:
         return _Curve()
+    return _Curve()
 
 
 def _bump_vertex_tol(vert: TopoDS_Vertex, d: float) -> None:
@@ -425,6 +516,16 @@ def _make_edge_from_curve(curve: _Curve, v1: TopoDS_Vertex, v2: TopoDS_Vertex, c
                 me = BRepBuilderAPI_MakeEdge(curve.circ, v1, v2)
                 if me.IsDone():
                     return me.Edge()
+        if curve.kind == _Curve.ELIPS and curve.elips is not None:
+            # refit_build.cpp:1099-1106 — a tilted plane|cyl cap is a full ellipse.
+            if closed_full or v1.IsSame(v2):
+                me = BRepBuilderAPI_MakeEdge(curve.elips, v1, v1)
+                if me.IsDone():
+                    return me.Edge()
+            else:
+                me = BRepBuilderAPI_MakeEdge(curve.elips, v1, v2)
+                if me.IsDone():
+                    return me.Edge()
     except Standard_Failure:
         pass
     return None
@@ -442,6 +543,448 @@ def _mixed_edge_deviation(v1: TopoDS_Vertex, v2: TopoDS_Vertex, analytic: Region
         return 0.0
 
     return max(dev(m), max(dev(a), dev(b)))
+
+
+# --- cylinder seam / azimuth helpers (refit_build.cpp:224-285, 1826-1900) ---------
+
+def _as_cyl(region: Region) -> gp_Cylinder:
+    return gp_Cylinder(region.ax, region.radius)
+
+
+def _cyl_for_intersect(region: Region) -> gp_Cylinder:
+    """refit_build.cpp:174 — intersect against the (possibly rotated) partial
+    surface frame so a band straddling the seam still presents the right U=0."""
+    if region.type != SurfType.CYLINDER:
+        return _as_cyl(region)
+    return _cyl_surface_for_region(region).Cylinder()
+
+
+def _azimuth_of(region: Region, p: gp_Pnt) -> float:
+    """refit_build.cpp:224 — azimuth in [0, 2π) around the cylinder axis."""
+    loc = region.ax.Location()
+    d = region.ax.Direction()
+    rho = gp_Vec(loc, p)
+    rad = rho.Subtracted(gp_Vec(d).Multiplied(rho.Dot(gp_Vec(d))))
+    if rad.Magnitude() < _confusion():
+        return 0.0
+    x = rad.Dot(gp_Vec(region.ax.XDirection()))
+    y = rad.Dot(gp_Vec(region.ax.YDirection()))
+    u = math.atan2(y, x)
+    if u < 0.0:
+        u += 2.0 * K_PI
+    return u
+
+
+def _wrap_to_pi(t: float) -> float:
+    while t <= -K_PI:
+        t += 2.0 * K_PI
+    while t > K_PI:
+        t -= 2.0 * K_PI
+    return t
+
+
+def _shift_into_u_span(chi: float, u_min: float, u_max: float) -> float:
+    """refit_build.cpp:1834 — shift chi into [uMin, uMin+2π)."""
+    two_pi = 2.0 * K_PI
+    k = math.ceil((u_min - chi) / two_pi)
+    t = chi + two_pi * k
+    if t < u_min:
+        t += two_pi
+    if t >= u_min + two_pi:
+        t -= two_pi
+    if t > u_max:
+        t2 = t - two_pi
+        d_hi = t - u_max
+        d_lo = u_min - t2
+        if d_lo <= d_hi:
+            t = t2
+    return t
+
+
+def _seam_straddle_u(region: Region) -> bool:
+    if region.type != SurfType.CYLINDER or region.closed360:
+        return False
+    u0 = region.u_min
+    u1 = region.u_max
+    if u1 < u0:
+        u1 += 2.0 * K_PI
+    return (u0 < -0.5 * K_PI and u1 > 0.0) or (u0 < 2.0 * K_PI and u1 > 2.0 * K_PI)
+
+
+def _region_u(region: Region, p: gp_Pnt) -> float:
+    chi = _wrap_to_pi(_azimuth_of(region, p))
+    if _seam_straddle_u(region):
+        return _shift_into_u_span(chi, region.u_min, region.u_max)
+    return chi
+
+
+def _region_v(region: Region, p: gp_Pnt) -> float:
+    return gp_Vec(region.ax.Location(), p).Dot(gp_Vec(region.ax.Direction()))
+
+
+def _azimuth_on_ax(ax: gp_Ax3, p: gp_Pnt) -> float:
+    rho = gp_Vec(ax.Location(), p)
+    rad = rho.Subtracted(gp_Vec(ax.Direction()).Multiplied(rho.Dot(gp_Vec(ax.Direction()))))
+    if rad.Magnitude() < _confusion():
+        return 0.0
+    u = math.atan2(rad.Dot(gp_Vec(ax.YDirection())), rad.Dot(gp_Vec(ax.XDirection())))
+    if u < 0.0:
+        u += 2.0 * K_PI
+    if u > K_PI:
+        u -= 2.0 * K_PI
+    return u
+
+
+def _v_on_ax(ax: gp_Ax3, p: gp_Pnt) -> float:
+    return gp_Vec(ax.Location(), p).Dot(gp_Vec(ax.Direction()))
+
+
+def _project_pnt_on_cylinder(region: Region, p: gp_Pnt) -> gp_Pnt:
+    """refit_build.cpp:1913 — project a point onto the fitted cylinder surface."""
+    rho = gp_Vec(region.ax.Location(), p)
+    ax = gp_Vec(region.ax.Direction())
+    v = rho.Dot(ax)
+    rad = rho.Subtracted(ax.Multiplied(v))
+    mag = rad.Magnitude()
+    if mag < _confusion():
+        rad = gp_Vec(region.ax.XDirection()).Multiplied(region.radius)
+    else:
+        rad.Scale(region.radius / mag)
+    return region.ax.Location().Translated(ax.Multiplied(v).Added(rad))
+
+
+def _seam_vertex_of(mv: MeshView, cyl: Region, chain: BoundaryChain) -> int:
+    """refit_build.cpp:237 — vertex whose azimuth is closest to 0."""
+    best = chain.mesh_verts[0] if chain.mesh_verts else -1
+    best_u = 1e300
+    for lv in chain.mesh_verts:
+        p = mv.pts[int(mv.comp_vtx[lv])]
+        u = _azimuth_of(cyl, gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
+        d = min(u, 2.0 * K_PI - u)
+        if d < best_u:
+            best_u = d
+            best = lv
+    return best
+
+
+def _vertex_closest_to_u(mv: MeshView, cyl: Region, chain: BoundaryChain, target: float) -> int:
+    """refit_build.cpp:252."""
+    best = chain.mesh_verts[0] if chain.mesh_verts else -1
+    best_d = 1e300
+    for lv in chain.mesh_verts:
+        if lv < 0 or lv >= mv.n_vtx:
+            continue
+        p = mv.pts[int(mv.comp_vtx[lv])]
+        u = _azimuth_of(cyl, gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
+        d = abs(u - target)
+        d = min(d, 2.0 * K_PI - d)
+        if d < best_d:
+            best_d = d
+            best = lv
+    return best
+
+
+def _vertex_closest_to_u_on_loop(
+    mv: MeshView, cyl: Region, loop: Loop, rs: RegionSet, target: float
+) -> int:
+    """refit_build.cpp:268."""
+    best = -1
+    best_d = 1e300
+    for ci in loop.chain_idx:
+        if ci < 0 or ci >= len(rs.chains):
+            continue
+        v = _vertex_closest_to_u(mv, cyl, rs.chains[ci], target)
+        if v < 0:
+            continue
+        p = mv.pts[int(mv.comp_vtx[v])]
+        u = _azimuth_of(cyl, gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
+        d = abs(u - target)
+        d = min(d, 2.0 * K_PI - d)
+        if d < best_d:
+            best_d = d
+            best = v
+    return best
+
+
+def _edge_spans_full_circle(edge: TopoDS_Edge) -> bool:
+    """refit_build.cpp:161."""
+    if edge is None or edge.IsNull():
+        return False
+    f, last = BRep_Tool.Range_s(edge)
+    c = BRep_Tool.Curve_s(edge, 0.0, 0.0)
+    if c is None:
+        return False
+    return abs(abs(last - f) - 2.0 * K_PI) <= 0.05
+
+
+def _cylinder_post_fit_ok(region: Region, mv: MeshView, rs: RegionSet) -> bool:
+    """refit_build.cpp:302 — F3 post-fit chord sagitta gate. Rejects the 3-sided
+    closed360 fixtures (sagitta/R = 0.5) while keeping live nSides=4."""
+    if region.type != SurfType.CYLINDER or region.radius <= 0.0:
+        return True
+    lim = region.radius * (1.0 - math.cos(K_PI / 4.0)) * 1.001 + _confusion()
+    cyl = _as_cyl(region)
+
+    def rad_dev(p: gp_Pnt) -> float:
+        v = gp_Vec(cyl.Location(), p)
+        return abs(gp_Vec(cyl.Axis().Direction()).Crossed(v).Magnitude() - cyl.Radius())
+
+    d = 0.0
+    for lt in region.tris:
+        if lt < 0 or lt >= mv.n_tri:
+            continue
+        gt = int(mv.comp_tris[lt])
+        for i in range(3):
+            p = mv.pts[int(mv.tris[gt, i])]
+            d = max(d, rad_dev(gp_Pnt(float(p[0]), float(p[1]), float(p[2]))))
+            if d > lim:
+                return False
+    for ch in rs.chains:
+        if ch.reg_a != region.id and ch.reg_b != region.id:
+            continue
+        for eid in ch.mesh_edges:
+            if eid < 0 or eid >= mv.n_edge:
+                continue
+            a, b = mv.comp_edges[eid]
+            pa = mv.pts[int(a)]
+            pb = mv.pts[int(b)]
+            mid = gp_Pnt(
+                0.5 * (pa[0] + pb[0]), 0.5 * (pa[1] + pb[1]), 0.5 * (pa[2] + pb[2])
+            )
+            d = max(d, rad_dev(mid))
+            if d > lim:
+                return False
+    return True
+
+
+# --- edge construction from fitted circles (refit_build.cpp:1113, 2529) ----------
+
+def _make_full_circle(circ: gp_Circ, v: TopoDS_Vertex) -> TopoDS_Edge:
+    """refit_build.cpp:2529."""
+    try:
+        me = BRepBuilderAPI_MakeEdge(circ, v, v)
+        if me.IsDone():
+            e = me.Edge()
+            e.Closed(True)
+            return e
+    except Standard_Failure:
+        pass
+    try:
+        me2 = BRepBuilderAPI_MakeEdge(circ)
+        if me2.IsDone():
+            e = me2.Edge()
+            e.Closed(True)
+            return e
+    except Standard_Failure:
+        pass
+    try:
+        gc = Geom_Circle(circ)
+        b = BRep_Builder()
+        e = TopoDS_Edge()
+        b.MakeEdge(e, gc, _confusion())
+        b.Add(e, v.Oriented(TopAbs_FORWARD))
+        b.Add(e, v.Oriented(TopAbs_REVERSED))
+        b.Range(e, 0.0, 2.0 * K_PI)
+        e.Closed(True)
+    except Standard_Failure:
+        return TopoDS_Edge()
+    return e
+
+
+def _make_arc(circ: gp_Circ, va: TopoDS_Vertex, vb: TopoDS_Vertex, mid_hint: gp_Pnt) -> TopoDS_Edge:
+    """refit_build.cpp:1113 — bound the circle with the shared verts; the mesh
+    mid-vertex picks which of the two arcs (critical at 180°)."""
+    two_pi = 2.0 * K_PI
+
+    def wrap(t: float) -> float:
+        while t < 0.0:
+            t += two_pi
+        while t >= two_pi:
+            t -= two_pi
+        return t
+
+    try:
+        p1 = wrap(ElCLib.Parameter_s(circ, _pnt_of(va)))
+        p2 = wrap(ElCLib.Parameter_s(circ, _pnt_of(vb)))
+        pm = wrap(ElCLib.Parameter_s(circ, mid_hint))
+        df = p2 - p1
+        while df <= 0.0:
+            df += two_pi
+        dm = pm - p1
+        while dm < 0.0:
+            dm += two_pi
+        gc = Geom_Circle(circ)
+        b = BRep_Builder()
+        e = TopoDS_Edge()
+        b.MakeEdge(e, gc, _confusion())
+        if dm <= df + 1e-9:
+            b.Add(e, va.Oriented(TopAbs_FORWARD))
+            b.Add(e, vb.Oriented(TopAbs_REVERSED))
+            b.Range(e, p1, p1 + df)
+        else:
+            db = two_pi - df
+            t0 = wrap(p1 - db)
+            b.Add(e, vb.Oriented(TopAbs_FORWARD))
+            b.Add(e, va.Oriented(TopAbs_REVERSED))
+            b.Range(e, t0, t0 + db)
+            e.Reverse()
+    except Standard_Failure:
+        return TopoDS_Edge()
+    return e
+    try:
+        me = BRepBuilderAPI_MakeEdge(circ, va, vb)
+        if me.IsDone():
+            return me.Edge()
+    except Standard_Failure:
+        pass
+    try:
+        mk = GC_MakeArcOfCircle(_pnt_of(va), mid_hint, _pnt_of(vb))
+        if mk.IsDone():
+            me = BRepBuilderAPI_MakeEdge(mk.Value(), va, vb)
+            if me.IsDone():
+                return me.Edge()
+    except Standard_Failure:
+        pass
+    return TopoDS_Edge()
+
+
+def _orient_edge_from_to(edge: TopoDS_Edge, from_vert: TopoDS_Vertex) -> TopoDS_Edge:
+    """refit_build.cpp:441."""
+    v1 = TopExp.FirstVertex_s(edge, True)
+    if v1.IsNull():
+        return edge
+    if v1.IsSame(from_vert):
+        return edge
+    return TopoDS.Edge_s(edge.Reversed())
+
+
+def _edge_uses_linear_cyl_pcurve(edge: TopoDS_Edge) -> bool:
+    """refit_build.cpp:1926 — a conic (ellipse) pcurve must not be replaced by a
+    linear one."""
+    c = BRep_Tool.Curve_s(edge, 0.0, 0.0)
+    if c is None:
+        return True
+    if isinstance(c, Geom_Ellipse):
+        return False
+    if isinstance(c, Geom_TrimmedCurve):
+        basis = c.BasisCurve()
+        if isinstance(basis, Geom_Ellipse):
+            return False
+    return True
+
+
+def _add_pcurves_on_surface(surf, edge: TopoDS_Edge, is_seam: bool, sew_tol: float) -> None:
+    """refit_build.cpp:435."""
+    sfe = ShapeFix_Edge()
+    sfe.FixAddPCurve(edge, surf, TopLoc_Location(), is_seam, sew_tol)
+
+
+def _add_pcurves_on_face(face: TopoDS_Face, sew_tol: float, closed360: bool) -> None:
+    """refit_build.cpp:417 — project a pcurve for every edge of the face; an edge
+    that appears twice is a seam."""
+    sfe = ShapeFix_Edge()
+    emap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(face, TopAbs_EDGE, emap)
+    count = [0] * (emap.Extent() + 1)
+    ex = TopExp_Explorer(face, TopAbs_EDGE)
+    while ex.More():
+        i = emap.FindIndex(ex.Current())
+        if i > 0:
+            count[i] += 1
+        ex.Next()
+    for i in range(1, emap.Extent() + 1):
+        e = TopoDS.Edge_s(emap.FindKey(i))
+        is_seam = count[i] >= 2
+        sfe.FixAddPCurve(e, face, is_seam, sew_tol)
+
+
+def _bind_cyl_pcurves(wire: TopoDS_Wire, surf, region: Region, sew_tol: float) -> None:
+    """refit_build.cpp:1949 — linear pcurves on a cylindrical surface, in the
+    fitted (or rotated) parametric frame."""
+    rotated = (
+        isinstance(surf, Geom_CylindricalSurface)
+        and surf.Position().XDirection().Angle(region.ax.XDirection()) > 1e-9
+    )
+
+    def to_uv(p: gp_Pnt) -> tuple[float, float]:
+        if rotated:
+            ax = surf.Position()
+            return _azimuth_on_ax(ax, p), _v_on_ax(ax, p)
+        return _region_u(region, p), _region_v(region, p)
+
+    def unwrap_u(u1: float, u2: float) -> float:
+        if not _seam_straddle_u(region) or rotated:
+            while u2 - u1 > K_PI:
+                u2 -= 2.0 * K_PI
+            while u1 - u2 > K_PI:
+                u2 += 2.0 * K_PI
+        return u2
+
+    b = BRep_Builder()
+    for e_w in _wire_edges_in_order(wire):
+        if not _edge_uses_linear_cyl_pcurve(e_w):
+            _add_pcurves_on_surface(surf, e_w, False, sew_tol)
+            continue
+        pa = pb = None
+        got_ends = False
+        try:
+            ad = BRepAdaptor_Curve(e_w)
+            t0 = ad.FirstParameter()
+            t1 = ad.LastParameter()
+            if t1 - t0 > Precision.PConfusion_s():
+                pa = _project_pnt_on_cylinder(region, ad.Value(t0))
+                pb = _project_pnt_on_cylinder(region, ad.Value(t1))
+                got_ends = pa.Distance(pb) > _confusion()
+        except Standard_Failure:
+            pass
+        if not got_ends:
+            f, last = BRep_Tool.Range_s(e_w)
+            c3 = BRep_Tool.Curve_s(e_w, 0.0, 0.0)
+            if c3 is not None and last - f > Precision.PConfusion_s():
+                pa = _project_pnt_on_cylinder(region, c3.Value(f))
+                pb = _project_pnt_on_cylinder(region, c3.Value(last))
+                got_ends = pa.Distance(pb) > _confusion()
+        if not got_ends:
+            v1 = TopExp.FirstVertex_s(e_w, True)
+            v2 = TopExp.LastVertex_s(e_w, True)
+            if v1.IsNull() or v2.IsNull() or v1.IsSame(v2):
+                continue
+            pa = _project_pnt_on_cylinder(region, _pnt_of(v1))
+            pb = _project_pnt_on_cylinder(region, _pnt_of(v2))
+        u1, v1v = to_uv(pa)
+        u2, v2v = to_uv(pb)
+        u2 = unwrap_u(u1, u2)
+        duv = gp_Vec2d(u2 - u1, v2v - v1v)
+        mag = duv.Magnitude()
+        if mag < Precision.PConfusion_s():
+            continue
+        ln = Geom2d_Line(gp_Pnt2d(u1, v1v), gp_Dir2d(duv))
+        b.UpdateEdge(e_w, ln, surf, TopLoc_Location(), sew_tol)
+        b.Range(e_w, surf, TopLoc_Location(), 0.0, mag)
+
+
+def _rotate_edges_to_vertex(edges: list, v: TopoDS_Vertex) -> bool:
+    """refit_build.cpp:1347 — rotate so the edge whose start is V comes first."""
+    if not edges or v.IsNull():
+        return False
+    for i in range(len(edges)):
+        if TopExp.FirstVertex_s(edges[i], True).IsSame(v):
+            return _rotate_list(edges, i)
+    for i in range(len(edges)):
+        v1 = TopExp.FirstVertex_s(edges[i], False)
+        v2 = TopExp.LastVertex_s(edges[i], False)
+        if v1.IsSame(v) or v2.IsSame(v):
+            if not TopExp.FirstVertex_s(edges[i], True).IsSame(v):
+                edges[i] = TopoDS.Edge_s(edges[i].Reversed())
+            return _rotate_list(edges, i)
+    return False
+
+
+def _rotate_list(items: list, i: int) -> bool:
+    if i < 0 or i >= len(items):
+        return False
+    items[:] = items[i:] + items[:i]
+    return True
 
 
 # --- wire / face construction ----------------------------------------------------
@@ -676,6 +1219,349 @@ def _build_cylindrical_face(
     return None
 
 
+def _try_seamed_360(region, rs, mv, verts, geom, collapsed, mesh_e, edge_ok, sew_tol):
+    """refit_build.cpp:2599 trySeamed360 — one seamed full-2π cylindrical face
+    bounded by the two cap circles and a seam generator. Returns the face or None."""
+    cap_l = cap_h = None
+    inners = []
+    for lp in region.loops:
+        if lp.role == LoopRole.CAP_LOW:
+            cap_l = lp
+        elif lp.role == LoopRole.CAP_HIGH:
+            cap_h = lp
+        elif lp.role == LoopRole.INNER:
+            iw = _build_loop_wire(lp, rs, mv, geom, collapsed, mesh_e, edge_ok)
+            if iw is None:
+                return None
+            inners.append(iw)
+    if cap_l is None or cap_h is None or not cap_l.chain_idx or not cap_h.chain_idx:
+        return None
+
+    v_l = _vertex_closest_to_u_on_loop(mv, region, cap_l, rs, 0.0)
+    v_h = _vertex_closest_to_u_on_loop(mv, region, cap_h, rs, 0.0)
+    if v_l < 0 or v_h < 0 or v_l >= len(verts) or v_h >= len(verts):
+        return None
+
+    surf = Geom_CylindricalSurface(_as_cyl(region))
+    circ_l = _cylinder_iso_circle(region, region.v_min)
+    circ_h = _cylinder_iso_circle(region, region.v_max)
+    ac_l = _Curve()
+    ac_l.kind = _Curve.CIRC
+    ac_l.circ = circ_l
+    ac_h = _Curve()
+    ac_h.kind = _Curve.CIRC
+    ac_h.circ = circ_h
+    snap_cap = _mesh_tol_cap(mv, region)
+    _snap_vertex_to_curve(verts[v_l], ac_l, snap_cap)
+    _snap_vertex_to_curve(verts[v_h], ac_h, snap_cap)
+
+    def take_full_cap(ci, circ, v):
+        if 0 <= ci < len(geom) and collapsed[ci]:
+            if len(geom[ci]) != 1:
+                return None
+            e = TopoDS.Edge_s(geom[ci][0].Oriented(TopAbs_FORWARD))
+            return e if _edge_spans_full_circle(e) else None
+        e = _make_full_circle(circ, v)
+        return None if e.IsNull() else e
+
+    def bind_iso_pcurves(e_cap, v_iso, u0, e_seam, write_seam):
+        b = BRep_Builder()
+        c3 = BRep_Tool.Curve_s(e_cap, 0.0, 0.0)
+        if c3 is None:
+            f = u0
+        else:
+            f, _ = BRep_Tool.Range_s(e_cap)
+        pc = Geom2d_Line(gp_Pnt2d(f, v_iso), gp_Dir2d(1.0, 0.0))
+        b.UpdateEdge(e_cap, pc, surf, TopLoc_Location(), sew_tol)
+        if not write_seam:
+            return
+        cs = BRep_Tool.Curve_s(e_seam, 0.0, 0.0)
+        pc_s0 = Geom2d_Line(gp_Pnt2d(f, region.v_min), gp_Dir2d(0.0, 1.0))
+        pc_s1 = Geom2d_Line(gp_Pnt2d(f + 2.0 * K_PI, region.v_min), gp_Dir2d(0.0, 1.0))
+        b.UpdateEdge(e_seam, pc_s0, pc_s1, surf, TopLoc_Location(), sew_tol)
+        if cs is not None:
+            fs, ls = BRep_Tool.Range_s(e_seam)
+            b.Range(e_seam, fs, ls)
+        e_seam.Closed(False)
+
+    def finish_face(got, publish_simple, ci_l, ci_h, e_l, e_h):
+        if got.IsNull():
+            return None
+        _set_face_outward(got, region.outward_normal)
+        _add_pcurves_on_face(got, sew_tol, True)
+        if not _face_is_valid(got):
+            try:
+                sff = ShapeFix_Face(got)
+                sff.FixMissingSeamMode = 1
+                sff.FixAddNaturalBoundMode = 0
+                sff.FixOrientationMode = 1
+                sff.Perform()
+                res = sff.Result()
+                if res is None or res.IsNull():
+                    res = sff.Face()
+                n_f = 0
+                g2 = None
+                fx = TopExp_Explorer(res, TopAbs_FACE)
+                while fx.More():
+                    n_f += 1
+                    g2 = TopoDS.Face_s(fx.Current())
+                    fx.Next()
+                if n_f == 1:
+                    got = g2
+            except Standard_Failure:
+                pass
+            _set_face_outward(got, region.outward_normal)
+            _add_pcurves_on_face(got, sew_tol, True)
+        if not _face_is_valid(got) and not _ensure_face_valid(got, _mesh_tol_cap(mv, region)):
+            return None
+        if publish_simple and 0 <= ci_l < len(geom) and 0 <= ci_h < len(geom):
+            geom[ci_l] = [e_l]
+            collapsed[ci_l] = 1
+            geom[ci_h] = [e_h]
+            collapsed[ci_h] = 1
+        return got
+
+    e_seam = TopoDS_Edge()
+    try:
+        lin = gp_Lin(
+            gp_Pnt(
+                float(mv.pts[int(mv.comp_vtx[v_l])][0]),
+                float(mv.pts[int(mv.comp_vtx[v_l])][1]),
+                float(mv.pts[int(mv.comp_vtx[v_l])][2]),
+            ),
+            region.ax.Direction(),
+        )
+        acs = _Curve()
+        acs.kind = _Curve.LIN
+        acs.lin = lin
+        _snap_vertex_to_curve(verts[v_l], acs, snap_cap)
+        _snap_vertex_to_curve(verts[v_h], acs, snap_cap)
+        ms = BRepBuilderAPI_MakeEdge(lin, verts[v_l], verts[v_h])
+        if not ms.IsDone():
+            return None
+        e_seam = ms.Edge()
+    except Standard_Failure:
+        return None
+
+    ci_l0 = cap_l.chain_idx[0]
+    ci_h0 = cap_h.chain_idx[0]
+    simple = len(cap_l.chain_idx) == 1 and len(cap_h.chain_idx) == 1
+    e_l = e_h = None
+    if simple:
+        e_l = take_full_cap(ci_l0, circ_l, verts[v_l])
+        e_h = take_full_cap(ci_h0, circ_h, verts[v_h])
+    simple = simple and e_l is not None and e_h is not None
+
+    try:
+        if simple:
+            u0 = _azimuth_of(region, _pnt_of(verts[v_l]))
+            bind_iso_pcurves(e_l, region.v_min, u0, e_seam, True)
+            bind_iso_pcurves(e_h, region.v_max, u0, e_seam, False)
+            b = BRep_Builder()
+            w = TopoDS_Wire()
+            b.MakeWire(w)
+            b.Add(w, e_seam)
+            b.Add(w, e_h)
+            b.Add(w, TopoDS.Edge_s(e_seam.Reversed()))
+            b.Add(w, TopoDS.Edge_s(e_l.Reversed()))
+            w.Closed(True)
+            mf = BRepBuilderAPI_MakeFace(surf, w, True)
+            got = mf.Face() if mf.IsDone() else None
+            if got is None or got.IsNull():
+                box = BRepBuilderAPI_MakeFace(
+                    _as_cyl(region), 0.0, 2.0 * K_PI, region.v_min, region.v_max
+                )
+                if not box.IsDone():
+                    return None
+                sff = ShapeFix_Face(box.Face())
+                sff.FixMissingSeamMode = 1
+                sff.FixAddNaturalBoundMode = 0
+                sff.Add(w)
+                for iw in inners:
+                    sff.Add(iw)
+                sff.Perform()
+                res = sff.Result()
+                if res is None or res.IsNull():
+                    res = sff.Face()
+                n_f = 0
+                got = None
+                fx = TopExp_Explorer(res, TopAbs_FACE)
+                while fx.More():
+                    n_f += 1
+                    got = TopoDS.Face_s(fx.Current())
+                    fx.Next()
+                if n_f != 1:
+                    return None
+            return finish_face(got, True, ci_l0, ci_h0, e_l, e_h)
+
+        w_l = _build_loop_wire(cap_l, rs, mv, geom, collapsed, mesh_e, edge_ok)
+        w_h = _build_loop_wire(cap_h, rs, mv, geom, collapsed, mesh_e, edge_ok)
+        if w_l is None or w_h is None:
+            return None
+        path_l = _wire_edges_in_order(w_l)
+        path_h = _wire_edges_in_order(w_h)
+        if not path_l or not path_h:
+            return None
+        if not _rotate_edges_to_vertex(path_h, verts[v_h]) or not _rotate_edges_to_vertex(
+            path_l, verts[v_l]
+        ):
+            return None
+        bw = BRep_Builder()
+        ow = TopoDS_Wire()
+        bw.MakeWire(ow)
+        bw.Add(ow, e_seam)
+        for e in path_h:
+            bw.Add(ow, e)
+        bw.Add(ow, TopoDS.Edge_s(e_seam.Reversed()))
+        for i in range(len(path_l) - 1, -1, -1):
+            bw.Add(ow, TopoDS.Edge_s(path_l[i].Reversed()))
+        ow.Closed(True)
+        _bind_cyl_pcurves(ow, surf, region, sew_tol)
+        got = _make_face_keep(surf, ow, inners, region.outward_normal)
+        if got is None:
+            mf = BRepBuilderAPI_MakeFace(surf, ow, True)
+            if not mf.IsDone():
+                return None
+            for iw in inners:
+                mf.Add(iw)
+            if not mf.IsDone():
+                return None
+            got = mf.Face()
+        return finish_face(got, False, -1, -1, e_l, e_h)
+    except Standard_Failure:
+        return None
+
+
+def _try_two_halves(region, mv, verts, cap_l, cap_h, rs, geom, collapsed, sew_tol, faces):
+    """refit_build.cpp:2831 tryTwoHalves — F9 fallback when the seamed face cannot
+    take a single 2π cap: build two half-cylinder faces instead."""
+    if cap_l is None or cap_h is None:
+        return False
+    if not cap_l.chain_idx or not cap_h.chain_idx:
+        return False
+    c_l = cap_l.chain_idx[0]
+    c_h = cap_h.chain_idx[0]
+    if c_l < 0 or c_h < 0 or c_l >= len(rs.chains) or c_h >= len(rs.chains):
+        return False
+
+    v_l0 = _vertex_closest_to_u_on_loop(mv, region, cap_l, rs, 0.0)
+    v_lpi = _vertex_closest_to_u_on_loop(mv, region, cap_l, rs, K_PI)
+    v_h0 = _vertex_closest_to_u_on_loop(mv, region, cap_h, rs, 0.0)
+    v_hpi = _vertex_closest_to_u_on_loop(mv, region, cap_h, rs, K_PI)
+    if v_l0 < 0 or v_lpi < 0 or v_h0 < 0 or v_hpi < 0:
+        return False
+    if v_l0 == v_lpi or v_h0 == v_hpi:
+        return False
+    if abs(region.v_max - region.v_min) < _confusion():
+        return False
+    if (
+        v_l0 >= len(verts)
+        or v_lpi >= len(verts)
+        or v_h0 >= len(verts)
+        or v_hpi >= len(verts)
+    ):
+        return False
+
+    circ_l = gp_Circ(
+        gp_Ax2(
+            region.ax.Location().Translated(gp_Vec(region.ax.Direction()).Multiplied(region.v_min)),
+            region.ax.Direction(),
+            region.ax.XDirection(),
+        ),
+        region.radius,
+    )
+    circ_h = gp_Circ(
+        gp_Ax2(
+            region.ax.Location().Translated(gp_Vec(region.ax.Direction()).Multiplied(region.v_max)),
+            region.ax.Direction(),
+            region.ax.XDirection(),
+        ),
+        region.radius,
+    )
+
+    mid_l0 = ElCLib.Value_s(K_PI * 0.5, circ_l)
+    mid_l1 = ElCLib.Value_s(K_PI * 1.5, circ_l)
+    mid_h0 = ElCLib.Value_s(K_PI * 0.5, circ_h)
+    mid_h1 = ElCLib.Value_s(K_PI * 1.5, circ_h)
+
+    a_l0 = _make_arc(circ_l, verts[v_l0], verts[v_lpi], mid_l0)
+    a_l1 = _make_arc(circ_l, verts[v_lpi], verts[v_l0], mid_l1)
+    a_h0 = _make_arc(circ_h, verts[v_h0], verts[v_hpi], mid_h0)
+    a_h1 = _make_arc(circ_h, verts[v_hpi], verts[v_h0], mid_h1)
+    try:
+        m0 = BRepBuilderAPI_MakeEdge(verts[v_l0], verts[v_h0])
+        mpi = BRepBuilderAPI_MakeEdge(verts[v_lpi], verts[v_hpi])
+        if not m0.IsDone() or not mpi.IsDone():
+            return False
+        e0 = m0.Edge()
+        e_pi = mpi.Edge()
+    except Standard_Failure:
+        return False
+    if a_l0.IsNull() or a_l1.IsNull() or a_h0.IsNull() or a_h1.IsNull():
+        return False
+
+    def one_half(gen_a, arc_h, gen_b, arc_l):
+        try:
+            mw = BRepBuilderAPI_MakeWire()
+            mw.Add(gen_a)
+            mw.Add(arc_h)
+            mw.Add(TopoDS.Edge_s(gen_b.Reversed()))
+            mw.Add(TopoDS.Edge_s(arc_l.Reversed()))
+            if not mw.IsDone():
+                return None
+            ow = mw.Wire()
+            surf = Geom_CylindricalSurface(_as_cyl(region))
+            _bind_cyl_pcurves(ow, surf, region, sew_tol)
+            mf = BRepBuilderAPI_MakeFace(surf, ow, True)
+            if not mf.IsDone():
+                return None
+            f = mf.Face()
+            _set_face_outward(f, region.outward_normal)
+            _add_pcurves_on_face(f, sew_tol, False)
+            return None if f.IsNull() else f
+        except Standard_Failure:
+            return None
+
+    f0 = one_half(e0, a_h0, e_pi, a_l0)
+    f1 = one_half(e_pi, a_h1, e0, a_l1)
+
+    def fix_half(f):
+        if f is None or f.IsNull():
+            return None
+        if _face_is_valid(f):
+            return f
+        try:
+            sff = ShapeFix_Face(f)
+            sff.FixOrientationMode = 1
+            sff.FixAddNaturalBoundMode = 0
+            sff.FixMissingSeamMode = 0
+            sff.Perform()
+            res = sff.Result()
+            if res is None or res.IsNull():
+                res = sff.Face()
+            fx = TopExp_Explorer(res, TopAbs_FACE)
+            if fx.More():
+                f = TopoDS.Face_s(fx.Current())
+        except Standard_Failure:
+            pass
+        _set_face_outward(f, region.outward_normal)
+        _ensure_face_valid(f, _mesh_tol_cap(mv, region))
+        return f
+
+    f0 = fix_half(f0)
+    f1 = fix_half(f1)
+    if f0 is None or f1 is None or not _face_is_valid(f0) or not _face_is_valid(f1):
+        return False
+
+    geom[c_l] = [a_l0, a_l1]
+    geom[c_h] = [a_h0, a_h1]
+    collapsed[c_l] = 1
+    collapsed[c_h] = 1
+    faces.append(f0)
+    faces.append(f1)
+    return True
+
+
 def _build_planar_face(
     region: Region, rs: RegionSet, mv: MeshView, geom, collapsed, mesh_e, edge_ok
 ):
@@ -705,6 +1591,18 @@ def _build_planar_face(
             iw = _build_loop_wire(ip, rs, mv, geom, collapsed, mesh_e, edge_ok)
             if iw is None:
                 return False
+            # Hole loops must bind shared Seamed360 cap circles with reversed
+            # wire orientation (refit_build.cpp:2080).
+            if len(ip.chain_idx) == 1:
+                ci = ip.chain_idx[0]
+                if (
+                    0 <= ci < len(collapsed)
+                    and collapsed[ci]
+                    and 0 <= ci < len(geom)
+                    and len(geom[ci]) == 1
+                    and _edge_spans_full_circle(geom[ci][0])
+                ):
+                    iw = TopoDS.Wire_s(iw.Reversed())
             if len(ip.chain_idx) > 6:
                 iw2 = _make_wire_closed_from_edges(_wire_edges_in_order(iw))
                 if iw2 is not None:
@@ -722,6 +1620,18 @@ def _build_planar_face(
             if iw is None:
                 inners_ok = False
                 break
+            # Hole loops must bind shared Seamed360 cap circles with reversed
+            # wire orientation (refit_build.cpp:2114).
+            if len(ip.chain_idx) == 1:
+                ci = ip.chain_idx[0]
+                if (
+                    0 <= ci < len(collapsed)
+                    and collapsed[ci]
+                    and 0 <= ci < len(geom)
+                    and len(geom[ci]) == 1
+                    and _edge_spans_full_circle(geom[ci][0])
+                ):
+                    iw = TopoDS.Wire_s(iw.Reversed())
             inner_wires.append(iw)
         out_f = None
         if inners_ok:
@@ -1038,9 +1948,12 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
             return 0 <= rid < len(exploded) and exploded[rid] != 0
 
         def rebuild_collapsed() -> None:
+            diag_collapse = os.environ.get("MESH2STEP_COLLAPSE_DIAG", "") not in ("", "0")
+            n_mix = n_none = n_fail = n_ok = 0
             for ci in range(len(rs.chains)):
                 collapsed[ci] = 0
                 geom[ci] = []
+                chain_edge_fail[ci] = 0
             for ci in range(len(rs.chains)):
                 ch = rs.chains[ci]
                 a = _region_by_id(rs, ch.reg_a)
@@ -1051,6 +1964,7 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
                     b = None
                 if not (_is_analytic(a) and _is_analytic(b)):
                     # mixed analytic|faceted, or island|island: polyline verbatim
+                    n_mix += 1
                     if (a is not None and b is None and _is_analytic(a)) or (
                         b is not None and a is None and _is_analytic(b)
                     ):
@@ -1062,24 +1976,50 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
                             d = _mixed_edge_deviation(verts[ea], verts[eb], an)
                             rs.stats.max_edge_tol = max(rs.stats.max_edge_tol, d)
                     continue
-                # analytic | analytic (plane|plane in M2; plane|cyl etc are M3+)
-                curve = _Curve()
-                if a.type == SurfType.PLANE and b.type == SurfType.PLANE:
-                    curve = _intersect_surfaces(a, b, mv, ch, sew_tol)
+
+                # analytic | analytic (plane|plane, plane|cylinder, cylinder|cylinder)
+                curve = _intersect_surfaces(a, b, mv, ch, sew_tol)
                 if curve.kind == _Curve.NONE:
-                    if a.type == SurfType.PLANE and b.type == SurfType.PLANE:
+                    n_none += 1
+                    if (
+                        (a.type == SurfType.PLANE and b.type == SurfType.PLANE)
+                        or (a.type == SurfType.PLANE and b.type == SurfType.CYLINDER)
+                        or (a.type == SurfType.CYLINDER and b.type == SurfType.PLANE)
+                    ):
                         chain_edge_fail[ci] = 1
                     continue
 
                 full = ch.closed_loop
                 if ch.closed_loop:
-                    ia = ib = ch.mesh_verts[0]
+                    cyl = a if a.type == SurfType.CYLINDER else (
+                        b if b.type == SurfType.CYLINDER else None
+                    )
+                    if cyl is not None:
+                        ia = ib = _seam_vertex_of(mv, cyl, ch)
+                    else:
+                        ia = ib = ch.mesh_verts[0]
                 else:
                     if len(ch.mesh_verts) < 2:
                         continue
                     ia, ib = ch.mesh_verts[0], ch.mesh_verts[-1]
                 if ia < 0 or ib < 0 or ia >= len(verts) or ib >= len(verts):
                     continue
+                cyl_r = a if a.type == SurfType.CYLINDER else (
+                    b if b.type == SurfType.CYLINDER else None
+                )
+                pln_r = a if a.type == SurfType.PLANE else (
+                    b if b.type == SurfType.PLANE else None
+                )
+                # F1: closed360 cap circles must be V-isos of the fitted cylinder
+                # (refit_build.cpp:3842-3849).
+                if curve.kind == _Curve.CIRC and cyl_r is not None:
+                    v = gp_Vec(cyl_r.ax.Location(), curve.circ.Location()).Dot(
+                        gp_Vec(cyl_r.ax.Direction())
+                    )
+                    if pln_r is not None and _plane_perp_cylinder(pln_r, cyl_r):
+                        v = _plane_v_on_cylinder(pln_r, cyl_r)
+                    curve.circ = _cylinder_iso_circle(cyl_r, v)
+
                 snap_cap = _analytic_snap_cap(mv, a, b)
                 if a.type == SurfType.PLANE and b.type == SurfType.PLANE:
                     d_a = _curve_residual(curve, _pnt_of(verts[ia]))
@@ -1093,16 +2033,49 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
                     snap_cap = max(snap_cap, min(d_pair, accept_cap))
                 _snap_vertex_to_curve(verts[ia], curve, snap_cap)
                 _snap_vertex_to_curve(verts[ib], curve, snap_cap)
-                e = _make_edge_from_curve(curve, verts[ia], verts[ib], full)
+
+                e = None
+                if full and curve.kind == _Curve.CIRC:
+                    # Plane inner wires around Seamed360 holes: MakeEdge(circ,V,V)
+                    # fails on coarse loops — use the F1 iso-circle + makeFullCircle
+                    # ladder (refit_build.cpp:3887-3893).
+                    e = _make_full_circle(curve.circ, verts[ia])
+                    if e is None or e.IsNull():
+                        e = _make_edge_from_curve(curve, verts[ia], verts[ib], full)
+                else:
+                    e = _make_edge_from_curve(curve, verts[ia], verts[ib], full)
                 if e is None or e.IsNull():
                     identic = ia == ib or (
                         _pnt_of(verts[ia]).Distance(_pnt_of(verts[ib])) <= _confusion()
                     )
                     if not identic:
                         chain_edge_fail[ci] = 1
+                        n_fail += 1
                     continue
+                if full and curve.kind == _Curve.CIRC and len(ch.mesh_verts) >= 2:
+                    p0 = mv.pts[int(mv.comp_vtx[ch.mesh_verts[0]])]
+                    p1 = mv.pts[int(mv.comp_vtx[ch.mesh_verts[1]])]
+                    t0 = ElCLib.Parameter_s(
+                        curve.circ, gp_Pnt(float(p0[0]), float(p0[1]), float(p0[2]))
+                    )
+                    t1 = ElCLib.Parameter_s(
+                        curve.circ, gp_Pnt(float(p1[0]), float(p1[1]), float(p1[2]))
+                    )
+                    dt = t1 - t0
+                    while dt < 0.0:
+                        dt += 2.0 * K_PI
+                    if dt > K_PI:
+                        e = TopoDS.Edge_s(e.Reversed())
                 geom[ci] = [e]
                 collapsed[ci] = 1
+                n_ok += 1
+
+            if diag_collapse:
+                print(
+                    f"DIAG_COLLAPSE mix={n_mix} none={n_none} fail={n_fail} ok={n_ok} "
+                    f"total={len(rs.chains)} recover={recover_pass} rounds={rounds}",
+                    file=sys.stderr,
+                )
 
         def build_one_region(r: Region, acc: list) -> bool:
             if region_exploded(r.id):
@@ -1116,6 +2089,34 @@ def build_faces(mv: MeshView, rs: RegionSet, verts: list):
                     if r.type == SurfType.SPHERE
                     else Reject.TORUS_NYI
                 )
+                return False
+            if r.closed360 and r.type == SurfType.CYLINDER:
+                f360 = _try_seamed_360(r, rs, mv, verts, geom, collapsed, mesh_e, edge_ok, sew_tol)
+                if f360 is not None and _cylinder_post_fit_ok(r, mv, rs):
+                    r.built_as = BuiltAs.SEAMED360
+                    acc.append(f360)
+                    return True
+                cap_l = cap_h = None
+                for lp in r.loops:
+                    if lp.role == LoopRole.CAP_LOW:
+                        cap_l = lp
+                    if lp.role == LoopRole.CAP_HIGH:
+                        cap_h = lp
+                halves: list = []
+                if (
+                    _try_two_halves(
+                        r, mv, verts, cap_l, cap_h, rs, geom, collapsed, sew_tol, halves
+                    )
+                    and _cylinder_post_fit_ok(r, mv, rs)
+                ):
+                    all_ok = True
+                    for hf in halves:
+                        if not _ensure_face_valid(hf, _mesh_tol_cap(mv, r)):
+                            all_ok = False
+                    if all_ok:
+                        r.built_as = BuiltAs.TWO_HALVES
+                        acc.extend(halves)
+                        return True
                 return False
             if r.type == SurfType.CYLINDER:
                 f = _build_cylindrical_face(r, rs, mv, geom, collapsed, mesh_e, edge_ok)
