@@ -698,3 +698,39 @@ Two consequences, and they point in opposite directions:
    both blamed a threshold and both were wrong; both times the answer was a stage of the
    reference we simply do not run. When a claim never appears, census what is *offered*
    before tuning what is *accepted*.
+
+### §7f — the transposed eigenvector in `centeredGauss` (2026-09-04)
+
+Instrument first: `MESH2STEP_P1_DIAG` ports the reference's `B1 seed` / `  commit` trace
+(`refit_grow.cpp:1568` and `:1731`) verbatim, so the two traces diff line for line. On
+`nonprismatic-control` — a 4-second fixture, not Body11 — the very first commit line diverges:
+
+```
+ref   commit |S|=12 ... R_w1=8.2406(1) axis=seed scW1=0.9659 scSeed=0    g.dev=0.9659
+ours  commit |S|=12 ... R_w1=10(1)     axis=w1   scW1=0      scSeed=1.1e-16 g.dev=0
+```
+
+Same eigenvalues (`flat=0`, `patch=0.9544` on both), different eigenvector. `refit_math.cpp:255`
+documents the layout as **`evec[k][i] = component i of eigenvector k`** — rows are
+eigenvectors. `centeredGauss` (`refit_grow.cpp:320`) then reads
+
+```cpp
+// w1 = column 0 of evec (jacobi stores eigenvectors as columns).
+const gp_XYZ w1(evec[0][0], evec[1][0], evec[2][0]);
+```
+
+which is the first *component* of each of the three eigenvectors — a transposed read, and the
+comment contradicts the layout stated at the definition. It is a bug in the reference, and it is
+the specification: `w1` is a unit vector (a column of an orthogonal matrix) but it is not the
+smallest-eigenvalue direction, so on a clean 12-gon ring it lands in-plane, `dev` becomes
+cos(15°) = 0.9659, and `axisOf` therefore keeps the seed axis where we adopt `w1`.
+
+- `P12: reproducing the transposed read makes our first nonprismatic-control commit line
+  match the reference's -- g.dev 0 -> 0.9659, axis w1 -> seed, R_w1 10 -> 8.2406. Because
+  the transposed w1 mixes all three eigenvectors and each is sign-normalised BEFORE the
+  read, numpy's eigh is not sufficient: the reference's own jacobiEigenSymmetric3 (rows,
+  ascending, per-row signNormalize) has to be ported alongside. Predicted downstream: the
+  Body11 cylinder deficit (332/419 and 140/164) closes substantially, since B1 axis
+  selection is what decides how far each claim grows |
+  check: MESH2STEP_P1_DIAG=1 on nonprismatic-control, diff the commit lines against the
+  reference | result: pending`
