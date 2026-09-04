@@ -537,9 +537,35 @@ later probe measured the median unchanged. **A justification the author's own me
 contradicts is not evidence, whoever the author is.**
 
 - `P10: the closed-360 radius gap is a 2-ulp difference in the refinement accumulator
-  `acc`, arising from pair-gate selection or accumulation order in extract_chain -- NOT
-  from the PCA axis, the norm, or the median | check: dump acc and its per-pair terms from
-  both implementations and diff them term by term | result: pending`
+  `acc` in extract_chain -- NOT the PCA axis or the median | result: CONFIRMED as to
+  location by Kimi; the mechanism is P11.`
+
+- `P11: the ulps enter acc at lawband.py:489 `m = float(np.linalg.norm(d))` -- scaled
+  dnrm2 where the reference uses gp_XYZ::Modulus. It is the ONLY site in that loop where
+  a 1-ulp difference reaches a VALUE rather than a gate (az_all gates at 5e-3, ax_all at
+  1e-3, np.dot(d, axis) is a sign test), and 96 per-pair d/m terms accumulate into the
+  2-ulp result. Replacing that norm and the two np.linalg.norm(acc) with the scalar
+  sqrt(x*x+y*y+z*z) makes the refined axis bit-exact and the radius 5.750000531691 |
+  check: patch the three norms, run the inner-radius probe | result: **CONFIRMED** —
+  5.750000531690743 against the golden 5.750000531691. All 15 radii now agree to ~1e-13;
+  the outlier went from -7.757e-8 to -2.567e-13. handle-lock's overlay test flipped green
+  and the fixture is now at full parity: suite 74 passed/5 failed -> 78 passed/3 failed.`
+
+**One line, after four wrong turns.** P7 (`rho_of`'s norm) had the RIGHT MECHANISM and the
+WRONG SITE. P8 (the eigensolver) was structurally incapable of mattering. The executor's
+`_row_dots` attribution was wrong. Kimi's own patch was justified by a claim its own probe
+refuted. What actually worked: Kimi's *measurement* localising the error to `acc`, plus the
+observation that in that loop `az_all` feeds a 5e-3 gate, `ax_all` a 1e-3 gate, and
+`np.dot(d, axis)` is a sign test — so `m` is the ONLY place a 1-ulp difference can reach a
+value, and 96 `d/m` terms accumulate there.
+
+**The rule this teaches, which is not "check the norms".** Two of the four wrong turns were
+right about the class of bug and wrong about the location. In a bit-sensitive port the
+question is never "is this call BLAS?" — it is **"does anything downstream of this call
+compare against a tolerance?"** A ulp that only ever reaches a gate is invisible and
+harmless; a ulp that reaches an accumulator is the whole bug. Audit by *destination*, not
+by call site. The remaining DXF diffs in `segment.py` should be triaged that way rather
+than by sweeping all 83 of its BLAS calls.
 
 ## 7c. The Body11 route divergence, resolved (2026-09-04)
 

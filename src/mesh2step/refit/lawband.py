@@ -486,7 +486,11 @@ def extract_chain(mv: MeshView, ids: list, eps_mesh: float) -> LawBand | None:
             if abs(ax_all[j] - ax_all[i]) < 1e-3:
                 continue
             d = q - p
-            m = float(np.linalg.norm(d))
+            # gp_XYZ::Modulus is scalar sqrt(x*x+y*y+z*z); np.linalg.norm is a scaled
+            # two-pass dnrm2 and differs by ulps. This is the one site in this loop
+            # where that reaches a VALUE -- az_all/ax_all only feed 5e-3/1e-3 gates and
+            # np.dot(d, axis) is a sign test -- and 96 d/m terms accumulate here.
+            m = math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
             if m < 1e-9:
                 continue
             d = d / m
@@ -494,8 +498,9 @@ def extract_chain(mv: MeshView, ids: list, eps_mesh: float) -> LawBand | None:
                 d = -d
             acc = acc + d
             n_p += 1
-    if n_p >= 2 and float(np.linalg.norm(acc)) > 1e-15:
-        axis = sign_normalize(acc / float(np.linalg.norm(acc)))
+    acc_m = math.sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2])
+    if n_p >= 2 and acc_m > 1e-15:
+        axis = sign_normalize(acc / acc_m)
         frame = axis_frame(axis)
         if frame is not None:
             u, v = frame
