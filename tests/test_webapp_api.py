@@ -371,3 +371,15 @@ def test_zero_normal_stl_converts(client, zero_normal_stl_bytes, engine):
     s = body["stats"]
     assert s["is_solid"] is True
     assert abs(s["volume"] - 1000.0) < 1e-3
+
+
+def test_unreadable_upload_is_400_not_500(client):
+    # a file with a supported extension whose bytes are not a mesh: bad input,
+    # so a 400 with a reason -- not an unhandled MeshLoadError traceback.
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("junk.stl", b"not an stl at all" * 10, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    assert resp.status_code == 400
+    assert "could not read mesh" in resp.json()["detail"]

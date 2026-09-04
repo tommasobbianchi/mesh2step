@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 import trimesh
 from mesh2step.cut import apply_cuts, component_labels
-from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, load_mesh
+from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, MeshLoadError, load_mesh
 from mesh2step.native import NativeUnavailable, convert_native, native_available
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
@@ -94,7 +94,13 @@ def convert(
     # are all zero ("unreadable or empty STL") -- which plenty of exporters emit,
     # expecting the reader to derive orientation from vertex winding. Round-tripping
     # costs one load+write and keeps the engine accepting the same inputs as before.
-    verts, tris = load_mesh(in_path)
+    try:
+        verts, tris = load_mesh(in_path)
+    except MeshLoadError as e:
+        # an unreadable upload is bad input, not a server fault: 400, not a 500
+        # traceback, and the temp dir goes with it.
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
     n_in_verts, n_in_tris = len(verts), len(tris)
     cut_before = cut_after = None
     repair_info = None
