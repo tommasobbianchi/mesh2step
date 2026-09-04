@@ -304,15 +304,34 @@ def circum_median_center(x, y):
     )
 
 
+def _dot3(a, b) -> float:
+    """gp_XYZ::Dot -- plain `x*x1 + y*y1 + z*z1`, left to right.
+
+    NOT `np.dot`: on a 3-vector that is OpenBLAS `ddot`, whose tail loop is an
+    FMA chain and rounds differently in the last ulp.
+    """
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _modulus3(v) -> float:
+    """gp_XYZ::Modulus -- plain `sqrt(x*x + y*y + z*z)`.
+
+    NOT `np.linalg.norm`, which is `dnrm2`'s scaled two-pass.
+    """
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
 def azimuth(p, origin, axis, u, v) -> float:
+    # refit_lawband.cpp:340 -- gp_XYZ ops throughout, so the scalar spelling.
     d = p - origin
-    rad = d - axis * float(np.dot(d, axis))
-    return math.atan2(float(np.dot(rad, v)), float(np.dot(rad, u)))
+    rad = d - axis * _dot3(d, axis)
+    return math.atan2(_dot3(rad, v), _dot3(rad, u))
 
 
 def rho_of(p, origin, axis) -> float:
+    # refit_lawband.cpp:347 -- rad.Modulus(), not dnrm2.
     d = p - origin
-    return float(np.linalg.norm(d - axis * float(np.dot(d, axis))))
+    return _modulus3(d - axis * _dot3(d, axis))
 
 
 def cluster_angles(angs, tol: float) -> list:
