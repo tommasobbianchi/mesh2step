@@ -798,3 +798,36 @@ Two gaps, in order:
 
 The arm-E reading is the same as Body11's: **we are not being graded on the same attempt.**
 Our "success" is an all-facet shell wearing an analytic component's census.
+
+### §7h — the gap is construction, not recognition (2026-09-04)
+
+`nonprismatic-control` segmentation is at **exact parity**, byte for byte:
+
+```
+ours  engine segment root=0  regions=4 rejected=0 planes=2 cylinders=2 fillets=0 facetIslands=0
+ref   engine segment root=89 regions=4 rejected=0 planes=2 cylinders=2 fillets=0 facetIslands=0
+      id=0 type=cylinder tris=24 radius=10 closed360=1
+      id=1 type=plane    tris=24 radius=0  closed360=0
+      id=2 type=plane    tris=24 radius=0  closed360=0
+      id=3 type=cylinder tris=24 radius=4  closed360=1
+      cylinder radii:10.000000254386423,3.9999999641035373   (identical on both)
+```
+
+Instrumenting every `return None` in `_build_cylindrical_face` and `_build_planar_face`
+showed **not one of them fires**: all four faces build. The component dies later, at
+`build.py` **J6** — `was_closed and not sh_closed`. Our four analytic faces do not sew into
+a closed shell, so the recovery ladder explodes every region and rebuilds 96 facets, which
+closes trivially and which the host probe then accepts.
+
+Both cylinders are `closed360=1` and `BuiltAs.SEAMED360` is an enum value we never assign:
+`_build_cylindrical_face` has no seam machinery. That single gap now explains three
+separate rows of the corpus:
+
+- `nonprismatic-control` — 2 fast-suite failures;
+- Body11's `smoothBuiltComponents` (the reference builds seamed 360s, then fails J6 with
+  `freeEdges=46/45/274/130`, and reverts — §7c);
+- Body28, once `refit_fillet.cpp` lands.
+
+Corrected reading of §7c: it is not that we "attempt an easier subset" by luck. We attempt a
+**different** subset because one constructor is missing, and the facet fallback then wears
+the analytic component's census. Recognition is not the debt any more — construction is.

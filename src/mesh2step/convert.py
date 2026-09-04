@@ -433,6 +433,12 @@ def _segment_summary_stderr(root, rs) -> None:
             f"radius={r.radius:.6g} closed360={1 if r.closed360 else 0}",
             file=_sys.stderr,
         )
+    # stl2step.cpp:519 -- the %.17g radii list, so a radius divergence is visible
+    # without re-deriving it from the STEP file.
+    radii = ",".join(
+        f"{r.radius:.17g}" for r in rs.regions if r.type == SurfType.CYLINDER
+    )
+    print(f"  cylinder radii:{radii}", file=_sys.stderr)
 
 
 def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dxf_dir=None):
