@@ -434,6 +434,44 @@ that is a repo-structure call, not one to make mid-port.
 reaches it. It was items 1 through 3 of the old plan, and it was the reference's own
 abandoned road.
 
+## 7d. Route P milestone P2 — and the bug that would have eaten a session
+
+`slice_profiles` + `fit_profile` (1183 Python lines against `refit_profile.cpp`'s 1290)
+reproduce all three of handle-lock's `DIAG_PROFILE` loops, with every outer-loop segment
+bit-exact to 12 decimals.
+
+**The decisive bug was tolerance WIRING, not numerics.** The reference calls
+`sliceProfiles`/`fitProfile` with a **zeroed** `PrismTols` (`refit_prism_build.cpp:994`):
+`detectPrismatic` derives its tolerances into an internal copy and never writes them back.
+The obvious-looking port — pass the derived tolerances, `tau_fit=7.82e-5` — makes
+`isThrough` snap non-adjacent levels, yielding **7 loops instead of 3** and 23 segments
+instead of 27.
+
+Nothing about that is visible in the function's own source; it is visible only at the call
+site. It is method rule 2 again in its purest form: *the reference is the specification,
+including the parts that look like oversights.* A reviewer asking "should these tolerances
+be zero?" would have said no, and been wrong.
+
+**One value is not bit-exact, and it names the next gap.** The inner loop's radius is
+5.750000454 against the reference's 5.750000532 (Δ7.8e-8; well inside `rel=1e-6`). It
+comes from `law_chain_accept` -> `lawband.py:rho_of`.
+
+The executor attributed this to `rho_of` not using `_row_dots`, I repeated that, and **it
+is wrong** — `rho_of` is already scalar, and `_row_dots` exists only to make *batched* code
+match the *scalar* path. Measured instead: `np.linalg.norm` on a 3-vector does NOT equal
+the C++ `gp_XYZ::Modulus()` (`sqrt(x*x + y*y + z*z)`, left-to-right) — **2149 mismatches
+per 20 000 random vectors (10.7%)**, 1 ulp each (max 4.4e-16). `math.hypot` is further off
+still (3206/20000). One ulp per call, accumulated through the iterative law fit, is the
+7.8e-8.
+
+So the bit-identity work started in `190c7eb` is **not finished**, and the hole is the
+*norm*, not the dot product.
+
+- `P7: replacing np.linalg.norm with the Modulus form sqrt(x*x+y*y+z*z) in rho_of makes
+  the inner-loop radius bit-exact (5.750000454 -> 5.750000532) and changes no other corpus
+  number | check: patch rho_of, run test_profile.py + the full parity suite | result:
+  pending`
+
 ## 7c. The Body11 route divergence, resolved (2026-09-04)
 
 The open question was: ours builds Body11 (263 planes, 140 cylinders, 1 component built,
