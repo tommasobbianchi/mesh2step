@@ -500,6 +500,12 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dx
                 refit_st = rs.stats
                 dvol_pred_abs += sum(abs(r.dvol_predicted) for r in rs.regions)
                 n_cyls = _count_cylindrical_faces(shape)
+            else:
+                # stl2step.cpp:661 -- the revert is not silent; the warning is what
+                # turns the process exit code into 2.
+                out.warnings.append(
+                    "smooth: analytic rebuild reverted on one component -- kept faceted"
+                )
         if shape is None:
             br = brep_build.build_faceted_shape(comp.verts, comp.tris)
             if comp.is_clean:

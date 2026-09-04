@@ -831,3 +831,43 @@ separate rows of the corpus:
 Corrected reading of §7c: it is not that we "attempt an easier subset" by luck. We attempt a
 **different** subset because one constructor is missing, and the facet fallback then wears
 the analytic component's census. Recognition is not the debt any more — construction is.
+
+## §7i — M6a landed: the missing constructor was the whole of it
+
+Confirmed by construction. `trySeamed360` + `tryTwoHalves` + `cylinderPostFitOk` +
+`seamVertexOf` (refit_build.cpp:237, 302, 2599, 2831) and the `closed360 && Cylinder`
+branch of `buildOneRegion` (3994), plus one prerequisite that was **outside** the delegated
+scope and had to be taken anyway: closed360 loops are classified `CapLow`/`CapHigh` by mean
+axial position rather than by shoelace area (refit_chains.cpp:744-785), and the loop-role
+census is closed360-aware (911-926). Without those, `trySeamed360` finds no caps.
+
+`nonprismatic-control`, before → after:
+
+| region | type | before | after |
+|---:|---|---|---|
+| 0 | cylinder r=10 | EXPLODED_TO_FACETS | **SEAMED360** |
+| 1 | plane | EXPLODED_TO_FACETS | SINGLE |
+| 2 | plane | EXPLODED_TO_FACETS | SINGLE |
+| 3 | cylinder r=4 | EXPLODED_TO_FACETS | **SEAMED360** |
+
+The oracle, diffed against the reference binary field for field:
+
+```
+ours  DIAG_COLLAPSE mix=0 none=0 fail=0 ok=4 total=4 recover=0 rounds=0
+ref   DIAG_COLLAPSE mix=0 none=0 fail=0 ok=4 total=4 recover=0 rounds=0
+```
+
+J6 no longer fires; nothing explodes.
+
+### The revert is reached by a different road, and that matters
+
+Every RESULT field now agrees, `smoothRevertedComponents: 1` included — but the mechanism
+is not the reference's. The reference rejects region 0 on the per-region volume residual
+(`DIAG_CASCADE resid ... pass=0`, refit_build.cpp:3282) and reverts the component. We build
+all four, then trip our own whole-component `3·Σ|dvol_predicted|` budget in
+`_try_refit_component` and revert. Same verdict on this mesh, different gate. **Do not read
+the green row as evidence that the residual cascade is ported** — it is not, and on a mesh
+where the two gates disagree we will diverge. U0/U1/U2 (3051-3560) is still owed.
+
+The last piece of the row was one line: our revert was silent where stl2step.cpp:661 warns,
+and the warning is what makes the exit code 2. `nonprismatic-control`: 6/6 green.
