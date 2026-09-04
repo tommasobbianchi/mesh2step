@@ -19,6 +19,8 @@
   - `src/mesh2step/cli.py` — add the `--dxf <dir>` argument and its call site ONLY.
   - `src/mesh2step/convert.py` — pass the dxf directory through ONLY. A few lines; do not
     restructure anything, do not touch route P's geometry.
+  - `src/mesh2step/refit/prism.py` — the axis-normalisation lines in `detect_prismatic`
+    ONLY (see the finding below). Nothing else in that file.
 
   Everything else is **read-only**: `segment.py`, `lawband.py`, `build.py`, `prism.py`,
   `profile.py`, `prism_build.py`, `webapp/`, every other test, and all of `refs/`
@@ -28,6 +30,23 @@
   `prism.py` (`PrismLevels`), and route P wired into `convert.py` by milestone P3.
 
 - **Open Bindings:** none. The output format is fixed byte-for-byte by the oracle below.
+
+- **A finding from an earlier attempt at this milestone, handed to you so you do not have to
+  rediscover it.** That run was killed mid-iteration; its code is discarded, but this held up:
+
+  The DXF header prints the axis at FULL precision, e.g.
+  `999 / axis=7.780675247834571e-06,0.9999999999697307,0`. That makes this the first gate in
+  the whole port able to see a 1-ulp difference in the axis vector — no previous test could.
+  `detect_prismatic` (`prism.py`, condition 2) normalises with `np.linalg.norm`, which is
+  BLAS `dnrm2` (scaled, two-pass); the reference uses `gp_XYZ::Modulus()`, a plain
+  `sqrt(x*x + y*y + z*z)` (`refit_prism.cpp:230-232`). They differ by ulps. The reference
+  also re-normalises through `gp_Dir(sum)` while keeping `ahat = sum/sm` for cap clustering —
+  two normalisations, not one, and both must be reproduced.
+
+  Treat this as a lead, not gospel: VERIFY it against `refit_prism.cpp` yourself and against
+  the golden bytes. If the DXF matches without touching `prism.py`, prefer not touching it.
+  **Any change to `prism.py` must leave `tests/test_prism.py` passing** — that file pins
+  `detect_prismatic`'s output on all five corpus components and is READ-ONLY.
 
 ## 2. HARNESS ENVIRONMENT & GROUND TRUTH
 
@@ -78,7 +97,7 @@
 
 ## 3. VERIFICATION COMMANDS
 
-1. Lint: `python3 -m ruff check src/mesh2step/refit/dxf.py src/mesh2step/refit/__init__.py src/mesh2step/cli.py src/mesh2step/convert.py tests/test_dxf.py`
+1. Lint: `python3 -m ruff check src/mesh2step/refit/dxf.py src/mesh2step/refit/__init__.py src/mesh2step/cli.py src/mesh2step/convert.py src/mesh2step/refit/prism.py tests/test_dxf.py`
 2. F2P: `python3 -m pytest -q tests/test_dxf.py`
 3. P2P: `python3 -m pytest -q tests/ -k "not Body11 and not Body28"`
 
