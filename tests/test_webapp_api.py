@@ -184,3 +184,66 @@ def test_segment_endpoint(client, two_box_stl_bytes):
     assert len(body["components"]) == 2
     assert len(body["face_component"]) == 24
     assert isinstance(body["stl_base64"], str) and len(body["stl_base64"]) > 0
+
+
+def test_convert_trueform_cube(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform", "tolerance": "0.01", "schema": "ap214"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    s = body["stats"]
+    assert s["engine"] == "trueform"
+    assert s["is_solid"] is True
+    assert abs(s["volume"] - 1000.0) < 1e-3
+
+
+def test_trueform_repair_rejected(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform", "tolerance": "0.01", "schema": "ap214", "repair": "weld"},
+    )
+    assert resp.status_code == 400
+
+
+def test_trueform_cuts_rejected(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={
+            "engine": "trueform",
+            "tolerance": "0.01",
+            "schema": "ap214",
+            "cuts": json.dumps([{"type": "largest"}]),
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_bogus_engine_rejected(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "bogus", "tolerance": "0.01", "schema": "ap214"},
+    )
+    assert resp.status_code == 400
+
+
+def test_trueform_download_roundtrip(client, cube_stl_bytes):
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform", "tolerance": "0.01", "schema": "ap214"},
+    )
+    body = resp.json()
+    # without the engine field the faceted path runs and still returns a valid
+    # STEP, so this assertion is what stops the test passing for the wrong reason.
+    assert body["stats"]["engine"] == "trueform"
+    token = body["download_token"]
+    resp = client.get(f"/api/download/{token}")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"ISO-10303-21")

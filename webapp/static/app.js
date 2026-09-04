@@ -193,9 +193,29 @@ function linkPair(rangeId, numId) {
 }
 linkPair('tolerance', 'tolerance-num');
 linkPair('merge-angle', 'merge-angle-num');
+linkPair('unify-angle', 'unify-angle-num');
 document.getElementById('merge-toggle').addEventListener('change', (e) => {
   document.getElementById('merge-controls').classList.toggle('hidden', !e.target.checked);
 });
+
+// ---- engine selector ----
+// TrueForm cannot honour repair, tolerance dedup, or cuts; disable them (visibly,
+// not hidden) and surface the unify-angle input instead.
+const engineSelect = document.getElementById('engine');
+const TRUEFORM_ONLY_IDS = ['repair', 'tolerance', 'tolerance-num',
+  'cut-box-btn', 'cut-plane-btn', 'cut-lasso-btn', 'cut-components-btn',
+  'cut-apply-btn', 'cut-reset-btn', 'cut-keep-inside', 'cut-undo-btn', 'cut-redo-btn'];
+function applyEngine() {
+  const isTrueform = engineSelect.value === 'trueform';
+  for (const id of TRUEFORM_ONLY_IDS) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = isTrueform;
+  }
+  if (!isTrueform) _updateCutButtons();
+  document.getElementById('unify-angle-row').classList.toggle('hidden', !isTrueform);
+}
+engineSelect.addEventListener('change', applyEngine);
+
 document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('tolerance').value = document.getElementById('tolerance-num').value = 0.01;
   document.getElementById('merge-toggle').checked = false;
@@ -203,6 +223,9 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('merge-angle').value = document.getElementById('merge-angle-num').value = 5;
   document.getElementById('schema').value = 'ap214';
   document.getElementById('repair').value = 'off';
+  document.getElementById('engine').value = 'faceted';
+  document.getElementById('unify-angle').value = document.getElementById('unify-angle-num').value = 5;
+  applyEngine();
 });
 
 // ---- cut helpers ----
@@ -679,18 +702,24 @@ convertBtn.addEventListener('click', async () => {
   warningsEl.innerHTML = '';
 
   const fd = new FormData();
+  const engine = document.getElementById('engine').value;
   fd.append('file', selectedFile);
+  fd.append('engine', engine);
   fd.append('tolerance', document.getElementById('tolerance-num').value);
   fd.append('schema', document.getElementById('schema').value);
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
   }
-  const repairVal = document.getElementById('repair').value;
-  if (repairVal !== 'off') {
-    fd.append('repair', repairVal);
-  }
-  if (cutOps.length) {
-    fd.append('cuts', JSON.stringify(cutOps));
+  if (engine === 'faceted') {
+    const repairVal = document.getElementById('repair').value;
+    if (repairVal !== 'off') {
+      fd.append('repair', repairVal);
+    }
+    if (cutOps.length) {
+      fd.append('cuts', JSON.stringify(cutOps));
+    }
+  } else {
+    fd.append('unify_angle', document.getElementById('unify-angle-num').value);
   }
 
   try {
@@ -712,6 +741,10 @@ function renderStats(data) {
   if (!data.ok) {
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Conversion error: ' + (s.error || 'unknown');
+    return;
+  }
+  if (s.engine === 'trueform') {
+    renderTrueformStats(data);
     return;
   }
   const degenerate = s.n_degenerate_collapsed + s.n_degenerate_zero_area;
@@ -755,6 +788,29 @@ function addWarning(text) {
   d.className = 'warning';
   d.textContent = '⚠ ' + text;
   warningsEl.appendChild(d);
+}
+
+function renderTrueformStats(data) {
+  const s = data.stats;
+  const row = (k, v) => `<div><span class="k">${k}</span> ${v}</div>`;
+  const flag = (b) => b ? '<span class="good">yes</span>' : '<span class="bad">no</span>';
+  let html = '';
+  html += row('triangles', s.n_input_tris.toLocaleString());
+  html += row('vertices', s.n_input_verts.toLocaleString());
+  html += row('faces', `${s.n_faces_built.toLocaleString()} analytic`);
+  html += row('watertight', flag(s.watertight));
+  html += row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
+  if (s.smooth_planes != null) {
+    html += row('smooth', `planes ${s.smooth_planes} · cylinders ${s.smooth_cylinders} · fillets ${s.smooth_fillets} · components ${s.smooth_built_components}`);
+  }
+  html += row('output', `${s.schema.toUpperCase()} · ${s.seconds.toFixed(2)}s`);
+  html += `<button class="download-btn" id="dl-btn">⬇ Download ${s.output_path}</button>`;
+  statsEl.innerHTML = html;
+  statsEl.classList.remove('hidden');
+  document.getElementById('dl-btn').addEventListener('click', () => {
+    window.location.href = `api/download/${data.download_token}`;
+  });
+  for (const w of s.warnings || []) addWarning(w);
 }
 
 // ---- welcome / how-it-works dialog ----

@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import trimesh
-from mesh2step.convert import convert_file
+from mesh2step.convert import convert_file, convert_trueform
 from mesh2step.cut import apply_cuts, component_labels
 from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, load_mesh
 
@@ -44,24 +44,34 @@ def _purge_expired() -> None:
 @app.post("/api/convert")
 def convert(
     file: UploadFile = File(...),
+    engine: str = Form("faceted"),
     tolerance: str = Form("0.01"),
     merge_coplanar_angle: float | None = Form(None),
     merge_coplanar_linear_tol: float | None = Form(None),
     schema: str = Form("ap214"),
     repair: str | None = Form(None),
     cuts: str | None = Form(None),
+    unify_angle: float = Form(5.0),
 ):
     _purge_expired()
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(400, f"unsupported extension {suffix!r}; supported: {sorted(SUPPORTED_EXTENSIONS)}")
+    if engine not in ("faceted", "trueform"):
+        raise HTTPException(400, f"invalid engine {engine!r}; must be faceted or trueform")
     if schema not in ("ap203", "ap214", "ap242"):
         raise HTTPException(400, f"invalid schema {schema!r}")
     if repair not in (None, "weld", "fill", "solidify"):
         raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, solidify, or omitted")
 
     parsed_cuts = _parse_cuts(cuts)
+
+    if engine == "trueform":
+        if repair is not None:
+            raise HTTPException(400, "repair is not available with the trueform engine")
+        if parsed_cuts is not None:
+            raise HTTPException(400, "cuts is not available with the trueform engine")
 
     workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
     stem = Path(file.filename).stem or "model"
@@ -77,6 +87,22 @@ def convert(
                 __import__("shutil").rmtree(workdir, ignore_errors=True)
                 raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
             fh.write(chunk)
+
+    if engine == "trueform":
+        # tolerance and the two merge_coplanar_* fields are slider defaults the browser
+        # always sends; under trueform they are accepted and ignored.
+        res = convert_trueform(in_path, out_path, unify_angle=unify_angle, schema=schema)
+        d = _trueform_stats(res, schema)
+        # don't leak server temp paths to the client
+        d["input_path"] = file.filename
+        d["output_path"] = f"{stem}.step"
+        if not res.ok:
+            __import__("shutil").rmtree(workdir, ignore_errors=True)
+            return {"ok": False, "stats": d}
+
+        token = uuid.uuid4().hex
+        _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
+        return {"ok": True, "stats": d, "download_token": token}
 
     if tolerance == "auto":
         tol = "auto"
@@ -96,6 +122,7 @@ def convert(
         cuts=parsed_cuts,
     )
     d = stats.as_dict()
+    d["engine"] = "faceted"
     # don't leak server temp paths to the client
     d["input_path"] = file.filename
     d["output_path"] = f"{stem}.step"
@@ -115,6 +142,30 @@ def download(token: str):
     if not job or not job["path"].exists():
         raise HTTPException(404, "result expired or not found")
     return FileResponse(job["path"], media_type="application/step", filename=job["name"])
+
+
+def _trueform_stats(res, schema: str) -> dict:
+    """Map a ParityResult onto the response stats the client renders."""
+    return {
+        "is_solid": res.solids > 0 and res.open_shells == 0,
+        "watertight": res.watertight,
+        "n_faces_built": res.faces_after_smooth if res.smooth else res.faces_after_unify,
+        "volume": res.step_volume_mm3,
+        "n_input_tris": res.triangles,
+        "n_input_verts": res.vertices,
+        "schema": schema,
+        "seconds": res.seconds,
+        "warnings": res.warnings,
+        "smooth_planes": res.smooth_planes,
+        "smooth_cylinders": res.smooth_cylinders,
+        "smooth_fillets": res.smooth_fillets,
+        "smooth_built_components": res.smooth_built_components,
+        "smooth_reverted_components": res.smooth_reverted_components,
+        "faces_after_smooth": res.faces_after_smooth,
+        "volume_delta_pct": res.volume_delta_pct,
+        "engine": "trueform",
+        "error": res.error,
+    }
 
 
 def _parse_cuts(cuts_str: str | None) -> list | None:
