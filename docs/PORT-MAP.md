@@ -510,10 +510,36 @@ residual is **pre-existing, not a P3 regression**, and it is below every parity 
 except the overlay test's `rel=1e-9`.
 
 - `P9: the handle-lock overlay residual is entirely in law_chain_accept's radius estimate
-  for the closed-360 band; matching it requires transcribing that estimator's arithmetic
-  order, not substituting a better-conditioned algorithm | check: instrument
-  law_chain_accept against DIAG_LAWBAND's per-strip R values (rid 513's 48 strips are all
-  printed) | result: pending`
+  for the closed-360 band | check: instrument law_chain_accept against DIAG_LAWBAND |
+  result: LOCATED, one layer deeper than stated — see below.`
+
+**The second opinion (Rule 8) paid off, then ran out of quota mid-flight.** Kimi Code hit a
+403 weekly limit partway through, so there is no fix — but it left three results that
+narrow the search decisively, and one warning about itself:
+
+1. **The eigensolver is definitively out.** With the Jacobi port applied the PCA axis
+   becomes *bit-identical* to the reference — and the refined axis does not move at all.
+   Mechanism: the PCA axis reaches the refinement only through gates with a **5e-3**
+   tolerance, which a 1-ulp input change cannot flip, and the accumulated `acc` is built
+   from vertex positions that never change. So P8 was not merely unhelpful, it was
+   structurally incapable of helping. That is *why* my measurement showed no change.
+2. **The real divergence is `acc` in the axis refinement**, and it is tiny and exact:
+   the refined axis's y-component differs by **2 ulp** — `0x1.ffffffffc0a29p-1` (ours)
+   against `0x1.ffffffffc0a2bp-1` (reference), 2.22e-16. Everything upstream (origin0,
+   u, v, the 96 generators, the pair count) was checked equal.
+3. **A caution about hex, not decimals.** Kimi spent a long stretch trying to decide
+   whether two decimal strings were the same double, because C++ `%.17g` and Python `repr`
+   print the same value differently. Comparing `float.hex()` settled it in one line.
+   Print doubles as hex when the question is identity.
+
+Its patch was reverted: its docstring asserted the port moves the band median, and its own
+later probe measured the median unchanged. **A justification the author's own measurement
+contradicts is not evidence, whoever the author is.**
+
+- `P10: the closed-360 radius gap is a 2-ulp difference in the refinement accumulator
+  `acc`, arising from pair-gate selection or accumulation order in extract_chain -- NOT
+  from the PCA axis, the norm, or the median | check: dump acc and its per-pair terms from
+  both implementations and diff them term by term | result: pending`
 
 ## 7c. The Body11 route divergence, resolved (2026-09-04)
 
