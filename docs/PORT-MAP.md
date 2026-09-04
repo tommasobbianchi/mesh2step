@@ -567,6 +567,63 @@ harmless; a ulp that reaches an accumulator is the whole bug. Audit by *destinat
 by call site. The remaining DXF diffs in `segment.py` should be triaged that way rather
 than by sweeping all 83 of its BLAS calls.
 
+## 7e. Body11/Body28: we UNDER-recognise cylinders. (Correcting 7c's sequel.)
+
+I twice wrote that we over-segment Body11 — 2111 regions against 1763, 1639 planes against
+1344. **That was wrong, and it was wrong because I compared two totals computed over
+different component sets.** The reference's RESULT for Body11 reports comp A *alone*: comp
+B's `usedRefit` is false, and `stl2step.cpp:820` skips such components when accumulating.
+
+Porting its `segmentSummaryStderr` as `MESH2STEP_SEGMENT_SUMMARY` (`58166c4`) made the
+per-component comparison possible for the first time, and it inverts the conclusion:
+
+| component | regions | rejected | planes | cylinders |
+|---|---|---|---|---|
+| Body11 comp 0 / A | 1708 vs **1763** | **434** vs 333 | 1376 vs 1344 | **332** vs 419 |
+| Body11 comp 1 / B | 403 vs **423** | **234** vs 206 | 263 vs 259 | **140** vs 164 |
+
+We produce **fewer** regions and **fewer** cylinders, and **reject more**. The totals gap
+was an accounting artifact: 1376 + 263 = 1639 is both our components; 1344 is one of theirs.
+
+Two independent defects, cleanly separated at last:
+
+1. **`usedRefit` on comp B** — theirs 0, ours 1. This alone is nearly the whole totals gap;
+   correcting it takes `smoothPlanes` 1639 -> 1376, within 32 of the reference.
+2. **Cylinder under-recognition, the same defect on both fixtures** — Body11 332 vs 419 and
+   140 vs 164, Body28 244 vs 340 with distinct radii 18 vs 32. We reject candidates the
+   reference accepts, in the same direction every time.
+
+Defect 2 is the high-leverage target: one root cause spanning both bodies, in the same
+family as the law-band work that already paid off on handle-lock. Body28 additionally needs
+`refit_fillet.cpp` for its `smoothFillets: 1` row, but that row is worth nothing until the
+96-cylinder gap closes.
+
+**Located, by a negative result.** `MESH2STEP_LAWBAND_DIAG` (mirroring `emitLawband`,
+refit_lawband.cpp:701, plus a `t=` field of our own recording which of the four gates
+failed) settles which stage is at fault. Calibration first: on handle-lock ours accepts
+3772 bands against the reference's 3773, one apart in ~6350 calls.
+
+On Body11:
+
+| stage | ours | ref |
+|---|---:|---:|
+| law bands **accepted** | 671 | 674 |
+| -> cylinder **regions** | **472** | **583** |
+| accepted bands lost in conversion | **199** | 91 |
+
+**`law_chain_accept` is exonerated** — 0.4% apart on 32k attempts, and its accept
+expression is character-for-character the reference's (`refit_lawband.cpp:770-784`). The
+19% cylinder deficit is created entirely *downstream*, in the band -> region claim/merge
+step: we discard more than twice as many accepted bands as the reference does.
+
+That is where Body11's 332-vs-419, its comp B's 140-vs-164, and Body28's 244-vs-340 all
+come from. One stage, one defect, both fixtures.
+
+**Method note, and the reason this section exists.** Both wrong claims came from reading a
+*total* when the reference computes that total over a filtered set. A counter is not a
+measurement until you know its domain. The instrument that settles it cost 40 lines and
+should have been the first thing built, not the tenth.
+
 ## 7c. The Body11 route divergence, resolved (2026-09-04)
 
 The open question was: ours builds Body11 (263 planes, 140 cylinders, 1 component built,

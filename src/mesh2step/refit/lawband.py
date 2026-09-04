@@ -21,6 +21,8 @@ arc is gone.
 from __future__ import annotations
 
 import math
+import os
+import sys
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -622,6 +624,30 @@ def _cap_circle_ok(mv: MeshView, ids: list, b: LawBand) -> bool:
     return mx < K_REL_R_MAX and pop_cv(rhos) < 1e-3
 
 
+_LAWBAND_DIAG = os.environ.get("MESH2STEP_LAWBAND_DIAG", "") not in ("", "0")
+
+
+def _emit_lawband(b, accept, t1=None, t2=None, t3=None, t4=None) -> None:
+    """Mirror of ``emitLawband`` (refit_lawband.cpp:701), same fields and format
+    so our stream and the reference's can be diffed directly.
+
+    The extra ``t=`` field is ours: the reference prints only the verdict, but
+    when the two disagree the useful question is WHICH gate differed, and the
+    per-gate flags cost nothing to carry.
+    """
+    if not _LAWBAND_DIAG:
+        return
+    gates = "".join(
+        "-" if v is None else ("1" if v else "0") for v in (t1, t2, t3, t4)
+    )
+    print(
+        f"DIAG_LAWBAND rid=-1 n={len(b.tris)} N={b.n} R={b.radius:.6f} "
+        f"phi={b.phi:.6f} cvT={b.cv_theta:.3g} cvR={b.cv_r:.3g} "
+        f"resid={b.max_vert_resid:.3g} accept={1 if accept else 0} t={gates}",
+        file=sys.stderr,
+    )
+
+
 def law_chain_accept(mv: MeshView, tris: list, eps_mesh: float):
     """Tier 1 — parameter-free. Returns the LawBand when the facets obey the law."""
     ids = sorted(set(tris))
@@ -638,6 +664,7 @@ def law_chain_accept(mv: MeshView, tris: list, eps_mesh: float):
 
     band.low_confidence = False
     if band.n <= 1:
+        _emit_lawband(band, False, t1, t2, t3, t4)
         return None
     if band.n == 2:
         # N == 2 needs the cap-circle too: a 4-triangle plane/cylinder chimera can
@@ -646,6 +673,7 @@ def law_chain_accept(mv: MeshView, tris: list, eps_mesh: float):
         band.low_confidence = accept
     else:
         accept = t1 and t2 and t3 and t4
+    _emit_lawband(band, accept, t1, t2, t3, t4)
     return band if accept else None
 
 
