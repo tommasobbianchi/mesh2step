@@ -312,3 +312,46 @@ def test_native_non_stl_obj(client, cube_obj_bytes):
     s = body["stats"]
     assert s["backend"] == "native"
     assert s["is_solid"] is True
+
+
+@pytest.fixture(scope="module")
+def zero_normal_stl_bytes():
+    """A binary STL whose facet normals are all zero.
+
+    Plenty of exporters write these and expect the reader to take orientation
+    from vertex winding. The native engine rejects such a file outright
+    ("unreadable or empty STL") while the Python engine accepts it, so this is
+    the shape of input that a naive native switch-over silently loses.
+    """
+    import io
+    import struct
+
+    v = [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0),
+         (0, 0, 10), (10, 0, 10), (10, 10, 10), (0, 10, 10)]
+    f = [(0, 3, 2), (0, 2, 1), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
+         (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+    b = io.BytesIO()
+    b.write(b"\0" * 80)
+    b.write(struct.pack("<I", len(f)))
+    for tri in f:
+        b.write(struct.pack("<3f", 0.0, 0.0, 0.0))   # the zero normal
+        for i in tri:
+            b.write(struct.pack("<3f", *v[i]))
+        b.write(struct.pack("<H", 0))
+    return b.getvalue()
+
+
+@pytest.mark.parametrize("engine", ["faceted", "trueform"])
+def test_zero_normal_stl_converts(client, zero_normal_stl_bytes, engine):
+    """A zero-normal STL must convert on both engines, whichever backend runs."""
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", zero_normal_stl_bytes, "application/octet-stream")},
+        data={"engine": engine, "schema": "ap214"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True, f"zero-normal STL rejected: {body['stats'].get('error')!r}"
+    s = body["stats"]
+    assert s["is_solid"] is True
+    assert abs(s["volume"] - 1000.0) < 1e-3

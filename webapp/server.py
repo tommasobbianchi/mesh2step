@@ -93,12 +93,17 @@ def convert(
     # Python engine so a knob the user set is never silently dropped.
     use_native = native_available() and repair is None and parsed_cuts is None
     if use_native:
-        stl_path = in_path
-        if suffix != ".stl":
-            # the binary takes STL only; transcode through the existing loader.
-            verts, tris = load_mesh(in_path)
-            stl_path = workdir / "input.stl"
-            trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
+        # ALWAYS normalise through our own loader, not just for non-STL input.
+        # The binary takes STL only, and it also rejects an STL whose facet
+        # normals are all zero ("unreadable or empty STL") -- which plenty of
+        # exporters emit, expecting the reader to derive orientation from vertex
+        # winding. The Python engine accepts those, so feeding the upload
+        # straight through would lose files that converted fine yesterday.
+        # Round-tripping costs one load+write and makes the two engines accept
+        # exactly the same inputs.
+        verts, tris = load_mesh(in_path)
+        stl_path = workdir / "native_input.stl"
+        trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
         native_engine = "trueform" if engine == "trueform" else "verbatim"
         native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
         # Faceted with no merge requested must keep one face per triangle, which
