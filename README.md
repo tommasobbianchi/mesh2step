@@ -4,11 +4,13 @@ Live web app: **https://mesh2step.nativemedica.it/**
 (origin: https://nativedev.tail7d3518.ts.net/mesh2step/ — see `webapp/deploy/README.md`)
 
 Convert a triangle mesh (STL / OBJ / 3MF / PLY) into a B-Rep solid, exported as STEP
-(AP203/AP214/AP242), using the **faceted** approach: one planar B-Rep face per input
-triangle, with topology (vertices, edges) genuinely shared across triangles from the
-moment they're built -- not reconstructed afterward by a sewing pass. This is a
-geometry-preserving baseline converter: no surface fitting, no primitive recognition,
-exact fidelity to the input mesh.
+(AP203/AP214/AP242). Conversion runs through the native **stl2step** C++ engine (see
+`refs/stl2step/`); the default **verbatim** mode builds one planar B-Rep face per
+input triangle, with topology (vertices, edges) genuinely shared across triangles from
+the moment they're built -- not reconstructed afterward by a sewing pass. The optional
+`--engine trueform` mode recovers planes and cylinders analytically. Both are
+geometry-preserving: no primitive recognition beyond what trueform does, exact fidelity
+to the input mesh.
 
 See [`SELECTION.md`](SELECTION.md) for the comparison of four reference
 implementations this design is synthesized from, and why. tl;dr: none of the four
@@ -32,59 +34,24 @@ same OpenCASCADE kernel with near-identical class names.
 
 ```sh
 mesh2step part.stl                              # -> part.step, faceted, AP214
-mesh2step part.stl -o out.step --tolerance 0.001 # tighter dedup tolerance
-mesh2step part.stl --tolerance auto              # scale-aware tolerance (bbox-diag/2000)
-mesh2step part.stl --repair solidify             # pymeshfix reconstruction
-mesh2step part.stl --merge-coplanar              # merge co-planar faces, default 5deg
-mesh2step part.stl --merge-coplanar 1.0          # explicit angular tolerance
+mesh2step part.stl --engine trueform            # analytic plane/cylinder recovery
+mesh2step part.stl --repair solidify            # pymeshfix reconstruction (mesh preprocessing)
+mesh2step part.stl --merge-coplanar             # merge co-planar faces, default 5deg
+mesh2step part.stl --merge-coplanar 1.0         # explicit angular tolerance
 mesh2step part.stl --format ap242
 mesh2step ./parts_dir/ --output-dir ./step_out/  # batch mode: every supported file in a folder
 ```
 
-Every run prints structured stats: triangles in / kept, degenerate triangles
-skipped, faces built, boundary/non-manifold edge counts, watertight y/n, solid y/n
-(+volume), and a per-stage wall-clock breakdown (load / dedup / build / merge / write).
+The native engine does its own vertex welding (exact-duplicate weld plus an optional
+coplanar merge via `--unify-angle` / `--merge-coplanar`), so the Python pipeline's
+`--tolerance` dedup flag no longer exists. Every run prints the engine's structured
+result; pass `--quiet` for just the `RESULT {json}` line.
 
 ## The tolerance model
 
-There is exactly **one** tolerance in the default (faceted, no `--merge-coplanar`)
-path: `--tolerance`. It is a spatial quantization cell size used for two things only:
-
-1. **Vertex dedup**: two input vertices merge into one shared `TopoDS_Vertex` iff
-   `round(v / tolerance)` produces the same integer cell. The merged vertex keeps the
-   exact coordinates of whichever input occurrence was seen first -- vertices are
-   never snapped to a grid point, only *grouped* by one.
-2. **Degenerate-triangle rejection floor**: a triangle entirely smaller than one
-   tolerance cell (its longest edge `< tolerance`) is treated as sub-resolution noise
-   and dropped.
-
-Pass `--tolerance auto` (CLI) or `auto` in the web UI to derive tolerance from mesh
-scale (bbox diagonal / 2000), preventing the fixed 0.01 default from discarding a
-large fraction of a sub-unit mesh's triangles.
-
-Separately, a triangle is also rejected if it's a **near-collinear sliver** --
-`area < 1e-9 * longest_edge^2`, a dimensionless, scale-independent test that does
-*not* depend on `--tolerance`. This split matters: an earlier version of this tool
-used a single `area < tolerance**2` cutoff, which rejected legitimate thin CAD
-slivers on a real 62k-triangle test mesh purely because `--tolerance` was coarse
-relative to those (valid, non-collinear) slivers -- turning a genuinely watertight
-input into a falsely-reported open shell. Fixed by making shape degeneracy
-scale-independent and keeping `--tolerance` out of it except as an absolute
-sub-resolution floor. See `tests/test_primitives.py::TestDegenerateHandling` for the
-regression tests (one exercising each failure mode).
-
-**No `BRepBuilderAPI_Sewing` tolerance exists anywhere in the default path** --
-because shared topology comes from vertex/edge caching at construction time (see
-`brep_build.py`), there is nothing left for a sewing pass to reconstruct. This is a
-deliberate design choice, not an oversight: it is the direct fix for the FreeCAD
-issue #20455 class of bug, where a single "sew tolerance" parameter silently gated
-both shape construction *and* an unrelated later "Refine shape" step, and users had
-no way to know the two were connected.
-
-`--merge-coplanar` introduces a second, independent, clearly-named tolerance pair
-(`ANGLE_DEG`, angular; `--merge-coplanar-linear-tol`, linear, defaults to
-`--tolerance`) -- see its module docstring (`merge_coplanar.py`) for why the linear
-default matters.
+The native engine has no per-cell dedup tolerance. Vertices are welded exactly, and
+coplanar merging is governed solely by `--unify-angle` (alias `--merge-coplanar`, in
+degrees); with no angle given the verbatim output keeps one face per triangle.
 
 ## Watertight vs. open, honestly
 
@@ -170,10 +137,9 @@ Select &amp; cut panel; each cut can be previewed before conversion with
 pytest tests/ -v
 ```
 
-`tests/test_primitives.py` -- box/cylinder/icosphere/torus: faceted face-count ==
-triangle-count, watertight input -> closed solid, round-trip volume (mesh -> STEP ->
-re-read via `STEPControl_Reader` -> integrate) within 1e-4 relative tolerance, plus
-the three degenerate-triangle regression cases described above.
+`tests/test_native.py` -- the native engine contract: verbatim/trueform conversion,
+the CLI `RESULT` line and exit codes, and a guard that `import mesh2step` no longer
+pulls in the deleted Python refit engine.
 
 `tests/test_real_scan.py` -- two real, dense meshes (see `tests/data/README.md`):
 `bucket.stl` (11,286 triangles) and `real_mesh_bottom_bracket.stl` (62,028 triangles,

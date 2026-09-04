@@ -25,7 +25,10 @@ class NativeEngineError(RuntimeError):
 
 class NativeUnavailable(NativeEngineError):
     def __init__(self) -> None:
-        super().__init__("stl2step native engine is not available on this host")
+        super().__init__(
+            "stl2step native engine is required but not found; "
+            "set MESH2STEP_NATIVE to the path of the stl2step binary"
+        )
 
 
 class NativeTimeout(NativeEngineError):
@@ -67,6 +70,7 @@ def convert_native(
     schema: str = "ap214",
     unify_angle: float | None = None,
     no_unify: bool = False,
+    verify: bool = True,
     timeout: float | None = None,
 ) -> dict:
     binary = native_binary()
@@ -93,6 +97,10 @@ def convert_native(
         cmd += ["--no-unify"]
     elif unify_angle is not None:
         cmd += ["--unify-angle", str(unify_angle)]
+    if not verify:
+        # Skip the binary's re-read + volume check; the caller verifies the
+        # output itself. Meaningfully faster on large faceted meshes.
+        cmd += ["--no-verify"]
 
     seconds = timeout if timeout is not None else _DEFAULT_TIMEOUT
     try:

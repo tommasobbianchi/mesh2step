@@ -25,9 +25,12 @@ STEP format in the sidebar, hit **Convert to STEP**, read the live stats, downlo
   Interactive **component picker**: split into connected components, click a
   colored part to select it, then Delete selected or Keep only selected
   (replaces auto keep-largest).
-- **Backend** (`server.py`): `POST /api/convert` (multipart) runs
-  `mesh2step.convert.convert_file`, returns the full `ConvertStats` as JSON plus a
-  one-time download token; `GET /api/download/{token}` streams the STEP file.
+- **Backend** (`server.py`): `POST /api/convert` (multipart) normalises the upload
+  through the project loader, applies any cut/repair mesh preprocessing, then runs the
+  native **stl2step** engine (`mesh2step.native.convert_native`); returns the mapped
+  stats as JSON plus a one-time download token; `GET /api/download/{token}` streams
+  the STEP file. The native engine is required: it is checked at startup and its
+  absence raises loudly (naming `MESH2STEP_NATIVE`).
   `POST /api/edit` applies cut operations to the uploaded mesh and returns the
   result as an STL preview (with `X-Mesh-Stats` header). In-memory job registry,
   1h TTL — **single-worker only**; move results to object storage + a real queue

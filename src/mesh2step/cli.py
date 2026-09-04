@@ -1,78 +1,21 @@
 import argparse
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from .convert import convert_file, convert_trueform, convert_verbatim
-from .cut import load_cut_ops
-from .io_mesh import SUPPORTED_EXTENSIONS
-from .result import emit_result
+import trimesh
+
+from .cut import apply_cuts, load_cut_ops
+from .io_mesh import SUPPORTED_EXTENSIONS, load_mesh
+from .native import convert_native
+from .result import ParityResult, emit_result
 
 DEFAULT_MERGE_ANGLE_DEG = 5.0
 
 
-def _tol_type(s: str):
-    if s == "auto":
-        return "auto"
-    return float(s)
-
-
 def _fmt_bool(b) -> str:
     return "yes" if b else "no"
-
-
-def _log_stats(stats, file=sys.stdout) -> None:
-    degenerate = stats.n_degenerate_collapsed + stats.n_degenerate_zero_area
-    print(f"  {stats.input_path}", file=file)
-    if stats.error:
-        print(f"    FAILED: {stats.error}  ({stats.t_total_s:.2f}s)", file=file)
-        return
-    print(
-        f"    triangles in={stats.n_input_tris:,} kept={stats.n_kept_tris:,} "
-        f"degenerate_skipped={degenerate:,}  verts in={stats.n_input_verts:,} "
-        f"unique={stats.n_unique_verts:,}",
-        file=file,
-    )
-    print(
-        f"    faces_built={stats.n_faces_built:,} faces_failed={stats.n_faces_failed:,} "
-        f"boundary_edges={stats.n_boundary_edges:,} nonmanifold_edges={stats.n_nonmanifold_edges:,}",
-        file=file,
-    )
-    solid_note = f" volume={stats.volume:.6g}" if stats.volume is not None else ""
-    print(
-        f"    watertight={_fmt_bool(stats.watertight)} solid={_fmt_bool(stats.is_solid)}{solid_note}",
-        file=file,
-    )
-    if stats.repair_level is not None:
-        print(
-            f"    repair({stats.repair_level}): "
-            f"faces {stats.n_repair_faces_before:,} -> {stats.n_repair_faces_after:,}, "
-            f"holes_filled={_fmt_bool(stats.repair_holes_filled)}, "
-            f"watertight_after={_fmt_bool(stats.repair_watertight_after)}",
-            file=file,
-        )
-    if stats.n_faces_after_merge is not None:
-        print(
-            f"    merge-coplanar: {stats.n_faces_before_merge:,} -> {stats.n_faces_after_merge:,} faces "
-            f"(angle={stats.merge_coplanar_angle_deg}deg)",
-            file=file,
-        )
-    print(
-        f"    wrote {stats.output_path} ({stats.output_size_bytes:,} bytes, schema={stats.schema})",
-        file=file,
-    )
-    print(
-        f"    time: load={stats.t_load_s:.2f}s repair={stats.t_repair_s:.2f}s "
-        f"dedup={stats.t_dedup_s:.2f}s "
-        f"build={stats.t_build_s:.2f}s merge={stats.t_merge_s:.2f}s write={stats.t_write_s:.2f}s "
-        f"total={stats.t_total_s:.2f}s",
-        file=file,
-    )
-
-
-def _default_output(input_path: Path, output_dir: Path | None) -> Path:
-    stem = input_path.with_suffix(".step").name
-    return (output_dir / stem) if output_dir else input_path.with_suffix(".step")
 
 
 def _log_verbatim(res, file=sys.stdout) -> None:
@@ -93,6 +36,11 @@ def _log_verbatim(res, file=sys.stdout) -> None:
     print(f"    wrote {res.output} ({res.seconds:.2f}s)", file=file)
 
 
+def _default_output(input_path: Path, output_dir: Path | None) -> Path:
+    stem = input_path.with_suffix(".step").name
+    return (output_dir / stem) if output_dir else input_path.with_suffix(".step")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mesh2step",
@@ -105,39 +53,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory to write outputs into (batch mode, or single-file with -o omitted)",
     )
     p.add_argument(
-        "--tolerance",
-        type=_tol_type,
-        default=0.01,
-        help="vertex dedup / degenerate-triangle quantization tolerance, in input units; "
-             'or "auto" for scale-aware bbox-diag/2000 (default: 0.01)',
-    )
-    p.add_argument(
-        "--merge-coplanar",
-        nargs="?",
-        type=float,
-        const=DEFAULT_MERGE_ANGLE_DEG,
-        default=None,
-        metavar="ANGLE_DEG",
-        help=(
-            "off by default. When given, merges adjacent co-planar triangles into single "
-            f"faces using this angular tolerance in degrees (default if no value given: "
-            f"{DEFAULT_MERGE_ANGLE_DEG})."
-        ),
-    )
-    p.add_argument(
-        "--merge-coplanar-linear-tol",
-        type=float,
-        default=None,
-        metavar="TOL",
-        help="linear tolerance for --merge-coplanar; defaults to --tolerance (see README)",
-    )
-    p.add_argument(
-        "--format",
-        choices=["ap203", "ap214", "ap242"],
-        default="ap214",
-        help="STEP schema (default: ap214)",
-    )
-    p.add_argument(
         "--repair",
         choices=["weld", "fill", "solidify"],
         default=None,
@@ -145,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
             'off by default. "weld" = merge coincident vertices + drop duplicate faces '
             '+ fix winding; "fill" = also fill holes (best-effort); '
             '"solidify" = pymeshfix reconstruction (requires pymeshfix). '
-            "Runs before dedup; still-non-watertight meshes are reported honestly."
+            "Runs as mesh preprocessing before the native conversion."
         ),
     )
     p.add_argument(
@@ -167,18 +82,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="conversion engine: verbatim (default) or trueform (analytic planar refit)",
     )
     p.add_argument(
+        "--format",
+        choices=["ap203", "ap214", "ap242"],
+        default="ap214",
+        help="STEP schema (default: ap214)",
+    )
+    p.add_argument(
         "--unify-angle",
         type=float,
         default=None,
         metavar="DEG",
-        help="coplanar-merge angle in degrees (alias of --merge-coplanar)",
+        help="coplanar-merge angle in degrees (off by default)",
     )
     p.add_argument(
-        "--dxf",
-        type=Path,
+        "--merge-coplanar",
+        nargs="?",
+        type=float,
+        const=DEFAULT_MERGE_ANGLE_DEG,
         default=None,
-        metavar="DIR",
-        help="write one DXF per slab to DIR (prismatic parts only; off by default)",
+        metavar="ANGLE_DEG",
+        help=(
+            "alias of --unify-angle: merge adjacent co-planar triangles into single "
+            f"faces using this angular tolerance in degrees (default if no value given: "
+            f"{DEFAULT_MERGE_ANGLE_DEG})."
+        ),
     )
     p.add_argument(
         "--quiet",
@@ -194,10 +121,69 @@ def _iter_batch_inputs(input_dir: Path):
             yield path
 
 
+def _convert(
+    input_path,
+    output_path,
+    *,
+    engine: str,
+    schema: str,
+    unify_angle: float | None,
+    repair: str | None = None,
+    cuts: list | None = None,
+) -> ParityResult:
+    """Preprocess (load/cut/repair) then convert through the native binary.
+
+    The native binary takes STL only and rejects zero-normal STLs, so every input
+    is normalised through our own loader and re-exported, exactly like the webapp.
+    """
+    verts, tris = load_mesh(input_path)
+    if cuts:
+        cr = apply_cuts(verts, tris, cuts)
+        verts, tris = cr.verts, cr.tris
+        if len(tris) == 0:
+            return ParityResult(
+                ok=False,
+                input=str(Path(input_path).resolve()),
+                output=str(Path(output_path).resolve()),
+                error="cut operations removed all triangles",
+            )
+    if repair is not None:
+        from . import repair as _repair
+
+        rr = _repair.repair_mesh(verts, tris, level=repair)
+        verts, tris = rr.verts, rr.tris
+    with tempfile.TemporaryDirectory() as td:
+        stl_path = Path(td) / "native_input.stl"
+        trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
+        res = convert_native(
+            stl_path,
+            output_path,
+            engine=engine,
+            schema=schema,
+            unify_angle=unify_angle,
+            no_unify=(unify_angle is None),
+        )
+    parity = ParityResult.from_native(res)
+    parity.input = str(Path(input_path).resolve())
+    parity.output = str(Path(output_path).resolve())
+    return parity
+
+
+def _build_cut_ops(args):
+    ops = []
+    if args.cut_json:
+        ops.extend(load_cut_ops(args.cut_json))
+    if args.cut_largest:
+        ops.append({"type": "largest"})
+    return ops or None
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     input_path = Path(args.input)
     output_dir = Path(args.output_dir) if args.output_dir else None
+    native_engine = "trueform" if args.engine == "trueform" else "verbatim"
+    merge_angle = args.unify_angle if args.unify_angle is not None else args.merge_coplanar
 
     if not input_path.exists():
         print(f"error: {input_path} does not exist", file=sys.stderr)
@@ -214,54 +200,35 @@ def main(argv=None) -> int:
         n_ok = n_fail = 0
         for f in files:
             out = _default_output(f, output_dir)
-            stats = convert_file(
+            res = _convert(
                 f,
                 out,
-                tolerance=args.tolerance,
-                merge_coplanar_angle=args.merge_coplanar,
-                merge_coplanar_linear_tol=args.merge_coplanar_linear_tol,
+                engine=native_engine,
                 schema=args.format,
+                unify_angle=merge_angle,
                 repair=args.repair,
                 cuts=ops,
             )
-            _log_stats(stats)
-            if stats.error:
-                n_fail += 1
-            else:
+            _log_verbatim(res)
+            if res.ok:
                 n_ok += 1
+            else:
+                n_fail += 1
         print(f"batch done: {n_ok} ok, {n_fail} failed, {time.perf_counter() - t_batch:.2f}s total")
         return 1 if n_fail else 0
 
     output_path = Path(args.output) if args.output else _default_output(input_path, output_dir)
-    merge_angle = args.unify_angle if args.unify_angle is not None else args.merge_coplanar
-    if args.engine == "trueform":
-        res = convert_trueform(
-            input_path,
-            output_path,
-            unify_angle=merge_angle,
-            schema=args.format,
-            dxf_dir=args.dxf,
-        )
-    else:
-        res = convert_verbatim(
-            input_path,
-            output_path,
-            unify_angle=merge_angle,
-            schema=args.format,
-        )
+    res = _convert(
+        input_path,
+        output_path,
+        engine=native_engine,
+        schema=args.format,
+        unify_angle=merge_angle,
+    )
     if not args.quiet:
         _log_verbatim(res)
     emit_result(res)
     return res.exit_code
-
-
-def _build_cut_ops(args):
-    ops = []
-    if args.cut_json:
-        ops.extend(load_cut_ops(args.cut_json))
-    if args.cut_largest:
-        ops.append({"type": "largest"})
-    return ops or None
 
 
 if __name__ == "__main__":

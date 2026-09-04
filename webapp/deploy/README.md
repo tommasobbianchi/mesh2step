@@ -76,3 +76,21 @@ curl -sI https://nativedev.tail7d3518.ts.net/mesh2step/ | head -1
 ```
 
 Requires `pip install -e ".[web,repair]"` (fastapi/uvicorn/python-multipart + pymeshfix).
+
+## The native engine is a hard dependency
+
+`webapp/server.py` raises `NativeUnavailable` at import if the `stl2step` binary is not
+found, so a misconfigured unit fails at startup instead of serving 500s. Resolution order
+is `$MESH2STEP_NATIVE` → `refs/stl2step/RUN.sh` → `stl2step` on `PATH`.
+
+The deployed instance points at a **frozen** copy — binary plus its 31 OCCT `.so` files —
+so a FreeCAD/OCCT refresh on the host cannot silently change conversion output:
+
+```
+~/.local/share/mesh2step-native/{stl2step,run.sh,lib/}
+~/.config/systemd/user/mesh2step.service.d/native.conf
+  Environment=MESH2STEP_NATIVE=%h/.local/share/mesh2step-native/run.sh
+```
+
+`run.sh` sets `LD_LIBRARY_PATH` to that `lib/`. Rebuilding the reference does not update
+the frozen copy; re-freeze deliberately and re-run the corpus when you do.

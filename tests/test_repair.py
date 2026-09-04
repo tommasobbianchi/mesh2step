@@ -7,9 +7,26 @@ import numpy as np
 import trimesh
 import pytest
 
-from mesh2step.convert import convert_file
 from mesh2step.dedup import smart_tolerance
+from mesh2step.io_mesh import load_mesh
+from mesh2step.native import convert_native
 from mesh2step.repair import REPAIR_LEVELS, repair_mesh
+
+
+def _native_convert(stl_path, out_path, *, repair=None):
+    """Repair (optionally) then convert through the native engine (verbatim, no unify)."""
+    verts, tris = load_mesh(stl_path)
+    rr = None
+    if repair is not None:
+        rr = repair_mesh(verts, tris, level=repair)
+        verts, tris = rr.verts, rr.tris
+    stl = out_path.with_suffix(".stl")
+    trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl))
+    return convert_native(stl, out_path, engine="verbatim", no_unify=True), rr
+
+
+def _is_solid(res) -> bool:
+    return res["solids"] > 0 and res["openShells"] == 0
 
 
 def _holed_cube_stl(tmp_path):
@@ -53,28 +70,28 @@ class TestRepairConvert:
     def test_open_mesh_not_solid_without_repair(self, tmp_path):
         stl = _holed_cube_stl(tmp_path)
         out = tmp_path / "out.step"
-        stats = convert_file(stl, out, tolerance=0.01)
-        assert stats.is_solid is False
+        res, _ = _native_convert(stl, out)
+        assert _is_solid(res) is False
 
     def test_weld_alone_insufficient_for_hole(self, tmp_path):
         stl = _holed_cube_stl(tmp_path)
         out = tmp_path / "out.step"
-        stats = convert_file(stl, out, tolerance=0.01, repair="weld")
-        assert stats.is_solid is False
+        res, _ = _native_convert(stl, out, repair="weld")
+        assert _is_solid(res) is False
 
     def test_fill_closes_hole_to_solid(self, tmp_path):
         stl = _holed_cube_stl(tmp_path)
         out = tmp_path / "out.step"
-        stats = convert_file(stl, out, tolerance=0.01, repair="fill")
-        assert stats.is_solid is True
-        assert abs(stats.volume - 1000.0) < 1e-2
+        res, _ = _native_convert(stl, out, repair="fill")
+        assert _is_solid(res) is True
+        assert abs(res["stepVolumeMM3"] - 1000.0) < 1e-2
 
     def test_duplicate_faces_removed_by_weld(self, tmp_path):
         stl = _duplicated_cube_stl(tmp_path)
         out = tmp_path / "out.step"
-        stats = convert_file(stl, out, tolerance=0.01, repair="weld")
-        assert stats.n_nonmanifold_edges == 0
-        assert stats.is_solid is True
+        res, rr = _native_convert(stl, out, repair="weld")
+        assert rr.n_duplicate_faces_removed == 1
+        assert _is_solid(res) is True
 
 
 class TestSmartTolerance:
@@ -99,15 +116,14 @@ class TestSmartTolerance:
         stl = tmp_path / "broken.stl"
         m2.export(str(stl))
         out = tmp_path / "out.step"
-        stats = convert_file(str(stl), out, tolerance="auto", repair="solidify")
-        assert stats.is_solid is True
+        res, _ = _native_convert(str(stl), out, repair="solidify")
+        assert _is_solid(res) is True
 
-    def test_auto_tolerance_keeps_triangles(self, tmp_path):
+    def test_subunit_box_converts_fully(self, tmp_path):
         m = trimesh.creation.box((1, 1, 1))
         stl = tmp_path / "box1.stl"
         m.export(str(stl))
         out = tmp_path / "out.step"
-        stats = convert_file(str(stl), out, tolerance="auto")
-        assert stats.tolerance < 0.01
-        assert stats.is_solid is True
-        assert stats.n_kept_tris == 12
+        res, _ = _native_convert(str(stl), out)
+        assert _is_solid(res) is True
+        assert res["facesBeforeUnify"] == 12

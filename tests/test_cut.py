@@ -80,8 +80,10 @@ def test_bad_op_type():
 
 
 def test_convert_with_cut_largest():
-    from mesh2step.convert import convert_file
     import tempfile
+
+    from mesh2step.io_mesh import load_mesh
+    from mesh2step.native import convert_native
 
     # Build two-box STL
     vs, ts = _box_mesh([0, 0, 0], (2, 2, 2))
@@ -94,13 +96,14 @@ def test_convert_with_cut_largest():
         in_path = pathlib.Path(td) / "two_boxes.stl"
         out_path = pathlib.Path(td) / "out.step"
         m.export(str(in_path))
-        stats = convert_file(
-            str(in_path), str(out_path),
-            tolerance="auto",
-            cuts=[{"type": "largest"}],
-        )
-        assert stats.is_solid is True
-        assert stats.error is None
+        verts, tris = load_mesh(in_path)
+        cr = apply_cuts(verts, tris, [{"type": "largest"}])
+        cut_path = pathlib.Path(td) / "cut.stl"
+        trimesh.Trimesh(vertices=cr.verts, faces=cr.tris, process=False).export(str(cut_path))
+        res = convert_native(cut_path, out_path, engine="verbatim", no_unify=True)
+        assert res["ok"] is True
+        assert res["solids"] == 1 and res["openShells"] == 0
+        assert res.get("error") is None
 
 
 def test_empty_ops_noop():

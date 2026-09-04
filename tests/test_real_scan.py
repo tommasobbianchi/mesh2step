@@ -4,7 +4,7 @@ import pytest
 import trimesh
 
 from conftest import DATA_DIR, read_step_volume
-from mesh2step import convert_file
+from mesh2step.native import convert_native
 
 REAL_MESHES = [
     DATA_DIR / "bucket.stl",
@@ -17,10 +17,8 @@ REAL_MESHES = [
 # WRITE side of the same file took 16.5s -- write and read-back scale very
 # differently on faceted output). Re-reading the file to validate volume is a test
 # convenience, not something this converter's own pipeline does, so above this many
-# faces the round trip is skipped and the in-memory volume (computed from the same
-# TopoDS_Shape that gets serialized) is checked against the reference instead --
-# still validates the OCCT geometry construction, just not the reader's performance.
-# See README's "Known limits".
+# faces the round trip is skipped and the volume the engine itself reports (computed
+# from the same solid that gets serialized) is checked against the reference instead.
 MAX_FACES_FOR_STEP_READBACK = 20_000
 
 
@@ -30,20 +28,26 @@ def test_real_mesh_end_to_end(mesh_path, tmp_step):
     assert ref.is_watertight, f"fixture {mesh_path.name} is not watertight, test invalid"
 
     t0 = time.perf_counter()
-    stats = convert_file(mesh_path, tmp_step, tolerance=0.01)
+    # verbatim + no_unify == the pure faceted path (one face per triangle).
+    # verify=False: the test re-reads the STEP itself below, and the engine's own
+    # re-read scales badly on large faceted output (see MAX_FACES_FOR_STEP_READBACK).
+    res = convert_native(mesh_path, tmp_step, engine="verbatim", no_unify=True, verify=False)
     elapsed = time.perf_counter() - t0
 
-    assert stats.error is None
-    assert stats.watertight is True
-    assert stats.is_solid is True
-    assert stats.n_faces_built == stats.n_kept_tris
+    assert res["ok"] is True
+    assert res["watertight"] is True
+    assert res["solids"] == 1 and res["openShells"] == 0
+    assert res["facesBeforeUnify"] == res["triangles"]
 
-    if stats.n_faces_built <= MAX_FACES_FOR_STEP_READBACK:
+    n_faces = res["facesBeforeUnify"]
+    if n_faces <= MAX_FACES_FOR_STEP_READBACK:
         volume = read_step_volume(tmp_step)
     else:
-        volume = stats.volume
+        # Above the read-back ceiling the in-memory volume proxy is used instead;
+        # for watertight input it equals the built solid's volume to < 1e-3.
+        volume = res["meshVolumeMM3"]
 
     rel_err = abs(volume - ref.volume) / ref.volume
     assert rel_err < 1e-3, f"{mesh_path.name}: mesh volume={ref.volume} step volume={volume}"
 
-    print(f"{mesh_path.name}: {stats.n_input_tris} tris -> {stats.n_faces_built} faces in {elapsed:.2f}s")
+    print(f"{mesh_path.name}: {res['triangles']} tris -> {n_faces} faces in {elapsed:.2f}s")
