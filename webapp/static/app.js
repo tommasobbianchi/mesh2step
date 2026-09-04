@@ -115,8 +115,24 @@ async function loadFile(file) {
       throw new Error('unsupported extension .' + ext);
     }
   } catch (e) {
-    meshInfo.textContent = 'Preview failed: ' + e.message + ' (conversion may still work)';
-    obj = null;
+    // The browser loaders have gaps the server loader does not: three's
+    // 3MFLoader cannot follow the production extension (<component p:path=...>
+    // into 3D/Objects/*.model, which is what Bambu/Orca write) and dies with
+    // "reading 'mesh'". Ask the server to normalise the file to STL instead --
+    // same loader the conversion uses, so what renders is what converts.
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('api/preview', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || res.statusText);
+      }
+      obj = new THREE.Mesh(new STLLoader().parse(await res.arrayBuffer()), material);
+    } catch (e2) {
+      meshInfo.textContent = 'Preview failed: ' + e2.message + ' (conversion may still work)';
+      obj = null;
+    }
   }
 
   if (obj) {

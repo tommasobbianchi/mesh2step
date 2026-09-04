@@ -170,6 +170,40 @@ def convert(
     return {"ok": True, "stats": d, "download_token": token}
 
 
+@app.post("/api/preview")
+def preview(file: UploadFile = File(...)):
+    """Normalise an upload to a binary STL the browser can always render.
+
+    three.js's 3MFLoader cannot follow the production extension (a <component>
+    with p:path into 3D/Objects/*.model, which is what Bambu/Orca write), so the
+    client preview dies on files this server converts fine. Rather than port that
+    resolution into the browser, the client falls back here: same loader as the
+    conversion path, so a rendered preview now means the conversion will work.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(400, f"unsupported extension {suffix!r}")
+
+    workdir = Path(tempfile.mkdtemp(prefix="mesh2step_prev_"))
+    try:
+        in_path = workdir / f"input{suffix}"
+        size = 0
+        with in_path.open("wb") as fh:
+            while chunk := file.file.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB")
+                fh.write(chunk)
+        try:
+            verts, tris = load_mesh(in_path)
+        except MeshLoadError as e:
+            raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}") from e
+        stl = trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(file_type="stl")
+        return Response(content=stl, media_type="model/stl")
+    finally:
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+
+
 @app.get("/api/download/{token}")
 def download(token: str):
     job = _JOBS.get(token)

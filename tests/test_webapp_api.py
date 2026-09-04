@@ -2,6 +2,7 @@ import sys
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+import io
 import json
 
 import numpy as np
@@ -380,6 +381,73 @@ def test_unreadable_upload_is_400_not_500(client):
         "/api/convert",
         files={"file": ("junk.stl", b"not an stl at all" * 10, "application/octet-stream")},
         data={"engine": "faceted"},
+    )
+    assert resp.status_code == 400
+    assert "could not read mesh" in resp.json()["detail"]
+
+
+def _production_3mf_bytes() -> bytes:
+    """A 3MF whose only object lives in a second .model part, referenced by a
+    <component p:path=...> -- the production extension Bambu/Orca write, and the
+    shape three.js's 3MFLoader cannot follow (hence the server preview fallback)."""
+    import io
+    import zipfile
+
+    box = trimesh.creation.box((10, 10, 10))
+    verts = "".join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in box.vertices)
+    tris = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in box.faces)
+    NS = 'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+    P = 'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"'
+    sub = (
+        f'<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" {NS} {P}>'
+        f'<resources><object id="65537" type="model"><mesh>'
+        f"<vertices>{verts}</vertices><triangles>{tris}</triangles>"
+        f"</mesh></object></resources><build/></model>"
+    )
+    root = (
+        f'<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" {NS} {P} '
+        f'requiredextensions="p"><resources>'
+        f'<object id="1" type="model"><components>'
+        f'<component p:path="/3D/Objects/part.model" objectid="65537"/>'
+        f"</components></object></resources>"
+        f'<build><item objectid="1"/></build></model>'
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/content-types"><Default Extension="model" ContentType="application/'
+            'vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="rels" ContentType='
+            '"application/vnd.openxmlformats-package.relationships+xml"/></Types>',
+        )
+        z.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.'
+            'openxmlformats.org/package/2006/relationships"><Relationship Id="rel0" Target='
+            '"/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/'
+            '3dmodel"/></Relationships>',
+        )
+        z.writestr("3D/3dmodel.model", root)
+        z.writestr("3D/Objects/part.model", sub)
+    return buf.getvalue()
+
+
+def test_preview_normalises_a_production_extension_3mf(client):
+    resp = client.post(
+        "/api/preview",
+        files={"file": ("part.3mf", _production_3mf_bytes(), "application/octet-stream")},
+    )
+    assert resp.status_code == 200, resp.text
+    m = trimesh.load(io.BytesIO(resp.content), file_type="stl")
+    assert len(m.faces) == 12
+    assert abs(m.volume - 1000.0) < 1e-6
+
+
+def test_preview_rejects_unreadable_upload(client):
+    resp = client.post(
+        "/api/preview",
+        files={"file": ("junk.stl", b"nope" * 20, "application/octet-stream")},
     )
     assert resp.status_code == 400
     assert "could not read mesh" in resp.json()["detail"]
