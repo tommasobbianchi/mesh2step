@@ -23,7 +23,8 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape, TopoDS_Shell
 
 from . import brep_build, cut, dedup, io_mesh, merge_coplanar, result, sew, split, step_export
-from .refit import SegmentParams, build_faces, build_mesh_view, segment
+from .refit import SegmentParams, build_faces, build_mesh_view, detect_prismatic, segment
+from .refit import try_stage_p as _try_stage_p
 from .refit.stats import RefitStats
 
 
@@ -531,7 +532,11 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
 
     # smoothBuilt* census (stl2step.cpp): reverted components count against
     # smoothRevertedComponents; only accepted components contribute stats.
-    built_pl = built_cy = built_fi = built_co = rev_co = 0
+    built_pl = built_fi = built_co = rev_co = 0
+    # builtCy counts cylinder faces on the FINAL unified shape (stl2step.cpp
+    # counts each component's post-unify faces; reverted components are faceted
+    # with no cylinders, so the whole-shape total is identical).
+    built_cy = _count_cylindrical_faces(shape)
     for had_plan, used_refit, refit_st, n_cyls in comp_reports:
         if not used_refit:
             if had_plan:
@@ -540,7 +545,6 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
         if n_cyls > 0 or (refit_st.cylinders == 0 and refit_st.planes > 0):
             built_co += 1
             built_pl += refit_st.planes
-            built_cy += n_cyls
             built_fi += refit_st.fillets
         else:
             rev_co += 1
@@ -574,6 +578,12 @@ def _try_refit_component(mv, rs, comp, out) -> tuple[bool, list]:
     """Build the analytic faces and run the accept probe (stl2step.cpp): the
     probe shell must be closed, BRepCheck-valid, and within the volume budget.
     On any failure the component reverts to the faceted build."""
+    # Route P (prismatic): detect -> slice -> fit -> build -> census. On decline
+    # or build failure the component falls through to route G byte-identically.
+    if detect_prismatic(mv, rs).ok:
+        pres = _try_stage_p(mv, rs)
+        if pres.ok and pres.faces:
+            return True, pres.faces
     verts = []
     for i in range(mv.n_vtx):
         p = mv.pts[int(mv.comp_vtx[i])]

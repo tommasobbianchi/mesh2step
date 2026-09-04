@@ -470,7 +470,50 @@ So the bit-identity work started in `190c7eb` is **not finished**, and the hole 
 - `P7: replacing np.linalg.norm with the Modulus form sqrt(x*x+y*y+z*z) in rho_of makes
   the inner-loop radius bit-exact (5.750000454 -> 5.750000532) and changes no other corpus
   number | check: patch rho_of, run test_profile.py + the full parity suite | result:
-  pending`
+  REFUTED — bit-identical, 5.750000454121638 both ways. The norm/Modulus difference is
+  real (10.7% of vectors, 1 ulp) but is NOT what this radius is made of.`
+
+**Fourth refuted prediction, same failure mode as the other three.** I had just finished
+the `_row_dots` bit-identity work, so when a 1e-8 discrepancy appeared I reached for a
+floating-point-summation explanation. The measurement took 90 seconds and would have taken
+90 seconds at any point before I wrote the prediction down as if it were a finding.
+
+**The real cause is an algorithm substitution, found by reading the reference.**
+`recover_axis_dir` calls `np.linalg.eigh` — LAPACK `dsyevd`, divide-and-conquer. The
+reference calls its own **cyclic Jacobi solver with 64 sweeps** (`refit_math.cpp:271`,
+`kJacobiSweeps = 64`). On a well-conditioned covariance the two agree to 1e-12, which is
+why every open cylinder's radius matches; on the closed-360 hole the covariance is
+near-rank-2 and the smallest eigenvector is ill-conditioned, so they part company at 1e-8.
+That is 2.06e-5 of the 2.35e-5 volume gap, i.e. the whole of the last red test.
+
+We paraphrased "the smallest eigenvector" as a library call. The reference does not
+specify an eigenvector; it specifies an *algorithm*. Method rule 2, in a place nobody
+would think to look for it — a numerical routine feels like a detail and is not.
+
+- `P8: porting the reference's 64-sweep cyclic Jacobi solver into recover_axis_dir moves
+  the inner-loop radius 5.750000454 -> ~5.7500005317 and flips the last handle-lock test
+  | check: port it, run the inner-radius probe | result: REFUTED — bit-identical again,
+  5.750000454121638. The 70-line port was reverted: a faithful transcription that changes
+  no measured number is 70 lines of unverified risk.`
+
+**Two diagnoses, both refuted, and the instrument was there the whole time.** Mine (the
+norm) and the executor's (the eigensolver) were both plausible stories about where 1e-8
+comes from, and both were wrong. `STL2STEP_LAWBAND_DIAG=1` then located it in one run:
+the reference's own claim for this region is `rid=513 n=96 N=48 R=5.750001` — **the same
+96 triangles as ours**, but its radius rounds up where ours rounds down. The divergence is
+in **law-band radius fitting during segmentation**, upstream of the profile stage, the
+eigensolver and the norm alike.
+
+Rule 8 applies from here: two failed diagnoses on one issue, so the next step is a second
+opinion and a proper instrumented comparison of `law_chain_accept`, not a third guess. The
+residual is **pre-existing, not a P3 regression**, and it is below every parity threshold
+except the overlay test's `rel=1e-9`.
+
+- `P9: the handle-lock overlay residual is entirely in law_chain_accept's radius estimate
+  for the closed-360 band; matching it requires transcribing that estimator's arithmetic
+  order, not substituting a better-conditioned algorithm | check: instrument
+  law_chain_accept against DIAG_LAWBAND's per-strip R values (rid 513's 48 strips are all
+  printed) | result: pending`
 
 ## 7c. The Body11 route divergence, resolved (2026-09-04)
 
