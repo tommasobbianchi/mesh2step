@@ -734,3 +734,52 @@ cos(15°) = 0.9659, and `axisOf` therefore keeps the seed axis where we adopt `w
   selection is what decides how far each claim grows |
   check: MESH2STEP_P1_DIAG=1 on nonprismatic-control, diff the commit lines against the
   reference | result: pending`
+
+### §7g — nonprismatic-control: we explode where the reference builds (2026-09-04)
+
+The two remaining `nonprismatic-control` failures are one defect, and it is NOT a census
+bug. Measured with the reference's own `STL2STEP_COLLAPSE_DIAG`:
+
+```
+DIAG_COLLAPSE mix=0 none=0 fail=0 ok=4 total=4 recover=0 rounds=0
+DIAG_CASCADE budget all=131.397989 shipped=131.397989 mesh=2016.000132
+DIAG_CASCADE resid rid=0 vface=2199.114969 vchord=1600.000097 dVolPred=113.274130 sub=339.822389 pass=0
+DIAG_CASCADE resid rid=1 ... pass=1
+DIAG_CASCADE resid rid=2 ... pass=1
+DIAG_CASCADE resid rid=3 ... pass=1
+warning: smooth: analytic rebuild reverted on one component -- kept faceted
+```
+
+The reference **builds all four regions analytically** (`ok=4 total=4`, no explode, no
+cascade rung), then a per-region volume-residual gate rejects rid=0 and the host reverts the
+whole component — hence `smoothPlanes/Cylinders/DistinctRadii = 0` and exit 2.
+
+Ours, instrumented at the same point:
+
+```
+PROBE regions=4 ok=True
+  reg type=cyl  tris=24 built_as=EXPLODED_TO_FACETS reject=FACE_BUILD_FAILED
+  reg type=plane tris=24 built_as=EXPLODED_TO_FACETS reject=FACE_BUILD_FAILED
+  reg type=plane tris=24 built_as=EXPLODED_TO_FACETS reject=FACE_BUILD_FAILED
+  reg type=cyl  tris=24 built_as=EXPLODED_TO_FACETS reject=FACE_BUILD_FAILED
+PROBE faces=96 types={Plane: 96} closed=True valid=True
+PROBE shellVol=2016.00013 meshVol=2016.00013 budget=394.193967
+```
+
+Every face build fails, all four regions explode to one face per triangle, and the resulting
+all-facet shell is trivially closed, valid and volume-exact — so our host probe *accepts*
+it. We then count the plan's 2 planes / 2 cylinders into the census for a component whose
+shell contains neither.
+
+Two gaps, in order:
+
+1. **`_build_cylindrical_face` still has no seam machinery** (the gap that sank M3c), and
+   here even the 24-triangle planes fail. Until a region can be built, no gate downstream
+   can be compared.
+2. **The per-region volume-residual gate (`DIAG_CASCADE resid`) is not ported**, and neither
+   is the U0/U1/U2 cascade (`refit_build.cpp:3051-3560`) that decides *which* regions may
+   explode. RULE 1.5 caps the exploded cylinder set at 50% (ties round up); we explode 100%
+   and escalate nowhere.
+
+The arm-E reading is the same as Body11's: **we are not being graded on the same attempt.**
+Our "success" is an all-facet shell wearing an analytic component's census.
