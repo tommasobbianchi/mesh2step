@@ -871,3 +871,57 @@ where the two gates disagree we will diverge. U0/U1/U2 (3051-3560) is still owed
 
 The last piece of the row was one line: our revert was silent where stl2step.cpp:661 warns,
 and the warning is what makes the exit code 2. `nonprismatic-control`: 6/6 green.
+
+## §7j — the last red row is `rhoOf`, and the destination rule found it
+
+`test_dxf_byte_identical` fails on 7 last-digit values, all in
+`handle-lock-comp0-slab0` (slab1 is byte-perfect): codes 10/20/11/21 (line
+endpoints), 40 (an arc radius `9.999990572471203` vs ours `…201`), 50/51 (two arc
+angles). `profile.py` is clean — it already uses `_dot3`/`_norm3`/`math.atan2`
+throughout, and its C++ counterparts match line for line.
+
+The divergence enters one level up, at `refit_lawband.cpp:347` `rhoOf`, whose body is
+
+```
+    const gp_XYZ d = p - origin;
+    const gp_XYZ rad = d - axis * d.Dot(axis);
+    return rad.Modulus();                      // sqrt(x*x + y*y + z*z)
+```
+
+against `lawband.py:314`, which spells the same thing `np.linalg.norm(...)` over
+`float(np.dot(d, axis))` — `dnrm2`'s scaled two-pass, and `ddot`'s FMA chain. Both
+are correct; neither is bit-identical to OCCT. `rho_of` feeds the band radii, whose
+median is `lb.radius` (lawband.py:552), which is assigned straight to `arc.r`
+(profile.py:867) and written to the DXF as code 40. The six other values are
+downstream of that radius and of `azimuth`'s two dot products.
+
+P13: making every `lawband.py` site whose C++ counterpart is a `gp_XYZ` op use the
+scalar spelling takes `handle-lock-comp0-slab0.dxf` byte-identical and the fast
+suite to 82/0. | check: `python3 -m pytest -q tests/test_dxf.py` | result: **PARTIAL**
+
+The mechanism is confirmed and the direction is right — `azimuth` and `rho_of`
+alone removed 4 of the 7 — but the claim of byte-identity was too strong. Three
+values survive, and they are one point, not three: `_stitch_loop` sets the line's
+end from the arc's start (`cur.b = nxt.a`, profile.py:588 / refit_profile.cpp:577),
+so a single endpoint prints as codes 11, 21 and 50. Its arc's centre and radius are
+byte-identical, so only the endpoint moved: dx = -7.105e-15 (2 ulps),
+dy = -1.066e-14 (6 ulps). Not one rounding — a small accumulation.
+
+Two further attempts, both correct against the C++ and both with **zero** effect on
+the DXF, recorded so nobody repeats them:
+
+1. `chainLength`'s two `np.linalg.norm` (prism.py:141,143) vs `.Modulus()`
+   (refit_prism.cpp:128,130). It feeds `capPerimeter`, a threshold, not a coordinate.
+2. `np.linalg.eigh` → the reference's own `jacobiEigenSymmetric3` (refit_math.cpp:255)
+   in `recover_axis_dir` (refit_lawband.cpp:201). The Jacobi port moved from
+   `segment.py` to `lawband.py`, which is where `refit_math.cpp` belongs anyway, and
+   `segment.py` now imports it — one implementation, two callers.
+
+Both are kept: they are the spelling the reference uses, and a knowingly divergent
+one is a latent bug even when today's corpus cannot see it. Suite stayed 81/1 across
+both, so nothing downstream moved either.
+
+A premise worth naming as false: I assumed the divergence had to be the prismatic
+axis `ahat`. It cannot be. `ahat` (prism.py:214-233) is already fully scalar, and an
+error there would shift the slab LEVELS — which would perturb slab1 too, and slab1 is
+byte-perfect. Handed to `/ask-kimi` per Rule 8 rather than guessed at a third time.

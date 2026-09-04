@@ -138,9 +138,9 @@ def _chain_length(mv, ch) -> float:
 
     length = 0.0
     for i in range(1, len(ch.mesh_verts)):
-        length += float(np.linalg.norm(pt(ch.mesh_verts[i]) - pt(ch.mesh_verts[i - 1])))
+        length += _norm3(pt(ch.mesh_verts[i]) - pt(ch.mesh_verts[i - 1]))
     if ch.closed_loop and len(ch.mesh_verts) > 2:
-        length += float(np.linalg.norm(pt(ch.mesh_verts[0]) - pt(ch.mesh_verts[-1])))
+        length += _norm3(pt(ch.mesh_verts[0]) - pt(ch.mesh_verts[-1]))
     return length
 
 

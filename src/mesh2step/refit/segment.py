@@ -19,6 +19,7 @@ import numpy as np
 from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
 
 from .lawband import (
+    _jacobi_eigen_symmetric3,
     law_bands_mergeable,
     law_calibrate,
     law_chain_accept,
@@ -822,100 +823,6 @@ def _area_weighted_nbar(mv: MeshView, tris: list) -> np.ndarray:
     if A < K_TINY:
         return np.zeros(3)
     return nbar / A
-
-
-_JACOBI_EPS = 1e-15
-_JACOBI_SWEEPS = 64
-
-
-def _jacobi_eigen_symmetric3(m):
-    """refit_math.cpp:255 jacobiEigenSymmetric3.
-
-    Returns (eval, evec) with eval ascending and ``evec[k]`` = eigenvector k,
-    each sign-normalised by its largest component. Transcribed rather than
-    delegated to ``numpy.linalg.eigh`` because callers read the array back
-    TRANSPOSED (see _centered_gauss), which only reproduces if the per-row sign
-    normalisation is the reference's.
-    """
-    a = [[0.0] * 3 for _ in range(3)]
-    for i in range(3):
-        for j in range(3):
-            v = 0.5 * (m[i][j] + m[j][i])
-            if not math.isfinite(v):
-                return None
-            a[i][j] = v
-
-    v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-
-    for _sweep in range(_JACOBI_SWEEPS):
-        off = math.sqrt(
-            2.0 * (a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2])
-        )
-        diag = abs(a[0][0]) + abs(a[1][1]) + abs(a[2][2])
-        if off <= _JACOBI_EPS * (1.0 + diag):
-            break
-        for p_, q_ in ((0, 1), (0, 2), (1, 2)):
-            apq = a[p_][q_]
-            if abs(apq) <= _JACOBI_EPS * (1.0 + abs(a[p_][p_]) + abs(a[q_][q_])):
-                continue
-            app = a[p_][p_]
-            aqq = a[q_][q_]
-            if abs(app - aqq) <= _JACOBI_EPS * (1.0 + abs(app) + abs(aqq)):
-                t = 1.0 if apq >= 0.0 else -1.0
-            else:
-                tau = (aqq - app) / (2.0 * apq)
-                mag = abs(tau) + math.sqrt(1.0 + tau * tau)
-                t = 1.0 / mag
-                if tau < 0.0:
-                    t = -t
-            c = 1.0 / math.sqrt(1.0 + t * t)
-            sn = t * c
-
-            a[p_][p_] = c * c * app + sn * sn * aqq - 2.0 * sn * c * apq
-            a[q_][q_] = sn * sn * app + c * c * aqq + 2.0 * sn * c * apq
-            a[p_][q_] = 0.0
-            a[q_][p_] = 0.0
-            for r in range(3):
-                if r == p_ or r == q_:
-                    continue
-                arp = a[r][p_]
-                arq = a[r][q_]
-                a[r][p_] = a[p_][r] = c * arp - sn * arq
-                a[r][q_] = a[q_][r] = sn * arp + c * arq
-            for r in range(3):
-                vrp = v[r][p_]
-                vrq = v[r][q_]
-                v[r][p_] = c * vrp - sn * vrq
-                v[r][q_] = sn * vrp + c * vrq
-
-    lam = [a[0][0], a[1][1], a[2][2]]
-    ordr = [0, 1, 2]
-    if lam[ordr[1]] < lam[ordr[0]]:
-        ordr[0], ordr[1] = ordr[1], ordr[0]
-    if lam[ordr[2]] < lam[ordr[1]]:
-        ordr[1], ordr[2] = ordr[2], ordr[1]
-    if lam[ordr[1]] < lam[ordr[0]]:
-        ordr[0], ordr[1] = ordr[1], ordr[0]
-
-    evals = [0.0] * 3
-    evecs = [[0.0] * 3 for _ in range(3)]
-    for k in range(3):
-        evals[k] = lam[ordr[k]]
-        w = [v[0][ordr[k]], v[1][ordr[k]], v[2][ordr[k]]]
-        imax = 0
-        amax = abs(w[0])
-        for i in (1, 2):
-            if abs(w[i]) > amax:
-                amax = abs(w[i])
-                imax = i
-        if w[imax] < 0.0:
-            w = [-w[0], -w[1], -w[2]]
-        evecs[k] = w
-        if not all(math.isfinite(x) for x in w) or not math.isfinite(evals[k]):
-            return None
-    if not (evals[0] <= evals[1] <= evals[2]):
-        return None
-    return evals, evecs
 
 
 def _centered_gauss(
