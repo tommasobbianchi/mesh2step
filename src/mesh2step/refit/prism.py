@@ -54,10 +54,35 @@ class PrismLevels:
 def _unit_or_zero(v: np.ndarray) -> np.ndarray:
     """Port of ``unitOrZero`` (refit_prism.cpp:147)."""
     v = np.asarray(v, dtype=float)
-    m = float(np.linalg.norm(v))
+    m = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
     if not (m > 0.0) or not math.isfinite(m):
         return np.zeros(3)
     return v / m
+
+
+def _dot3(a: np.ndarray, b: np.ndarray) -> float:
+    """Scalar ``gp_XYZ::Dot`` (x*x + y*y + z*z), NOT numpy's OpenBLAS ``ddot`` FMA
+    path. The reference is scalar throughout; a 1-ulp difference here moves the
+    cap offsets and therefore the level heights, which the DXF prints in full."""
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _norm3(v: np.ndarray) -> float:
+    """Scalar ``gp_XYZ::Modulus`` (sqrt(x^2 + y^2 + z^2)), NOT ``np.linalg.norm``
+    (scaled two-pass dnrm2). See ``_unit_or_zero`` / the ``sm`` note below."""
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
+def _cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Scalar ``gp_XYZ::Crossed``."""
+    return np.array(
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ],
+        dtype=float,
+    )
 
 
 def _dir_xyz(d) -> np.ndarray:
@@ -176,7 +201,7 @@ def detect_prismatic(mv, rs, tols: PrismTols | None = None) -> PrismLevels:
             for j in range(out.n_cyl):
                 if j <= i:
                     continue
-                s = float(np.linalg.norm(np.cross(axes[i], axes[j])))
+                s = _norm3(_cross3(axes[i], axes[j]))
                 if s > max_sin:
                     max_sin = s
         if not (max_sin < t.tau_ax):
@@ -184,28 +209,35 @@ def detect_prismatic(mv, rs, tols: PrismTols | None = None) -> PrismLevels:
             return out
 
         ref = axes[0]
-        if float(np.linalg.norm(ref)) <= 0.0:
+        if _norm3(ref) <= 0.0:
             out.failed_cond = 2
             return out
         total = np.zeros(3)
         for a in axes:
             u = a.copy()
-            if float(np.dot(u, ref)) < 0.0:
+            if _dot3(u, ref) < 0.0:
                 u = -u
             total = total + u
-        sm = float(np.linalg.norm(total))
+        # gp_XYZ::Modulus (refit_prism.cpp:230) is a plain sqrt(x^2+y^2+z^2),
+        # NOT numpy's scaled two-pass dnrm2 -- the two differ by ulps and the
+        # DXF header prints the axis at full precision, so the scalar path is
+        # part of the byte contract.
+        sm = _norm3(total)
         if not (sm > 0.0):
             out.failed_cond = 2
             return out
         total = total / sm
-        out.axis = total
+        # The reference keeps ahat = sum/sm for cap clustering and re-normalises
+        # the reported axis through gp_Dir(sum) (a second Modulus,
+        # refit_prism.cpp:236-237) -- two normalisations, both reproduced.
         ahat = total
+        out.axis = total / _norm3(total)
 
         # --- 3: no oblique planes (refit_prism.cpp:231) ---
         kind = [2] * out.n_plane
         for i in range(out.n_plane):
             n = _unit_or_zero(_dir_xyz(planes[i].ax.Direction()))
-            nd = abs(float(np.dot(n, ahat)))
+            nd = abs(_dot3(n, ahat))
             if nd > 1.0 - t.tau_ax:
                 kind[i] = 0
             elif nd < t.tau_ax:
@@ -227,7 +259,7 @@ def detect_prismatic(mv, rs, tols: PrismTols | None = None) -> PrismLevels:
 
         # --- 4: >=2 distinct cap levels (cluster n.p along ahat) (refit_prism.cpp:257) ---
         offs = [
-            (float(np.dot(ahat, _pnt_xyz(r.ax.Location()))), r.id, r) for r in caps
+            (_dot3(ahat, _pnt_xyz(r.ax.Location())), r.id, r) for r in caps
         ]
         offs.sort(key=lambda o: (o[0], o[1]))
         clusters = []
@@ -272,8 +304,8 @@ def detect_prismatic(mv, rs, tols: PrismTols | None = None) -> PrismLevels:
             r = cyls[i]
             c = _pnt_xyz(r.ax.Location())
             ad = _unit_or_zero(_dir_xyz(r.ax.Direction()))
-            y0 = float(np.dot(ahat, c + ad * r.v_min))
-            y1 = float(np.dot(ahat, c + ad * r.v_max))
+            y0 = _dot3(ahat, c + ad * r.v_min)
+            y1 = _dot3(ahat, c + ad * r.v_max)
             ia = nearest(y0)
             ib = nearest(y1)
             if ia < 0 or ib < 0:
@@ -293,7 +325,7 @@ def detect_prismatic(mv, rs, tols: PrismTols | None = None) -> PrismLevels:
         for i in range(len(caps)):
             r = caps[i]
             n = _unit_or_zero(_dir_xyz(r.ax.Direction()))
-            signed_a[i] = _region_area(mv, r) * float(np.dot(n, ahat))
+            signed_a[i] = _region_area(mv, r) * _dot3(n, ahat)
             peri[i] = _cap_perimeter(mv, rs, r)
         flux = 0.0
         peri_scale = 0.0

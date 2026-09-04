@@ -174,6 +174,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="coplanar-merge angle in degrees (alias of --merge-coplanar)",
     )
     p.add_argument(
+        "--dxf",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="write one DXF per slab to DIR (prismatic parts only; off by default)",
+    )
+    p.add_argument(
         "--quiet",
         action="store_true",
         help="suppress the human-readable stats block; print only the RESULT line",
@@ -233,6 +240,7 @@ def main(argv=None) -> int:
             output_path,
             unify_angle=merge_angle,
             schema=args.format,
+            dxf_dir=args.dxf,
         )
     else:
         res = convert_verbatim(

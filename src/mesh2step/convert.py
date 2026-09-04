@@ -23,7 +23,17 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape, TopoDS_Shell
 
 from . import brep_build, cut, dedup, io_mesh, merge_coplanar, result, sew, split, step_export
-from .refit import SegmentParams, build_faces, build_mesh_view, detect_prismatic, segment
+from .refit import (
+    PrismTols,
+    SegmentParams,
+    build_faces,
+    build_mesh_view,
+    detect_prismatic,
+    fit_profile,
+    segment,
+    slice_profiles,
+    write_profile_dxf,
+)
 from .refit import try_stage_p as _try_stage_p
 from .refit.stats import RefitStats
 
@@ -359,6 +369,7 @@ def convert_trueform(
     *,
     unify_angle: float | None = None,
     schema: str = "ap214",
+    dxf_dir: Path | None = None,
 ) -> result.ParityResult:
     """TrueForm conversion: planar segmentation + analytic Geom_Plane faces per
     clean component, with the closed/valid/volume accept probe and per-component
@@ -370,7 +381,7 @@ def convert_trueform(
         smooth=True,
     )
     try:
-        _convert_trueform_impl(out, input_path, output_path, unify_angle, schema)
+        _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dxf_dir)
     except (ValueError, RuntimeError, Standard_Failure) as exc:
         out.ok = False
         out.error = str(exc)
@@ -388,7 +399,7 @@ def _count_cylindrical_faces(shape) -> int:
     return n
 
 
-def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
+def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema, dxf_dir=None):
     verts, tris = io_mesh.load_mesh(input_path)
     out.triangles = len(tris)
 
@@ -397,6 +408,11 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
     out.components = sr.n_components
     out.watertight = sr.watertight
     out.mesh_volume_mm3 = sr.mesh_volume
+
+    if dxf_dir is not None:
+        dxf_dir = Path(dxf_dir)
+        dxf_dir.mkdir(parents=True, exist_ok=True)
+    dxf_stem = Path(input_path).stem if dxf_dir is not None else None
 
     lo = sr.verts.min(axis=0)
     hi = sr.verts.max(axis=0)
@@ -434,7 +450,7 @@ def _convert_trueform_impl(out, input_path, output_path, unify_angle, schema):
         plan = plans.get(idx)
         if plan is not None:
             mv, rs = plan
-            ok, faces = _try_refit_component(mv, rs, comp, out)
+            ok, faces = _try_refit_component(mv, rs, comp, out, dxf_dir, dxf_stem)
             if ok:
                 used_refit = True
                 any_refit_used = True
@@ -574,13 +590,32 @@ def _faces_to_shell(faces) -> TopoDS_Shape:
     return shell
 
 
-def _try_refit_component(mv, rs, comp, out) -> tuple[bool, list]:
+def _write_dxf_profiles(mv, rs, lv, dxf_dir, dxf_stem) -> None:
+    """Emit one DXF per slab for a prismatic component (port of the D8 §3.2 block
+    in refit_prism_build.cpp's tryStageP): slice + fit the profiles, then write
+    ``<stem>-comp<C>-slab<M>.dxf`` for each. Pure serializer — never consulted by
+    the engine, so a write failure is discarded exactly as the reference does."""
+    tols = PrismTols()
+    profs = slice_profiles(mv, rs, lv, tols)
+    for p in profs:
+        fit_profile(mv, tols, p)
+    comp = rs.comp_root if rs.comp_root >= 0 else 0
+    stem = dxf_stem if dxf_stem else "profile"
+    for p in profs:
+        path = Path(dxf_dir) / f"{stem}-comp{comp}-slab{p.slab}.dxf"
+        write_profile_dxf(p, lv, str(path))
+
+
+def _try_refit_component(mv, rs, comp, out, dxf_dir=None, dxf_stem=None) -> tuple[bool, list]:
     """Build the analytic faces and run the accept probe (stl2step.cpp): the
     probe shell must be closed, BRepCheck-valid, and within the volume budget.
     On any failure the component reverts to the faceted build."""
     # Route P (prismatic): detect -> slice -> fit -> build -> census. On decline
     # or build failure the component falls through to route G byte-identically.
-    if detect_prismatic(mv, rs).ok:
+    lv = detect_prismatic(mv, rs)
+    if lv.ok:
+        if dxf_dir is not None:
+            _write_dxf_profiles(mv, rs, lv, dxf_dir, dxf_stem)
         pres = _try_stage_p(mv, rs)
         if pres.ok and pres.faces:
             return True, pres.faces

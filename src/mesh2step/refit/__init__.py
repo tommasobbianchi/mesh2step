@@ -9,6 +9,7 @@ See mesh_view.py for the per-component MeshView contract and segment.py / build.
 for the stage-by-stage port notes.
 """
 from .build import build_faces
+from .dxf import write_profile_dxf
 from .mesh_view import MeshView, build_mesh_view
 from .prism import PrismLevels, PrismTols, detect_prismatic
 from .prism_build import PrismBuild, PrismDiag, PrismResult, build_prism_solid, try_stage_p
@@ -37,4 +38,5 @@ __all__ = [
     "segment",
     "slice_profiles",
     "try_stage_p",
+    "write_profile_dxf",
 ]
