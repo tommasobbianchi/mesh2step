@@ -476,3 +476,90 @@ def test_mesh_volume_is_reported_for_the_delta(client, cube_stl_bytes):
     s = resp.json()["stats"]
     assert s["mesh_volume"] > 0
     assert abs(s["mesh_volume"] - 1000.0) < 1e-3
+
+
+def test_a_timeout_explains_itself_and_cleans_up(client, monkeypatch, cube_stl_bytes):
+    """A conversion that runs out of time used to escape as a bare 500 with a
+    stack trace, leaving the upload on disk. Measured on the live server: three
+    retries of one 3.2 MB model left three directories behind, and 598 MB had
+    accumulated that way."""
+    import tempfile
+    from pathlib import Path
+
+    import webapp.server as srv
+
+    before = set(Path(tempfile.gettempdir()).glob("mesh2step_*"))
+
+    def _timeout(*a, **kw):
+        raise srv.NativeTimeout(srv.CONVERT_TIMEOUT_S)
+
+    monkeypatch.setattr(srv, "convert_native", _timeout)
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform"},
+    )
+    assert resp.status_code == 504, resp.status_code
+    detail = resp.json()["detail"]
+    assert "still converting" in detail and "Exact engine" in detail, detail
+
+    after = set(Path(tempfile.gettempdir()).glob("mesh2step_*"))
+    # only NEW directories matter: the same request also sweeps stale orphans, so
+    # `after` is legitimately smaller than `before`.
+    assert not (after - before), f"workdir leaked: {after - before}"
+
+
+def test_orphaned_workdirs_are_swept(tmp_path, monkeypatch):
+    """Directories no download token points at must still be reclaimed by age."""
+    import tempfile
+    import time
+    from pathlib import Path
+
+    import webapp.server as srv
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    old = Path(tmp_path) / "mesh2step_old"
+    old.mkdir()
+    (old / "input.stl").write_bytes(b"x" * 1024)
+    import os
+
+    stale = time.time() - srv.RESULT_TTL_S - 60
+    os.utime(old, (stale, stale))
+    fresh = Path(tmp_path) / "mesh2step_fresh"
+    fresh.mkdir()
+
+    srv._sweep_orphans(time.time())
+    assert not old.exists(), "stale orphan not reclaimed"
+    assert fresh.exists(), "a fresh workdir must not be swept from under a request"
+
+
+def test_conversions_are_bounded_so_retries_queue_instead_of_thrashing(client, cube_stl_bytes):
+    """One conversion of a 64k-triangle model takes 91s alone; under load average
+    19 the same work got 18% of a core and blew a 900s ceiling. Beyond the limit a
+    request must be told to come back, not allowed to starve the ones running."""
+    import webapp.server as srv
+
+    acquired = [srv._CONVERT_SLOTS.acquire(timeout=0)
+                for _ in range(srv.MAX_CONCURRENT_CONVERSIONS)]
+    assert all(acquired), "could not saturate the slots"
+    try:
+        srv._CONVERT_SLOTS.acquire = lambda timeout=None: False   # do not wait 30s in a test
+        resp = client.post(
+            "/api/convert",
+            files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+            data={"engine": "faceted"},
+        )
+        assert resp.status_code == 503, resp.status_code
+        assert "busy" in resp.json()["detail"].lower()
+    finally:
+        del srv._CONVERT_SLOTS.acquire
+        for _ in acquired:
+            srv._CONVERT_SLOTS.release()
+
+    # and the limiter must not leak a slot: a normal conversion still works after
+    ok = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    assert ok.status_code == 200, ok.status_code

@@ -9,6 +9,7 @@ Run:  uvicorn webapp.server:app --reload   (from repo root, after `pip install -
 import base64
 import json
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -20,16 +21,34 @@ from fastapi.staticfiles import StaticFiles
 import trimesh
 from mesh2step.cut import apply_cuts, component_labels
 from mesh2step.io_mesh import SUPPORTED_EXTENSIONS, MeshLoadError, load_mesh
-from mesh2step.native import NativeUnavailable, convert_native, native_available
+from mesh2step.native import (
+    NativeEngineError,
+    NativeTimeout,
+    NativeUnavailable,
+    convert_native,
+    native_available,
+)
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
 RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S3 if multi-worker.
+MAX_CONCURRENT_CONVERSIONS = 2   # the engine takes every core and ~1.4 GB per run;
+                                 # a third simultaneous conversion makes all three
+                                 # miss the deadline instead of two making it
+_CONVERT_SLOTS = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
+CONVERT_TIMEOUT_S = 300.0  # a person will not wait longer; the engine's own
+                           # ceiling is 900s, which nobody ever survives
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
 if not native_available():
     raise NativeUnavailable()
 
 app = FastAPI(title="mesh2step")
+
+
+@app.on_event("startup")
+def _startup_sweep() -> None:
+    # nothing is in flight at startup, so anything on disk is an orphan
+    _sweep_orphans(time.time())
 _STATIC = Path(__file__).parent / "static"
 _JOBS: dict[str, dict] = {}  # token -> {"path": Path, "name": str, "ts": float}
 
@@ -43,6 +62,28 @@ def _purge_expired() -> None:
                 job["path"].parent.exists() and __import__("shutil").rmtree(job["path"].parent, ignore_errors=True)
             except OSError:
                 pass
+    _sweep_orphans(now)
+
+
+def _sweep_orphans(now: float) -> None:
+    """Reclaim workdirs no token ever pointed at.
+
+    A request that timed out or raised before registering a download token left
+    its directory behind for good: the purge above only walks _JOBS. Measured on
+    the live server, 598 MB of uploads had accumulated that way, including three
+    copies of one 3.2 MB model a user retried. A restart also empties _JOBS while
+    the directories survive, so age on disk is the only honest criterion.
+    """
+    import shutil
+
+    live = {j["path"].parent for j in _JOBS.values()}
+    for d in Path(tempfile.gettempdir()).glob("mesh2step_*"):
+        try:
+            if d in live or not d.is_dir() or now - d.stat().st_mtime <= RESULT_TTL_S:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
 
 
 @app.post("/api/convert")
@@ -137,14 +178,41 @@ def convert(
     native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
     # Faceted with no merge requested must keep one face per triangle, which is
     # what the client already contracts for.
-    res = convert_native(
-        stl_path,
-        out_path,
-        engine=native_engine,
-        schema=schema,
-        unify_angle=native_unify,
-        no_unify=(engine == "faceted" and merge_coplanar_angle is None),
-    )
+    # Serialise the heavy part. Measured on this host: one conversion of a
+    # 64k-triangle gate takes 91s alone, and the same work under load average 19
+    # got 18% of a core and blew a 900s ceiling. Queuing beats thrashing.
+    if not _CONVERT_SLOTS.acquire(timeout=30):
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(503, (
+            "The converter is busy with other models right now. "
+            "Please try again in a minute — your file was not kept."
+        ))
+    try:
+        res = convert_native(
+            stl_path,
+            out_path,
+            engine=native_engine,
+            schema=schema,
+            unify_angle=native_unify,
+            no_unify=(engine == "faceted" and merge_coplanar_angle is None),
+            timeout=CONVERT_TIMEOUT_S,
+        )
+    except NativeTimeout:
+        # It ran out of time rather than failing: say so, say what to try, and do
+        # not leave a 3 MB upload behind. Measured on a 64k-triangle gate: the
+        # engine itself needs 55-91s, so a request that passes this ceiling is
+        # contending with other conversions, not merely large.
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(504, (
+            f"This model is still converting after {int(CONVERT_TIMEOUT_S)} seconds. "
+            f"It has {n_in_tris:,} triangles; try the Exact engine under Options, "
+            "or simplify the mesh in your slicer first."
+        )) from None
+    except NativeEngineError as e:
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(502, f"The conversion engine failed: {e}") from e
+    finally:
+        _CONVERT_SLOTS.release()
     d = _native_stats(res, engine, schema)
     d["backend"] = "native"
     # Triangle count comes from BEFORE the native step, because the binary only
