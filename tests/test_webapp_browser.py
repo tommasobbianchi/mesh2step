@@ -221,3 +221,39 @@ def test_a_trim_actually_removes_geometry(browser, live_url, tmp_path):
     status = page.inner_text("#cut-status")
     assert "%" in status and "Removed" in status, status
     page.close()
+
+
+def test_the_brand_is_present_and_its_links_are_real(browser, live_url):
+    """Logos and outbound links are marketing surface, but a dead link is worse
+    than no link: assert they are wired to the real destinations, not stubs."""
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+
+    assert page.locator("img.nr-mark").first.is_visible(), "brand mark missing"
+    yt = page.locator('a[href*="youtube.com/@NativeResearch"]')
+    assert yt.count() >= 1, "no YouTube link"
+    site = page.locator('a[href*="nativericerca.it"]')
+    assert site.count() >= 1, "no link back to the brand site"
+
+    # no placeholder ever reaches production
+    html = page.content()
+    assert "__YOUTUBE__" not in html, "unfilled placeholder shipped"
+    # and the logo actually loads rather than 404ing into a broken image
+    ok = page.evaluate("""async () => {
+        const r = await fetch('assets/native-research.svg');
+        return r.ok && (await r.text()).includes('<svg');
+    }""")
+    assert ok, "logo asset does not load"
+
+    # share cards: an absolute URL to a raster image. X, LinkedIn and Slack render
+    # neither a relative path nor an SVG, so a card that "looks set" but is either
+    # would silently show nothing.
+    og = page.get_attribute('meta[property="og:image"]', "content")
+    assert og and og.startswith("https://"), f"og:image must be absolute: {og}"
+    assert og.endswith(".png"), f"og:image must be raster: {og}"
+    card = page.evaluate("""async () => {
+        const r = await fetch('assets/share-card.png');
+        return r.ok ? (await r.blob()).size : 0;
+    }""")
+    assert card > 5000, f"share card missing or empty ({card} bytes)"
+    page.close()

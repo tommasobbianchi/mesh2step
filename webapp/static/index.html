@@ -4,7 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>mesh2step — mesh to STEP B-Rep converter</title>
-  <meta name="description" content="Convert triangle meshes (STL/OBJ/3MF/PLY) into faceted B-Rep STEP solids. Exact, geometry-preserving, shared-topology-by-construction." />
+  <meta name="description" content="Turn a 3D model into real CAD geometry. mesh2step rebuilds holes as true circles and walls as true surfaces, and exports a STEP file Fusion, SolidWorks, FreeCAD and Onshape treat as real geometry. A Native Research tool." />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Native Research" />
+  <meta property="og:title" content="mesh2step — mesh in, real CAD out" />
+  <meta property="og:description" content="Holes become true circles, walls become true surfaces. Free, in the browser, from Native Research." />
+  <meta property="og:url" content="https://mesh2step.nativemedica.it/" />
+  <meta property="og:image" content="https://mesh2step.nativemedica.it/assets/share-card.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="mesh2step — mesh in, real CAD out" />
+  <meta name="twitter:description" content="Holes become true circles, walls become true surfaces. Free, in the browser, from Native Research." />
+  <meta name="twitter:image" content="https://mesh2step.nativemedica.it/assets/share-card.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&display=swap" />
+  <link rel="icon" href="assets/native-research.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="style.css" />
   <script type="importmap">
   {
@@ -18,13 +34,10 @@
 <body>
   <header>
     <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-        <polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
-        <polygon points="16,10 21,13 21,19 16,22 11,19 11,13" fill="var(--accent)" opacity="0.85"/>
-      </svg>
+      <img class="nr-mark" src="assets/native-research.svg" alt="Native Research" />
       <div class="brand-text">
         <div class="logo">mesh<span>2</span>step</div>
-        <div class="brand-sub">by Native&nbsp;Research</div>
+        <div class="brand-sub">by <a href="https://nativericerca.it" target="_blank" rel="noopener">Native&nbsp;Research</a></div>
       </div>
     </div>
     <div class="header-actions">
@@ -35,7 +48,14 @@
     <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
       <span class="icon-moon">🌙</span><span class="icon-sun">☀️</span>
     </button>
-    <a class="github-link" href="https://github.com/tommasobbianchi/mesh2step" target="_blank" rel="noopener">GitHub</a>
+    <nav class="social" aria-label="Native Research elsewhere">
+      <a class="yt" href="https://www.youtube.com/@NativeResearch" target="_blank" rel="noopener" title="Native Research on YouTube">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8ZM9.5 15.6V8.4l6.3 3.6-6.3 3.6Z"/></svg>
+        YouTube</a>
+      <a href="https://github.com/tommasobbianchi/mesh2step" target="_blank" rel="noopener" title="Source on GitHub">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.4 4.9 18.4 5.2 18.4 5.2c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+        GitHub</a>
+    </nav>
   </header>
 
   <main>
@@ -115,6 +135,13 @@
         <div id="convert-status" class="convert-status hidden"></div>
         <div id="result-card" class="result-card hidden"></div>
         <div id="warnings" class="warnings"></div>
+
+        <div class="brand-footer">
+          <div class="tagline">From algorithm to physical object.</div>
+          <div>A free tool from <a href="https://nativericerca.it" target="_blank" rel="noopener">Native Research</a>
+            — see how it works on <a class="yt" href="https://www.youtube.com/@NativeResearch" target="_blank" rel="noopener">YouTube</a>.</div>
+          <div>Your files are converted on our server and deleted after an hour.</div>
+        </div>
       </section>
 
       <details id="advanced" class="advanced">
@@ -184,10 +211,7 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
       <button id="welcome-close" class="modal-close" title="Close">×</button>
       <div class="modal-brand">
-        <svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true">
-          <polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
-          <polygon points="16,10 21,13 21,19 16,22 11,19 11,13" fill="var(--accent)" opacity="0.85"/>
-        </svg>
+        <img class="nr-mark" src="assets/native-research.svg" alt="Native Research" />
         <div>
           <h2 id="welcome-title" class="modal-title">Welcome to mesh<span>2</span>step</h2>
           <p class="modal-tagline">Turn a 3D model into real CAD geometry you can open, measure and edit.</p>
@@ -215,7 +239,8 @@
       <button id="welcome-start" class="export-btn">Get started</button>
 
       <div class="credits">
-        A <b>Native Research</b> tool · built by
+        <a href="https://nativericerca.it" target="_blank" rel="noopener"><b>Native Research</b></a>
+        · <a class="yt" href="https://www.youtube.com/@NativeResearch" target="_blank" rel="noopener">YouTube</a> · built by
         <a href="https://github.com/tommasobbianchi" target="_blank" rel="noopener">@tommasobbianchi</a>
         with <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude</a>
       </div>
