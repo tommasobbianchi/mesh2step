@@ -82,9 +82,13 @@ let trisBeforeCut = 0;
 let maxTriangles = null;   // from the server, so the number lives in one place
 fetch('api/limits').then((r) => r.json()).then((l) => {
   maxTriangles = l.max_triangles;
+  // the sentence lives in the markup so it renders even if this fetch fails;
+  // correct it only when the server's number differs from the one shipped
   const hint = document.querySelector('.primary-hint');
-  if (hint) hint.textContent = `Circles and flat faces are rebuilt as real CAD geometry. `
-    + `Models up to ${(l.max_triangles / 1000).toFixed(0)}k triangles.`;
+  const k = `${(l.max_triangles / 1000).toFixed(0)}k triangles`;
+  if (hint && !hint.textContent.includes(k)) {
+    hint.textContent = `Circles and flat faces are rebuilt as real CAD geometry. Models up to ${k}.`;
+  }
 }).catch(() => {});
 let lastTriCount = 0;
 const meshInfo = document.getElementById('mesh-info');
