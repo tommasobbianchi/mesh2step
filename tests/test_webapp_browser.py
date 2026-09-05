@@ -118,3 +118,25 @@ def test_lost_circle_gets_an_actionable_warning(browser, live_url, tmp_path):
     assert "No curved surface was recovered" in warnings, warnings
     assert "72-120" in warnings
     page.close()
+
+
+def test_prism_rounded_into_a_cylinder_is_flagged(browser, live_url, tmp_path):
+    # An 8-sided prism sits inside the engine's [5, 60] deg seed band, so trueform
+    # rebuilds it as the circumscribed cylinder: 25132.74 against the mesh's
+    # 22627.42, +11.07%, and the engine itself emits no warning.
+    import trimesh
+
+    p = tmp_path / "oct.stl"
+    trimesh.creation.cylinder(radius=20, height=20, sections=8).export(str(p))
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+    page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
+    page.set_input_files("#file-input", str(p))
+    page.wait_for_timeout(1500)
+    page.select_option("#engine", "trueform")
+    page.click("#convert-btn")
+    page.wait_for_selector("#stats-panel:not(.hidden)", timeout=120000)
+    warnings = page.inner_text("#warnings")
+    assert "changed the volume by" in warnings, warnings
+    assert "11.07" in warnings, warnings
+    page.close()

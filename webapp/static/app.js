@@ -862,6 +862,20 @@ function renderTrueformStats(data) {
       + 'a coarser chord tolerance (about 71 segments per full circle or fewer) or a much finer one '
       + '(128 or more) recovers them.');
   }
+  // The engine's own volume check is a budget scaled by the change its refit
+  // PREDICTED, so a rebuild that predicted a big change and then made one passes
+  // silently. Measured: an 8-sided prism (45deg per facet, inside the [5,60] seed
+  // band) comes back as a cylinder with volume 25132.74 against the mesh's
+  // 22627.42 -- exactly the circumscribed cylinder, +11.07%, warnings: []. A
+  // deliberately faceted design is indistinguishable from a coarse circle by
+  // angle alone, so the engine cannot decide it; the user can.
+  const d = s.mesh_volume ? (s.volume - s.mesh_volume) / s.mesh_volume : 0;
+  if (Math.abs(d) > 0.01 && (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0) {
+    addWarning(`The analytic rebuild changed the volume by ${(d * 100).toFixed(2)}%, which is `
+      + 'more than tessellation error explains. If this part is meant to be faceted — a prism, '
+      + 'a polygonal boss, a chamfered ring — TrueForm has rounded it into a cylinder. '
+      + 'Convert with the Faceted engine to keep it exact.');
+  }
   const grew = s.mesh_volume && s.volume > s.mesh_volume;
   const curved = (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0;
   if (grew && curved && (s.warnings || []).some((w) => w.includes('volume differs'))) {
