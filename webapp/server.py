@@ -231,6 +231,7 @@ def _native_stats(res: dict, engine: str, schema: str) -> dict:
         "watertight": res.get("watertight", False),
         "n_faces_built": n_faces_built,
         "volume": res.get("stepVolumeMM3", 0.0),
+        "mesh_volume": res.get("meshVolumeMM3"),
         "n_input_tris": res.get("triangles", 0),
         "n_input_verts": res.get("vertices", 0),
         "schema": schema,

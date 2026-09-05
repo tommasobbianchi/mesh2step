@@ -775,7 +775,7 @@ function renderStats(data) {
   html += row('vertices', num(s.n_input_verts));
   html += row('faces', `${num(s.n_faces_built)} built`);
   html += row('watertight', flag(s.watertight));
-  html += row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
+  html += row('solid', flag(s.is_solid) + volumeCell(s));
   if (s.repair_level) {
     const extra = s.repair_level === 'solidify' ? ' (reconstructed)' : '';
     html += row(`repair(${s.repair_level}${extra})`, `${num(s.n_repair_faces_before)} → ${num(s.n_repair_faces_after)} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
@@ -811,6 +811,21 @@ function addWarning(text) {
   warningsEl.appendChild(d);
 }
 
+function volumeCell(s) {
+  // The engine warns above 0.01% but its volumeDeltaPct rounds to one decimal,
+  // so a warned conversion would read "0.0%". Compute the delta here from the
+  // two volumes it does report, and show it only when there is one to show.
+  if (s.volume == null) return '';
+  let cell = ` · vol ${(+s.volume).toPrecision(6)}`;
+  if (s.mesh_volume) {
+    const d = (s.volume - s.mesh_volume) / s.mesh_volume;
+    if (Math.abs(d) > 1e-6) {
+      cell += ` · mesh ${(+s.mesh_volume).toPrecision(6)} (${d > 0 ? '+' : ''}${(d * 100).toPrecision(2)}%)`;
+    }
+  }
+  return cell;
+}
+
 function renderTrueformStats(data) {
   const s = data.stats;
   const row = (k, v) => `<div><span class="k">${k}</span> ${v}</div>`;
@@ -820,7 +835,7 @@ function renderTrueformStats(data) {
   html += row('vertices', s.n_input_verts.toLocaleString());
   html += row('faces', `${s.n_faces_built.toLocaleString()} analytic`);
   html += row('watertight', flag(s.watertight));
-  html += row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
+  html += row('solid', flag(s.is_solid) + volumeCell(s));
   if (s.smooth_planes != null) {
     html += row('smooth', `planes ${s.smooth_planes} · cylinders ${s.smooth_cylinders} · fillets ${s.smooth_fillets} · components ${s.smooth_built_components}`);
   }
@@ -832,6 +847,16 @@ function renderTrueformStats(data) {
     window.location.href = `api/download/${data.download_token}`;
   });
   for (const w of s.warnings || []) addWarning(w);
+  // A positive delta on a part with recovered curved surfaces is the analytic
+  // solid being MORE accurate than the tessellation: a 24-facet cylinder's mesh
+  // volume sits ~1% under the true cylinder it approximates.
+  const grew = s.mesh_volume && s.volume > s.mesh_volume;
+  const curved = (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0;
+  if (grew && curved && (s.warnings || []).some((w) => w.includes('volume differs'))) {
+    addWarning('The volume grew because cylinders and fillets were recovered analytically: '
+      + 'a faceted cylinder sits inside the true one, so the exact solid is larger than the mesh. '
+      + 'Compare the two figures above before treating this as an error.');
+  }
 }
 
 // ---- welcome / how-it-works dialog ----

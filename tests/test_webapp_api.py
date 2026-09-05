@@ -463,3 +463,16 @@ def test_vertex_count_is_the_engines_welded_one(client, cube_stl_bytes):
     s = resp.json()["stats"]
     assert s["n_input_tris"] == 12
     assert s["n_input_verts"] == 8
+
+
+def test_mesh_volume_is_reported_for_the_delta(client, cube_stl_bytes):
+    # the panel computes B-Rep-vs-mesh delta itself: the engine's volumeDeltaPct
+    # rounds to one decimal, so a conversion warned at 0.01% would read "0.0%".
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "trueform"},
+    )
+    s = resp.json()["stats"]
+    assert s["mesh_volume"] > 0
+    assert abs(s["mesh_volume"] - 1000.0) < 1e-3
