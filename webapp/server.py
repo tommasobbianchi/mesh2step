@@ -24,6 +24,7 @@ from mesh2step.native import NativeUnavailable, convert_native, native_available
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
 RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S3 if multi-worker.
+CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
 if not native_available():
     raise NativeUnavailable()
@@ -167,6 +168,22 @@ def convert(
         return {"ok": False, "stats": d}
 
     d["output_size_bytes"] = out_path.stat().st_size
+    # When trueform recovered nothing, say WHICH circles it lost -- the radii are
+    # the actionable part. Guarded by size: this re-reads the STEP with OCCT, and
+    # a 145 MB faceted file measured >300s to read, so it is skipped there.
+    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
+            and d.get("smooth_planes", 0) > 12
+            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
+        try:
+            from mesh2step.canonize import find_circles
+
+            circles = find_circles(out_path)
+        except Exception:  # noqa: BLE001 - a diagnostic must never fail a conversion
+            circles = []
+        if circles:
+            d["lost_circles"] = [
+                {"radius": round(c.radius, 4), "segments": c.segments} for c in circles[:24]
+            ]
     token = uuid.uuid4().hex
     _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
     return {"ok": True, "stats": d, "download_token": token}

@@ -861,6 +861,12 @@ function renderTrueformStats(data) {
       + 'segments, which lands in a gap in the engine\'s detection band. Re-exporting the mesh with '
       + 'a coarser chord tolerance (about 71 segments per full circle or fewer) or a much finer one '
       + '(128 or more) recovers them.');
+    if (s.lost_circles && s.lost_circles.length) {
+      const radii = [...new Set(s.lost_circles.map((c) => c.radius.toFixed(2)))];
+      addWarning(`These circles are still in the file as polylines, measured from the output: `
+        + `radius ${radii.join(', ')} mm (${s.lost_circles.length} loops). `
+        + 'They are geometrically exact — only their CAD identity as circles was lost.');
+    }
   }
   // The engine's own volume check is a budget scaled by the change its refit
   // PREDICTED, so a rebuild that predicted a big change and then made one passes

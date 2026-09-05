@@ -117,6 +117,9 @@ def test_lost_circle_gets_an_actionable_warning(browser, live_url, tmp_path):
     warnings = page.inner_text("#warnings")
     assert "No curved surface was recovered" in warnings, warnings
     assert "72-120" in warnings
+    # and it must name the radii it actually measured off the output
+    assert "still in the file as polylines" in warnings, warnings
+    assert "10.00" in warnings, warnings
     page.close()
 
 
