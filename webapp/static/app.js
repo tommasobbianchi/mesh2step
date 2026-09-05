@@ -150,12 +150,7 @@ async function loadFile(file) {
     dropHint.classList.add('hidden');
 
     const diag = Math.hypot(size.x, size.y, size.z);
-    let autoTol = Math.max(diag / 2000, 1e-5);
-    autoTol = Number(autoTol.toPrecision(2));
-    document.getElementById('tolerance').value = autoTol;
-    document.getElementById('tolerance-num').value = autoTol;
-    const h = document.getElementById('tol-auto-hint');
-    if (h) h.textContent = `Auto-set to ${autoTol} from model size (${diag.toFixed(2)} diagonal).`;
+    // the tolerance control is gone: the native engine does its own welding
   }
   inputName.textContent = file.name;
   convertBtn.disabled = false;
@@ -207,7 +202,6 @@ function linkPair(rangeId, numId) {
   r.addEventListener('input', () => { n.value = r.value; });
   n.addEventListener('input', () => { r.value = n.value; });
 }
-linkPair('tolerance', 'tolerance-num');
 linkPair('merge-angle', 'merge-angle-num');
 linkPair('unify-angle', 'unify-angle-num');
 document.getElementById('merge-toggle').addEventListener('change', (e) => {
@@ -218,7 +212,7 @@ document.getElementById('merge-toggle').addEventListener('change', (e) => {
 // TrueForm cannot honour repair, tolerance dedup, or cuts; disable them (visibly,
 // not hidden) and surface the unify-angle input instead.
 const engineSelect = document.getElementById('engine');
-const TRUEFORM_ONLY_IDS = ['repair', 'tolerance', 'tolerance-num',
+const TRUEFORM_ONLY_IDS = ['repair',
   'cut-box-btn', 'cut-plane-btn', 'cut-lasso-btn', 'cut-components-btn',
   'cut-apply-btn', 'cut-reset-btn', 'cut-keep-inside', 'cut-undo-btn', 'cut-redo-btn'];
 function applyEngine() {
@@ -233,7 +227,6 @@ function applyEngine() {
 engineSelect.addEventListener('change', applyEngine);
 
 document.getElementById('reset-btn').addEventListener('click', () => {
-  document.getElementById('tolerance').value = document.getElementById('tolerance-num').value = 0.01;
   document.getElementById('merge-toggle').checked = false;
   document.getElementById('merge-controls').classList.add('hidden');
   document.getElementById('merge-angle').value = document.getElementById('merge-angle-num').value = 5;
@@ -707,6 +700,7 @@ document.getElementById('component-keep-btn').addEventListener('click', async ()
 // ---- convert ----
 const statusEl = document.getElementById('convert-status');
 const statsEl = document.getElementById('stats-panel');
+const resultEl = document.getElementById('result-card');
 const warningsEl = document.getElementById('warnings');
 
 convertBtn.addEventListener('click', async () => {
@@ -721,7 +715,6 @@ convertBtn.addEventListener('click', async () => {
   const engine = document.getElementById('engine').value;
   fd.append('file', selectedFile);
   fd.append('engine', engine);
-  fd.append('tolerance', document.getElementById('tolerance-num').value);
   fd.append('schema', document.getElementById('schema').value);
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
@@ -742,7 +735,7 @@ convertBtn.addEventListener('click', async () => {
     const res = await fetch('api/convert', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'server error');
-    renderStats(data);
+    renderResult(data);
   } catch (e) {
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Failed: ' + e.message;
@@ -751,12 +744,50 @@ convertBtn.addEventListener('click', async () => {
   }
 });
 
+function renderResult(data) {
+  // What a person needs: did it work, what did it find, where is the file.
+  // Everything countable stays available under Options > Details.
+  const s = data.stats;
+  if (!data.ok) {
+    statusEl.className = 'convert-status';
+    statusEl.textContent = 'Could not convert this model: ' + (s.error || 'unknown reason');
+    resultEl.classList.add('hidden');
+    return;
+  }
+  const lines = [];
+  if (s.rebuilt) {
+    lines.push(`Rebuilt ${s.rebuilt_bands} round surface${s.rebuilt_bands === 1 ? '' : 's'} as true CAD geometry`);
+    lines.push(`${s.faces_before_rebuild.toLocaleString()} flat patches became ${s.n_faces_built.toLocaleString()} surfaces`);
+  } else {
+    const bits = [];
+    if (s.smooth_planes) bits.push(`${s.smooth_planes} flat face${s.smooth_planes === 1 ? '' : 's'}`);
+    if (s.smooth_cylinders) bits.push(`${s.smooth_cylinders} round face${s.smooth_cylinders === 1 ? '' : 's'}`);
+    if (bits.length) lines.push('Recognised ' + bits.join(' and '));
+    else if (s.n_faces_built) lines.push(`${s.n_faces_built.toLocaleString()} surfaces`);
+  }
+  const kb = s.output_size_bytes ? `${(s.output_size_bytes / 1024).toFixed(0)} KB` : '';
+  const secs = s.seconds ? `${s.seconds.toFixed(1)}s` : '';
+  resultEl.innerHTML =
+    `<div class="result-head ${s.is_solid ? 'good' : 'warn'}">`
+      + `${s.is_solid ? 'Ready to download' : 'Converted, but not a sealed solid'}</div>`
+    + lines.map((t) => `<div class="result-line">${t}</div>`).join('')
+    + `<div class="result-line quiet">${[kb, secs].filter(Boolean).join(' · ')}</div>`
+    + `<button class="download-btn" id="dl-main">Download ${s.output_path}</button>`;
+  resultEl.classList.remove('hidden');
+  document.getElementById('dl-main').addEventListener('click', () => {
+    // ponytail: relative URL so the app works behind the /mesh2step/ path prefix
+    window.location.href = `api/download/${data.download_token}`;
+  });
+  renderStats(data);
+}
+
 function renderStats(data) {
   const s = data.stats;
   statusEl.className = 'convert-status hidden';
   if (!data.ok) {
     statusEl.className = 'convert-status';
-    statusEl.textContent = 'Conversion error: ' + (s.error || 'unknown');
+    statusEl.textContent = 'Could not convert this model: ' + (s.error || 'unknown reason');
+    resultEl.classList.add('hidden');
     return;
   }
   if (s.engine === 'trueform') {
@@ -783,14 +814,8 @@ function renderStats(data) {
   if (s.n_faces_after_merge != null) html += row('merge', `${num(s.n_faces_before_merge)} → ${num(s.n_faces_after_merge)} faces`);
   const kb = s.output_size_bytes != null ? `${(s.output_size_bytes / 1024).toFixed(0)} KB · ` : '';
   html += row('output', `${kb}${(s.schema || '').toUpperCase()} · ${(s.seconds || 0).toFixed(2)}s`);
-  html += `<button class="download-btn" id="dl-btn">⬇ Download ${s.output_path}</button>`;
-  statsEl.innerHTML = html;
+    statsEl.innerHTML = html;
   statsEl.classList.remove('hidden');
-  document.getElementById('dl-btn').addEventListener('click', () => {
-    // ponytail: relative URLs so the app works under a path prefix (Caddy /mesh2step/)
-    window.location.href = `api/download/${data.download_token}`;
-  });
-
   // honest warnings, BumpMesh amber style
   for (const w of s.warnings || []) addWarning(w);
   if (!s.is_solid) {
@@ -840,12 +865,8 @@ function renderTrueformStats(data) {
     html += row('smooth', `planes ${s.smooth_planes} · cylinders ${s.smooth_cylinders} · fillets ${s.smooth_fillets} · components ${s.smooth_built_components}`);
   }
   html += row('output', `${s.schema.toUpperCase()} · ${s.seconds.toFixed(2)}s`);
-  html += `<button class="download-btn" id="dl-btn">⬇ Download ${s.output_path}</button>`;
-  statsEl.innerHTML = html;
+    statsEl.innerHTML = html;
   statsEl.classList.remove('hidden');
-  document.getElementById('dl-btn').addEventListener('click', () => {
-    window.location.href = `api/download/${data.download_token}`;
-  });
   for (const w of s.warnings || []) addWarning(w);
   // A positive delta on a part with recovered curved surfaces is the analytic
   // solid being MORE accurate than the tessellation: a 24-facet cylinder's mesh
@@ -855,7 +876,8 @@ function renderTrueformStats(data) {
   // segments falls just under 5deg and is emitted as one plane per facet, while
   // both coarser (<=71) and much finer (>=128, on radii from ~10mm) tessellations
   // recover it. Say so rather than let the user stare at 98 planar faces.
-  if ((s.smooth_cylinders || 0) === 0 && (s.smooth_fillets || 0) === 0 && (s.smooth_planes || 0) > 12) {
+  if (!s.rebuilt && (s.smooth_cylinders || 0) === 0 && (s.smooth_fillets || 0) === 0
+      && (s.smooth_planes || 0) > 12) {
     addWarning(`No curved surface was recovered: the part came out as ${s.smooth_planes} planar faces. `
       + 'If it does have holes or rounds, its circles are probably tessellated with roughly 72-120 '
       + 'segments, which lands in a gap in the engine\'s detection band. Re-exporting the mesh with '
@@ -876,7 +898,7 @@ function renderTrueformStats(data) {
   // deliberately faceted design is indistinguishable from a coarse circle by
   // angle alone, so the engine cannot decide it; the user can.
   const d = s.mesh_volume ? (s.volume - s.mesh_volume) / s.mesh_volume : 0;
-  if (Math.abs(d) > 0.01 && (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0) {
+  if (!s.rebuilt && Math.abs(d) > 0.01 && (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0) {
     addWarning(`The analytic rebuild changed the volume by ${(d * 100).toFixed(2)}%, which is `
       + 'more than tessellation error explains. If this part is meant to be faceted — a prism, '
       + 'a polygonal boss, a chamfered ring — TrueForm has rounded it into a cylinder. '

@@ -168,10 +168,42 @@ def convert(
         return {"ok": False, "stats": d}
 
     d["output_size_bytes"] = out_path.stat().st_size
-    # When trueform recovered nothing, say WHICH circles it lost -- the radii are
+
+    # Recover the circles the engine's seed band missed. Default ON for trueform:
+    # a rebuilt file is the geometry the facets were approximating, and it is
+    # smaller (a real lid: 245 faces -> 10, 1.95 MB -> 33 KB). Accepted only if
+    # the result is a valid solid, nothing failed, and the volume moved less than
+    # 2% -- otherwise the original conversion is kept, silently and intact.
+    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
+            and d.get("smooth_planes", 0) > 12
+            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
+        try:
+            from mesh2step.rebuild import rebuild_cylinders
+
+            rebuilt_path = workdir / "rebuilt.step"
+            rb = rebuild_cylinders(out_path, rebuilt_path)
+            before = d.get("volume") or 0.0
+            moved = abs(rb["volume"] - before) / before if before else 1.0
+            if (rb.get("ok") and rb.get("valid") and rb["faces_after"] < rb["faces_before"]
+                    and moved <= 0.02 and rebuilt_path.exists()):
+                rebuilt_path.replace(out_path)
+                d["rebuilt"] = True
+                d["rebuilt_bands"] = rb["bands"]
+                d["n_faces_built"] = rb["faces_after"]
+                d["faces_before_rebuild"] = rb["faces_before"]
+                d["volume"] = rb["volume"]
+                d["output_size_bytes"] = out_path.stat().st_size
+                # the engine's volume warnings describe the faceted result we just
+                # replaced; keeping them would report a problem we fixed
+                d["warnings"] = [w for w in d.get("warnings", []) if "volume" not in w.lower()]
+        except Exception:  # noqa: BLE001 - never cost someone their conversion
+            pass
+
+    # When nothing was recovered, say WHICH circles were lost -- the radii are
     # the actionable part. Guarded by size: this re-reads the STEP with OCCT, and
     # a 145 MB faceted file measured >300s to read, so it is skipped there.
-    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
+    if (engine == "trueform" and not d.get("rebuilt")
+            and d.get("smooth_cylinders", 0) == 0
             and d.get("smooth_planes", 0) > 12
             and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
         try:

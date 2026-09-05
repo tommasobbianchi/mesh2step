@@ -56,6 +56,21 @@ def browser():
         b.close()
 
 
+def _wait_for_outcome(page):
+    """Either the result card appears or a status line that is not the in-progress
+    one. Waiting on any status text at all would race the request."""
+    page.wait_for_function(
+        """() => {
+            const r = document.getElementById('result-card');
+            const s = document.getElementById('convert-status');
+            const t = s ? s.textContent.trim() : '';
+            return (r && !r.classList.contains('hidden'))
+                || (t && !t.startsWith('Converting'));
+        }""",
+        timeout=180000,
+    )
+
+
 @pytest.fixture
 def cube_stl(tmp_path):
     p = tmp_path / "cube.stl"
@@ -72,36 +87,27 @@ def test_convert_renders_stats_in_the_browser(browser, live_url, cube_stl, engin
     page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
     page.set_input_files("#file-input", cube_stl)
     page.wait_for_timeout(1500)
+    page.click("#advanced > summary")      # engine lives under Options now
     page.select_option("#engine", engine)
     page.click("#convert-btn")
     # Either outcome ends the wait: a rendered panel, or a status line. Waiting
     # only for the panel turns a failed render into a timeout instead of a
     # readable assertion.
-    page.wait_for_function(
-        """() => {
-            const p = document.getElementById('stats-panel');
-            const s = document.getElementById('convert-status');
-            const t = s ? s.textContent.trim() : '';
-            // 'Converting on server...' is set synchronously on click: waiting on
-            // any status text at all would race the request and pass vacuously.
-            return (p && !p.classList.contains('hidden'))
-                || (t && !t.startsWith('Converting'));
-        }""",
-        timeout=120000,
-    )
+    _wait_for_outcome(page)
     status = page.inner_text("#convert-status")
     assert "Failed" not in status and "error" not in status.lower(), status
-    assert not page.locator("#stats-panel").is_hidden(), "no stats rendered"
-    stats = page.inner_text("#stats-panel")
-    assert "undefined" not in stats and "NaN" not in stats, stats
-    assert "Download" in stats
+    # the result card is the primary surface now; the numbers live under Options
+    result = page.inner_text("#result-card")
+    assert "Download" in result, result
+    assert "undefined" not in result and "NaN" not in result, result
     assert errors == [], errors
     page.close()
 
 
-def test_lost_circle_gets_an_actionable_warning(browser, live_url, tmp_path):
-    # 96 segments per circle -> 3.75 deg between facets, under the engine's 5 deg
-    # cylinder seed band, so the cylinder comes out as 96 planar strips.
+def test_a_circle_in_the_detection_gap_is_rebuilt_not_just_reported(browser, live_url, tmp_path):
+    """96 segments per circle is 3.75 deg between facets, under the engine's 5 deg
+    seed band, so it used to come back as 96 planar strips and a warning naming
+    what was lost. Now it is rebuilt, and the result says so in plain words."""
     import trimesh
 
     p = tmp_path / "cyl96.stl"
@@ -111,15 +117,15 @@ def test_lost_circle_gets_an_actionable_warning(browser, live_url, tmp_path):
     page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
     page.set_input_files("#file-input", str(p))
     page.wait_for_timeout(1500)
-    page.select_option("#engine", "trueform")
     page.click("#convert-btn")
-    page.wait_for_selector("#stats-panel:not(.hidden)", timeout=120000)
+    _wait_for_outcome(page)
+
+    result = page.inner_text("#result-card")
+    assert "Ready to download" in result, result
+    assert "round surface" in result, result          # it says what it rebuilt
     warnings = page.inner_text("#warnings")
-    assert "No curved surface was recovered" in warnings, warnings
-    assert "72-120" in warnings
-    # and it must name the radii it actually measured off the output
-    assert "still in the file as polylines" in warnings, warnings
-    assert "10.00" in warnings, warnings
+    assert "No curved surface was recovered" not in warnings, warnings
+    assert "volume differs" not in warnings, warnings  # stale: describes the old result
     page.close()
 
 
@@ -136,9 +142,10 @@ def test_prism_rounded_into_a_cylinder_is_flagged(browser, live_url, tmp_path):
     page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
     page.set_input_files("#file-input", str(p))
     page.wait_for_timeout(1500)
+    page.click("#advanced > summary")
     page.select_option("#engine", "trueform")
     page.click("#convert-btn")
-    page.wait_for_selector("#stats-panel:not(.hidden)", timeout=120000)
+    _wait_for_outcome(page)
     warnings = page.inner_text("#warnings")
     assert "changed the volume by" in warnings, warnings
     assert "11.07" in warnings, warnings

@@ -43,7 +43,7 @@
       <div id="drop-zone" class="drop-zone">
         <div id="drop-hint" class="drop-hint">
           <div class="drop-icon">⬇</div>
-          <div>Drop an <b>.stl</b>, <b>.obj</b>, <b>.3mf</b> or <b>.ply</b> file here<br />or
+          <div>Drop a 3D model here<br />or
             <label class="link-label">click to browse<input id="file-input" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
           </div>
         </div>
@@ -57,15 +57,21 @@
     </section>
 
     <aside id="settings-panel">
-      <section class="panel-section">
-        <h2>Input</h2>
-        <div class="form-row">
-          <label class="upload-btn">Load model…<input id="file-input-2" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
-        </div>
-        <div class="form-row"><span id="input-name" class="active-map-name">No file selected</span></div>
+      <section class="panel-section primary">
+        <label class="upload-btn">Choose a model…<input id="file-input-2" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
+        <div id="input-name" class="active-map-name">No file chosen</div>
+
+        <button id="convert-btn" class="export-btn" disabled>Convert to CAD</button>
+        <p class="primary-hint">Circles and flat faces are rebuilt as real CAD geometry.</p>
+
+        <div id="convert-status" class="convert-status hidden"></div>
+        <div id="result-card" class="result-card hidden"></div>
+        <div id="warnings" class="warnings"></div>
       </section>
 
-      <section class="panel-section">
+      <details id="advanced" class="advanced">
+        <summary>Options</summary>
+<section class="panel-section">
         <h2>Select &amp; cut</h2>
         <div class="form-row">
           <button id="cut-box-btn" class="icon-btn">Box</button>
@@ -123,13 +129,12 @@
         </div>
         <div id="cut-status" class="hint"></div>
       </section>
-
-      <section class="panel-section">
+<section class="panel-section">
         <h2>Engine</h2>
         <div class="form-row">
           <select id="engine">
-            <option value="faceted" selected>Faceted (exact)</option>
-            <option value="trueform">TrueForm (analytic)</option>
+            <option value="trueform" selected>Smart — rebuild circles and faces</option>
+            <option value="faceted">Exact — keep every triangle</option>
           </select>
         </div>
         <div id="unify-angle-row" class="form-row slider-row hidden">
@@ -139,8 +144,7 @@
         </div>
         <p class="hint">Faceted = one CAD face per triangle (exact). TrueForm detects planes and cylinders and rebuilds analytic faces — slower on large meshes.</p>
       </section>
-
-      <section class="panel-section">
+<section class="panel-section">
         <h2>Repair mesh</h2>
         <div class="form-row">
           <select id="repair">
@@ -152,19 +156,7 @@
         </div>
         <p class="hint">Off = exact, geometry-preserving. Weld merges duplicate/split vertices, drops duplicate faces, and fixes winding. "Fill" also closes holes (best-effort via trimesh). Solidify forces a watertight solid by reconstruction (geometry changes; needs pymeshfix). Still-non-watertight meshes are reported honestly.</p>
       </section>
-
-      <section class="panel-section">
-        <h2>Tolerance</h2>
-        <div class="form-row slider-row">
-          <label>Dedup cell (mm)</label>
-          <input id="tolerance" type="range" min="0.00001" max="1" step="0.0001" value="0.01" />
-          <input id="tolerance-num" class="num" type="number" min="0.00001" step="0.0001" value="0.01" />
-        </div>
-        <p class="hint">Vertices within one cell merge into one shared topology vertex. Also the sub-resolution floor for degenerate triangles.</p>
-        <p class="hint" id="tol-auto-hint"></p>
-      </section>
-
-      <section class="panel-section">
+<section class="panel-section">
         <h2>Merge co-planar</h2>
         <div class="form-row">
           <label class="checkbox-label"><input id="merge-toggle" type="checkbox" /> Merge adjacent co-planar faces</label>
@@ -178,8 +170,7 @@
           <p class="hint">Off = exact faceted output (one face per triangle). On = smaller face count, no longer 1:1 with the mesh.</p>
         </div>
       </section>
-
-      <section class="panel-section">
+<section class="panel-section">
         <h2>STEP format</h2>
         <div class="form-row">
           <select id="schema">
@@ -189,14 +180,11 @@
           </select>
         </div>
       </section>
-
-      <section class="panel-section">
-        <h2>Export</h2>
-        <button id="convert-btn" class="export-btn" disabled>Convert to STEP</button>
-        <div id="convert-status" class="convert-status hidden"></div>
-        <div id="stats-panel" class="stats-panel hidden"></div>
-        <div id="warnings" class="warnings"></div>
-      </section>
+        <section class="panel-section">
+          <h2>Details</h2>
+          <div id="stats-panel" class="stats-panel hidden"></div>
+        </section>
+      </details>
     </aside>
   </main>
 
@@ -211,38 +199,28 @@
         </svg>
         <div>
           <h2 id="welcome-title" class="modal-title">Welcome to mesh<span>2</span>step</h2>
-          <p class="modal-tagline">Turn a scanned or downloaded mesh into a clean CAD <b>STEP</b> solid — in five steps.</p>
+          <p class="modal-tagline">Turn a 3D model into real CAD geometry you can open, measure and edit.</p>
         </div>
       </div>
 
       <ol class="flow">
         <li class="flow-step">
           <span class="flow-icon">📤</span>
-          <div><b>1 · Upload</b><span>Drop an STL / OBJ / 3MF / PLY into the viewport.</span></div>
+          <div><b>Drop your model</b><span>STL, OBJ, 3MF or PLY — from a scanner, a download, anywhere.</span></div>
         </li>
         <li class="flow-arrow">→</li>
         <li class="flow-step">
-          <span class="flow-icon">✂️</span>
-          <div><b>2 · Isolate</b><span>Remove junk: Box, Plane, or Lasso — or click a colored <b>Component</b> to keep just one part.</span></div>
-        </li>
-        <li class="flow-arrow">→</li>
-        <li class="flow-step">
-          <span class="flow-icon">🩹</span>
-          <div><b>3 · Repair</b><span>Weld, fill holes, or <b>Solidify</b> a messy scan into a watertight solid.</span></div>
-        </li>
-        <li class="flow-arrow">→</li>
-        <li class="flow-step">
-          <span class="flow-icon">📐</span>
-          <div><b>4 · Convert</b><span>Exact faceted B-Rep — one CAD face per triangle.</span></div>
+          <span class="flow-icon">✨</span>
+          <div><b>Convert</b><span>Holes become real circles, walls become real surfaces — not thousands of triangles.</span></div>
         </li>
         <li class="flow-arrow">→</li>
         <li class="flow-step">
           <span class="flow-icon">⬇️</span>
-          <div><b>5 · Download</b><span>Grab your <b>.step</b> (AP203 / AP214 / AP242).</span></div>
+          <div><b>Open it in CAD</b><span>A STEP file that Fusion, SolidWorks, FreeCAD and Onshape treat as real geometry.</span></div>
         </li>
       </ol>
 
-      <p class="modal-hint">Tip: tolerance auto-tunes to your model's size. All uploads are deleted after 1 hour.</p>
+      <p class="modal-hint">Need to trim the model, repair a messy scan, or pick a STEP version? They are under <b>Options</b>. Uploads are deleted after an hour.</p>
       <button id="welcome-start" class="export-btn">Get started</button>
 
       <div class="credits">
