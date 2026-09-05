@@ -770,8 +770,11 @@ convertBtn.addEventListener('click', async () => {
 
   try {
     const res = await fetch('api/convert', { method: 'POST', body: fd });
-    const data = await res.json();
+    let data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'server error');
+    // A big model comes back as a ticket instead of a result: a 64k-triangle part
+    // needs minutes, and no browser or proxy holds a request open that long.
+    if (data.pending) data = await waitForJob(data.job);
     renderResult(data);
   } catch (e) {
     statusEl.className = 'convert-status';
@@ -780,6 +783,19 @@ convertBtn.addEventListener('click', async () => {
     convertBtn.disabled = false;
   }
 });
+
+async function waitForJob(job) {
+  const started = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const secs = Math.round((Date.now() - started) / 1000);
+    statusEl.textContent = `Still converting — ${secs}s. Large models take a few minutes.`;
+    const res = await fetch(`api/job/${job}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'server error');
+    if (!data.pending) return data;
+  }
+}
 
 function renderResult(data) {
   // What a person needs: did it work, what did it find, where is the file.

@@ -563,3 +563,41 @@ def test_conversions_are_bounded_so_retries_queue_instead_of_thrashing(client, c
         data={"engine": "faceted"},
     )
     assert ok.status_code == 200, ok.status_code
+
+
+def test_a_slow_conversion_returns_a_job_that_can_be_polled(client, monkeypatch, cube_stl_bytes):
+    """Past the synchronous window the request hands back a ticket instead of
+    holding the connection. A 64k-triangle gate needs 91s on an idle host and far
+    longer on a busy one; no browser or proxy survives that."""
+    import time as _time
+
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "SYNC_WAIT_S", 0.001)   # force the async branch
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    assert resp.status_code == 200, resp.status_code
+    body = resp.json()
+    assert body.get("pending") is True and body.get("job"), body
+
+    deadline = _time.time() + 120
+    while _time.time() < deadline:
+        got = client.get(f"/api/job/{body['job']}").json()
+        if not got.get("pending"):
+            break
+        assert got["elapsed"] >= 0
+        _time.sleep(0.5)
+    else:
+        raise AssertionError("job never finished")  # noqa: TRY003
+
+    assert got["ok"] is True, got
+    assert got["stats"]["n_faces_built"] > 0
+    dl = client.get(f"/api/download/{got['download_token']}")
+    assert dl.status_code == 200 and dl.content[:4] == b"ISO-"
+
+
+def test_an_unknown_job_is_404_not_a_crash(client):
+    assert client.get("/api/job/deadbeef").status_code == 404

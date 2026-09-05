@@ -10,6 +10,8 @@ import base64
 import json
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 import time
 import uuid
 from pathlib import Path
@@ -35,6 +37,11 @@ MAX_CONCURRENT_CONVERSIONS = 2   # the engine takes every core and ~1.4 GB per r
                                  # a third simultaneous conversion makes all three
                                  # miss the deadline instead of two making it
 _CONVERT_SLOTS = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
+_POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS + 2,
+                           thread_name_prefix="convert")
+_PENDING: dict[str, dict] = {}
+SYNC_WAIT_S = 20.0    # hold the request this long; past it, hand back a job id
+QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
 CONVERT_TIMEOUT_S = 300.0  # a person will not wait longer; the engine's own
                            # ceiling is 900s, which nobody ever survives
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
@@ -84,6 +91,117 @@ def _sweep_orphans(now: float) -> None:
             shutil.rmtree(d, ignore_errors=True)
         except OSError:
             pass
+
+
+def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
+                       schema, native_unify, merge_coplanar_angle, filename, stem,
+                       n_in_tris, cut_before, cut_after, repair_info) -> dict:
+    """The part that takes minutes. Runs on a worker so the request can let go.
+
+    Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
+    alone, and the same work under load average 19 got 18% of a core and blew a
+    900s ceiling. Queuing beats thrashing.
+    """
+    if not _CONVERT_SLOTS.acquire(timeout=QUEUE_WAIT_S):
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(503, (
+            "The converter is busy with other models right now. "
+            "Please try again in a minute — your file was not kept."
+        ))
+    try:
+        res = convert_native(
+            stl_path, out_path,
+            engine=native_engine, schema=schema, unify_angle=native_unify,
+            no_unify=(engine == "faceted" and merge_coplanar_angle is None),
+            timeout=CONVERT_TIMEOUT_S,
+        )
+    except NativeTimeout:
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(504, (
+            f"This model is still converting after {int(CONVERT_TIMEOUT_S)} seconds. "
+            f"It has {n_in_tris:,} triangles; try the Exact engine under Options, "
+            "or simplify the mesh in your slicer first."
+        )) from None
+    except NativeEngineError as e:
+        # covers a killed engine too: a restart or an OOM leaves empty stdout and
+        # raises NativeParseError, which used to reach the user as a bare 500.
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(502, f"The conversion engine failed: {e}") from e
+    finally:
+        _CONVERT_SLOTS.release()
+    d = _native_stats(res, engine, schema)
+    d["backend"] = "native"
+    # Triangle count comes from BEFORE the native step, because the binary only
+    # ever sees the already-cut, already-repaired mesh. Vertices do NOT: our STL
+    # round-trip stores three per triangle, so len(verts) here is always 3x the
+    # triangles and says nothing -- the engine's welded count is the real one.
+    d["n_input_tris"] = n_in_tris
+    if cut_before is not None:
+        d["n_cut_tris_before"] = cut_before
+        d["n_cut_tris_after"] = cut_after
+    if repair_info is not None:
+        d.update(repair_info)
+    if engine == "faceted" and merge_coplanar_angle is not None:
+        d["n_faces_before_merge"] = res.get("facesBeforeUnify")
+        d["n_faces_after_merge"] = res.get("facesAfterUnify")
+    # don't leak server temp paths to the client
+    d["input_path"] = filename
+    d["output_path"] = f"{stem}.step"
+    if not res.get("ok"):
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        return {"ok": False, "stats": d}
+
+    d["output_size_bytes"] = out_path.stat().st_size
+
+    # Recover the circles the engine's seed band missed. Default ON for trueform:
+    # a rebuilt file is the geometry the facets were approximating, and it is
+    # smaller (a real lid: 245 faces -> 10, 1.95 MB -> 33 KB). Accepted only if
+    # the result is a valid solid, nothing failed, and the volume moved less than
+    # 2% -- otherwise the original conversion is kept, silently and intact.
+    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
+            and d.get("smooth_planes", 0) > 12
+            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
+        try:
+            from mesh2step.rebuild import rebuild_cylinders
+
+            rebuilt_path = workdir / "rebuilt.step"
+            rb = rebuild_cylinders(out_path, rebuilt_path)
+            before = d.get("volume") or 0.0
+            moved = abs(rb["volume"] - before) / before if before else 1.0
+            if (rb.get("ok") and rb.get("valid") and rb["faces_after"] < rb["faces_before"]
+                    and moved <= 0.02 and rebuilt_path.exists()):
+                rebuilt_path.replace(out_path)
+                d["rebuilt"] = True
+                d["rebuilt_bands"] = rb["bands"]
+                d["n_faces_built"] = rb["faces_after"]
+                d["faces_before_rebuild"] = rb["faces_before"]
+                d["volume"] = rb["volume"]
+                d["output_size_bytes"] = out_path.stat().st_size
+                # the engine's volume warnings describe the faceted result we just
+                # replaced; keeping them would report a problem we fixed
+                d["warnings"] = [w for w in d.get("warnings", []) if "volume" not in w.lower()]
+        except Exception:  # noqa: BLE001 - never cost someone their conversion
+            pass
+
+    # When nothing was recovered, say WHICH circles were lost -- the radii are
+    # the actionable part. Guarded by size: this re-reads the STEP with OCCT, and
+    # a 145 MB faceted file measured >300s to read, so it is skipped there.
+    if (engine == "trueform" and not d.get("rebuilt")
+            and d.get("smooth_cylinders", 0) == 0
+            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
+        try:
+            from mesh2step.canonize import find_circles
+
+            circles = find_circles(out_path)
+        except Exception:  # noqa: BLE001 - a diagnostic must never fail a conversion
+            circles = []
+        if circles:
+            d["lost_circles"] = [
+                {"radius": round(c.radius, 4), "segments": c.segments} for c in circles[:24]
+            ]
+    token = uuid.uuid4().hex
+    _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
+    return {"ok": True, "stats": d, "download_token": token}
 
 
 @app.post("/api/convert")
@@ -178,114 +296,42 @@ def convert(
     native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
     # Faceted with no merge requested must keep one face per triangle, which is
     # what the client already contracts for.
-    # Serialise the heavy part. Measured on this host: one conversion of a
-    # 64k-triangle gate takes 91s alone, and the same work under load average 19
-    # got 18% of a core and blew a 900s ceiling. Queuing beats thrashing.
-    if not _CONVERT_SLOTS.acquire(timeout=30):
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(503, (
-            "The converter is busy with other models right now. "
-            "Please try again in a minute — your file was not kept."
-        ))
+    fut = _POOL.submit(
+        _convert_in_worker,
+        stl_path=stl_path, out_path=out_path, workdir=workdir, engine=engine,
+        native_engine=native_engine, schema=schema, native_unify=native_unify,
+        merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
+        n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
+        repair_info=repair_info,
+    )
     try:
-        res = convert_native(
-            stl_path,
-            out_path,
-            engine=native_engine,
-            schema=schema,
-            unify_angle=native_unify,
-            no_unify=(engine == "faceted" and merge_coplanar_angle is None),
-            timeout=CONVERT_TIMEOUT_S,
-        )
-    except NativeTimeout:
-        # It ran out of time rather than failing: say so, say what to try, and do
-        # not leave a 3 MB upload behind. Measured on a 64k-triangle gate: the
-        # engine itself needs 55-91s, so a request that passes this ceiling is
-        # contending with other conversions, not merely large.
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(504, (
-            f"This model is still converting after {int(CONVERT_TIMEOUT_S)} seconds. "
-            f"It has {n_in_tris:,} triangles; try the Exact engine under Options, "
-            "or simplify the mesh in your slicer first."
-        )) from None
-    except NativeEngineError as e:
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(502, f"The conversion engine failed: {e}") from e
-    finally:
-        _CONVERT_SLOTS.release()
-    d = _native_stats(res, engine, schema)
-    d["backend"] = "native"
-    # Triangle count comes from BEFORE the native step, because the binary only
-    # ever sees the already-cut, already-repaired mesh. Vertices do NOT: our STL
-    # round-trip stores three per triangle, so len(verts) here is always 3x the
-    # triangles and says nothing -- the engine's welded count is the real one.
-    d["n_input_tris"] = n_in_tris
-    if cut_before is not None:
-        d["n_cut_tris_before"] = cut_before
-        d["n_cut_tris_after"] = cut_after
-    if repair_info is not None:
-        d.update(repair_info)
-    if engine == "faceted" and merge_coplanar_angle is not None:
-        d["n_faces_before_merge"] = res.get("facesBeforeUnify")
-        d["n_faces_after_merge"] = res.get("facesAfterUnify")
-    # don't leak server temp paths to the client
-    d["input_path"] = file.filename
-    d["output_path"] = f"{stem}.step"
-    if not res.get("ok"):
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        return {"ok": False, "stats": d}
+        # Small models still answer in one round trip, exactly as before.
+        return fut.result(timeout=SYNC_WAIT_S)
+    except FuturesTimeout:
+        # Big ones get a ticket instead of a dead connection. A 64k-triangle gate
+        # needs 91s on an idle host and far longer on a busy one; no browser, proxy
+        # or patience survives holding a request open that long.
+        job = uuid.uuid4().hex
+        _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step"}
+        return {"ok": True, "pending": True, "job": job,
+                "message": "Still converting — this model is large."}
 
-    d["output_size_bytes"] = out_path.stat().st_size
 
-    # Recover the circles the engine's seed band missed. Default ON for trueform:
-    # a rebuilt file is the geometry the facets were approximating, and it is
-    # smaller (a real lid: 245 faces -> 10, 1.95 MB -> 33 KB). Accepted only if
-    # the result is a valid solid, nothing failed, and the volume moved less than
-    # 2% -- otherwise the original conversion is kept, silently and intact.
-    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
-            and d.get("smooth_planes", 0) > 12
-            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
-        try:
-            from mesh2step.rebuild import rebuild_cylinders
+@app.get("/api/job/{job}")
+def job_status(job: str):
+    entry = _PENDING.get(job)
+    if entry is None:
+        raise HTTPException(404, "unknown or expired job")
+    fut = entry["future"]
+    if not fut.done():
+        return {"ok": True, "pending": True, "job": job,
+                "elapsed": round(time.time() - entry["ts"], 1)}
+    _PENDING.pop(job, None)
+    try:
+        return fut.result()
+    except HTTPException as e:
+        raise HTTPException(e.status_code, e.detail) from None
 
-            rebuilt_path = workdir / "rebuilt.step"
-            rb = rebuild_cylinders(out_path, rebuilt_path)
-            before = d.get("volume") or 0.0
-            moved = abs(rb["volume"] - before) / before if before else 1.0
-            if (rb.get("ok") and rb.get("valid") and rb["faces_after"] < rb["faces_before"]
-                    and moved <= 0.02 and rebuilt_path.exists()):
-                rebuilt_path.replace(out_path)
-                d["rebuilt"] = True
-                d["rebuilt_bands"] = rb["bands"]
-                d["n_faces_built"] = rb["faces_after"]
-                d["faces_before_rebuild"] = rb["faces_before"]
-                d["volume"] = rb["volume"]
-                d["output_size_bytes"] = out_path.stat().st_size
-                # the engine's volume warnings describe the faceted result we just
-                # replaced; keeping them would report a problem we fixed
-                d["warnings"] = [w for w in d.get("warnings", []) if "volume" not in w.lower()]
-        except Exception:  # noqa: BLE001 - never cost someone their conversion
-            pass
-
-    # When nothing was recovered, say WHICH circles were lost -- the radii are
-    # the actionable part. Guarded by size: this re-reads the STEP with OCCT, and
-    # a 145 MB faceted file measured >300s to read, so it is skipped there.
-    if (engine == "trueform" and not d.get("rebuilt")
-            and d.get("smooth_cylinders", 0) == 0
-            and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
-        try:
-            from mesh2step.canonize import find_circles
-
-            circles = find_circles(out_path)
-        except Exception:  # noqa: BLE001 - a diagnostic must never fail a conversion
-            circles = []
-        if circles:
-            d["lost_circles"] = [
-                {"radius": round(c.radius, 4), "segments": c.segments} for c in circles[:24]
-            ]
-    token = uuid.uuid4().hex
-    _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
-    return {"ok": True, "stats": d, "download_token": token}
 
 
 @app.post("/api/preview")
