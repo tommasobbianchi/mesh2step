@@ -763,22 +763,26 @@ function renderStats(data) {
     renderTrueformStats(data);
     return;
   }
-  const degenerate = s.n_degenerate_collapsed + s.n_degenerate_zero_area;
+  // The native engine reports what it built, not the old Python pipeline's
+  // dedup/degenerate/edge counters -- rendering those blindly is what produced
+  // "Cannot read properties of undefined (reading 'toLocaleString')".
   const row = (k, v) => `<div><span class="k">${k}</span> ${v}</div>`;
   const flag = (b) => b ? '<span class="good">yes</span>' : '<span class="bad">no</span>';
+  const num = (n) => (n == null ? '?' : n.toLocaleString());
   let html = '';
-  html += row('triangles', `${s.n_input_tris.toLocaleString()} in · ${s.n_kept_tris.toLocaleString()} kept · ${degenerate.toLocaleString()} degenerate`);
-  html += row('vertices', `${s.n_input_verts.toLocaleString()} in · ${s.n_unique_verts.toLocaleString()} unique`);
-  html += row('faces', `${s.n_faces_built.toLocaleString()} built${s.n_faces_failed ? ' · ' + s.n_faces_failed + ' failed' : ''}`);
-  html += row('edges', `${s.n_boundary_edges.toLocaleString()} boundary · ${s.n_nonmanifold_edges.toLocaleString()} non-manifold`);
-  html += row('watertight', flag(s.watertight)) + row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
+  const cut = s.n_cut_tris_after != null ? ` · ${num(s.n_cut_tris_after)} after cuts` : '';
+  html += row('triangles', `${num(s.n_input_tris)} in${cut}`);
+  html += row('vertices', num(s.n_input_verts));
+  html += row('faces', `${num(s.n_faces_built)} built`);
+  html += row('watertight', flag(s.watertight));
+  html += row('solid', flag(s.is_solid) + (s.volume != null ? ` · vol ${(+s.volume).toPrecision(6)}` : ''));
   if (s.repair_level) {
     const extra = s.repair_level === 'solidify' ? ' (reconstructed)' : '';
-    html += row(`repair(${s.repair_level}${extra})`, `${s.n_repair_faces_before.toLocaleString()} → ${s.n_repair_faces_after.toLocaleString()} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
+    html += row(`repair(${s.repair_level}${extra})`, `${num(s.n_repair_faces_before)} → ${num(s.n_repair_faces_after)} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
   }
-  if (s.n_faces_after_merge != null) html += row('merge', `${s.n_faces_before_merge.toLocaleString()} → ${s.n_faces_after_merge.toLocaleString()} faces`);
-  html += row('output', `${(s.output_size_bytes / 1024).toFixed(0)} KB · ${s.schema.toUpperCase()}`);
-  html += row('time', `load ${s.t_load_s.toFixed(2)}s · dedup ${s.t_dedup_s.toFixed(2)}s · build ${s.t_build_s.toFixed(2)}s · write ${s.t_write_s.toFixed(2)}s · total ${s.t_total_s.toFixed(2)}s`);
+  if (s.n_faces_after_merge != null) html += row('merge', `${num(s.n_faces_before_merge)} → ${num(s.n_faces_after_merge)} faces`);
+  const kb = s.output_size_bytes != null ? `${(s.output_size_bytes / 1024).toFixed(0)} KB · ` : '';
+  html += row('output', `${kb}${(s.schema || '').toUpperCase()} · ${(s.seconds || 0).toFixed(2)}s`);
   html += `<button class="download-btn" id="dl-btn">⬇ Download ${s.output_path}</button>`;
   statsEl.innerHTML = html;
   statsEl.classList.remove('hidden');
@@ -788,8 +792,9 @@ function renderStats(data) {
   });
 
   // honest warnings, BumpMesh amber style
+  for (const w of s.warnings || []) addWarning(w);
   if (!s.is_solid) {
-    let warnText = `Not a closed solid — exported as an open shell. ${s.n_boundary_edges.toLocaleString()} boundary edge(s), ${s.n_nonmanifold_edges.toLocaleString()} non-manifold edge(s). The input mesh is not watertight.`;
+    let warnText = 'Not a closed solid — exported as an open shell. The input mesh is not watertight.';
     if (!s.repair_level && document.getElementById('repair').value === 'off') {
       warnText += ' Try Repair mesh → Weld (or Weld + fill holes) and convert again.';
     }

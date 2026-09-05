@@ -165,6 +165,7 @@ def convert(
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         return {"ok": False, "stats": d}
 
+    d["output_size_bytes"] = out_path.stat().st_size
     token = uuid.uuid4().hex
     _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
     return {"ok": True, "stats": d, "download_token": token}
