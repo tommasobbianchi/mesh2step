@@ -876,8 +876,10 @@ function renderTrueformStats(data) {
   // segments falls just under 5deg and is emitted as one plane per facet, while
   // both coarser (<=71) and much finer (>=128, on radii from ~10mm) tessellations
   // recover it. Say so rather than let the user stare at 98 planar faces.
-  if (!s.rebuilt && (s.smooth_cylinders || 0) === 0 && (s.smooth_fillets || 0) === 0
-      && (s.smooth_planes || 0) > 12) {
+  // Only when circles were actually FOUND in the output. Counting planar faces
+  // cannot tell "this part has no curves" from "this part lost its curves", and
+  // told a genuinely flat part it had lost circles it never had.
+  if (!s.rebuilt && s.lost_circles && s.lost_circles.length) {
     addWarning(`No curved surface was recovered: the part came out as ${s.smooth_planes} planar faces. `
       + 'If it does have holes or rounds, its circles are probably tessellated with roughly 72-120 '
       + 'segments, which lands in a gap in the engine\'s detection band. Re-exporting the mesh with '

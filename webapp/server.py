@@ -204,7 +204,6 @@ def convert(
     # a 145 MB faceted file measured >300s to read, so it is skipped there.
     if (engine == "trueform" and not d.get("rebuilt")
             and d.get("smooth_cylinders", 0) == 0
-            and d.get("smooth_planes", 0) > 12
             and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
         try:
             from mesh2step.canonize import find_circles
