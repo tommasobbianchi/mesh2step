@@ -79,6 +79,13 @@ function frameObject(obj) {
 // ---- file loading (client-side preview) ----
 let selectedFile = null;
 let trisBeforeCut = 0;
+let maxTriangles = null;   // from the server, so the number lives in one place
+fetch('api/limits').then((r) => r.json()).then((l) => {
+  maxTriangles = l.max_triangles;
+  const hint = document.querySelector('.primary-hint');
+  if (hint) hint.textContent = `Circles and flat faces are rebuilt as real CAD geometry. `
+    + `Models up to ${(l.max_triangles / 1000).toFixed(0)}k triangles.`;
+}).catch(() => {});
 let lastTriCount = 0;
 const meshInfo = document.getElementById('mesh-info');
 const dropHint = document.getElementById('drop-hint');
@@ -156,10 +163,18 @@ async function loadFile(file) {
     // the tolerance control is gone: the native engine does its own welding
   }
   inputName.textContent = file.name;
-  convertBtn.disabled = false;
+  const tooBig = maxTriangles && triCount > maxTriangles;
+  convertBtn.disabled = tooBig;
   document.getElementById('trim-enter').classList.remove('hidden');
   document.getElementById('stats-panel').classList.add('hidden');
   document.getElementById('warnings').innerHTML = '';
+  if (tooBig) {
+    // said here, after the reset above clears it, and before anyone waits
+    addWarning(`This model has ${triCount.toLocaleString()} triangles, and the converter `
+      + `handles up to ${maxTriangles.toLocaleString()}. Above that it needs more memory `
+      + `than the server can give it. Reduce the mesh — Simplify or Decimate in your CAD `
+      + `or slicer — and drop it in again.`);
+  }
 
   // Reset cut state on new mesh load
   cutOps = [];

@@ -257,3 +257,32 @@ def test_the_brand_is_present_and_its_links_are_real(browser, live_url):
     }""")
     assert card > 5000, f"share card missing or empty ({card} bytes)"
     page.close()
+
+
+def test_an_oversized_model_is_refused_before_you_wait(browser, live_url, tmp_path):
+    """Tell someone the model is too big when they drop it, not after a wait. The
+    limit exists because peak RSS is ~24.95 MB per 1k triangles: past it the
+    conversion needs more than the cgroup allows, and MemoryHigh throttles rather
+    than fails, so it would never finish at any timeout."""
+    import trimesh
+
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+    page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
+    assert "120k triangles" in page.inner_text(".primary-hint")
+
+    small = tmp_path / "small.stl"
+    trimesh.creation.icosphere(subdivisions=3).export(str(small))       # 1,280
+    page.set_input_files("#file-input", str(small))
+    page.wait_for_timeout(1200)
+    assert page.locator("#convert-btn").is_enabled(), "a small model must convert"
+
+    big = tmp_path / "big.stl"
+    trimesh.creation.icosphere(subdivisions=7).export(str(big))         # 327,680
+    page.set_input_files("#file-input", str(big))
+    page.wait_for_timeout(4000)
+    assert page.locator("#convert-btn").is_disabled(), "oversized model must not be convertible"
+    warning = page.inner_text("#warnings")
+    assert "327,680" in warning and "120,000" in warning, warning
+    assert "Simplify" in warning or "Decimate" in warning, warning
+    page.close()

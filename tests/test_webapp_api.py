@@ -601,3 +601,30 @@ def test_a_slow_conversion_returns_a_job_that_can_be_polled(client, monkeypatch,
 
 def test_an_unknown_job_is_404_not_a_crash(client):
     assert client.get("/api/job/deadbeef").status_code == 404
+
+
+def test_a_model_above_the_triangle_limit_is_refused_with_the_number(client, monkeypatch):
+    """The limit exists because peak RSS is ~24.95 MB per 1k triangles + 128 MB:
+    above it the conversion needs more than the cgroup allows, and MemoryHigh
+    throttles rather than fails, so it would never finish at any timeout."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "MAX_INPUT_TRIANGLES", 100)
+    mesh = trimesh.creation.icosphere(subdivisions=2)      # 320 triangles
+    buf = io.BytesIO()
+    mesh.export(buf, file_type="stl")
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("big.stl", buf.getvalue(), "application/octet-stream")},
+        data={"engine": "trueform"},
+    )
+    assert resp.status_code == 413, resp.status_code
+    detail = resp.json()["detail"]
+    assert "320" in detail and "100" in detail, detail
+    assert "Simplify" in detail or "Decimate" in detail, detail
+
+
+def test_the_limit_is_published_so_the_page_can_say_it_first(client):
+    body = client.get("/api/limits").json()
+    assert body["max_triangles"] == 120_000
+    assert body["max_upload_mb"] == 200

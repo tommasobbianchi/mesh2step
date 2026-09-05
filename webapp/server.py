@@ -49,6 +49,13 @@ QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
 # wall clock for the same work. A 300s ceiling failed it purely for being
 # unlucky about neighbours.
 CONVERT_TIMEOUT_S = 900.0
+# Measured peak RSS is 24.95 MB per 1k triangles + 128 MB (trueform, on meshes
+# that merge nothing). At this limit one conversion peaks near 3.1 GB and two
+# concurrent ones plus the server fit inside the unit's 8G MemoryMax -- see
+# webapp/deploy/mesh2step.service.d/50-memory.conf. Raise them together or not
+# at all: a limit above the cap does not fail, it THROTTLES, and a throttled
+# conversion never finishes at any timeout.
+MAX_INPUT_TRIANGLES = 120_000
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
 if not native_available():
@@ -267,6 +274,14 @@ def convert(
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
     n_in_tris = len(tris)
+    if n_in_tris > MAX_INPUT_TRIANGLES:
+        __import__("shutil").rmtree(workdir, ignore_errors=True)
+        raise HTTPException(413, (
+            f"This model has {n_in_tris:,} triangles. The converter handles up to "
+            f"{MAX_INPUT_TRIANGLES:,} — above that it needs more memory than the "
+            "server can give it. Reduce the mesh (Simplify or Decimate in your "
+            "CAD or slicer) and upload it again."
+        ))
     cut_before = cut_after = None
     repair_info = None
 
@@ -320,6 +335,13 @@ def convert(
         _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step"}
         return {"ok": True, "pending": True, "job": job,
                 "message": "Still converting — this model is large."}
+
+
+@app.get("/api/limits")
+def limits() -> dict:
+    """What the client should say before someone waits for a rejection."""
+    return {"max_triangles": MAX_INPUT_TRIANGLES,
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024)}
 
 
 @app.get("/api/job/{job}")
