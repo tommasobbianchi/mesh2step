@@ -94,3 +94,29 @@ so a FreeCAD/OCCT refresh on the host cannot silently change conversion output:
 
 `run.sh` sets `LD_LIBRARY_PATH` to that `lib/`. Rebuilding the reference does not update
 the frozen copy; re-freeze deliberately and re-run the corpus when you do.
+
+## Memory policy is part of the deployment
+
+Install `mesh2step.service.d/50-memory.conf` alongside the unit:
+
+```
+cp webapp/deploy/mesh2step.service.d/50-memory.conf ~/.config/systemd/user/mesh2step.service.d/
+systemctl --user daemon-reload && systemctl --user restart mesh2step.service
+systemctl --user show mesh2step.service -p MemoryHigh -p MemoryMax   # infinity, 6G
+```
+
+The engine peaks around 1.35 GB on a 64k-triangle model. A `MemoryHigh` below that
+does not fail the conversion — it throttles it into permanent reclaim, so large
+models simply never finish while small ones are fine. If a conversion is stuck at
+single-digit CPU, check the cgroup before anything else:
+
+```
+systemctl --user show mesh2step.service -p MemoryHigh -p MemoryCurrent
+C=$(systemctl --user show mesh2step.service -p ControlGroup --value)
+cat /sys/fs/cgroup$C/memory.events        # a rising `high` count is the tell
+cat /sys/fs/cgroup$C/memory.pressure      # `full avg10` near 50% means reclaim, not work
+```
+
+Runtime properties (`systemctl set-property --runtime`) live in
+`/run/user/$UID/systemd/user.control/` and do **not** appear in `systemctl cat`.
+That is where the 623 MB cap that made "MMX Gate X4 never yields a step" was hiding.
