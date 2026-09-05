@@ -78,6 +78,8 @@ function frameObject(obj) {
 
 // ---- file loading (client-side preview) ----
 let selectedFile = null;
+let trisBeforeCut = 0;
+let lastTriCount = 0;
 const meshInfo = document.getElementById('mesh-info');
 const dropHint = document.getElementById('drop-hint');
 const convertBtn = document.getElementById('convert-btn');
@@ -146,6 +148,7 @@ async function loadFile(file) {
     scene.add(obj);
     currentMesh = obj;
     const { size } = frameObject(obj);
+    lastTriCount = triCount;
     meshInfo.textContent = `${file.name} · ${triCount.toLocaleString()} triangles · ${size.x.toFixed(1)}×${size.y.toFixed(1)}×${size.z.toFixed(1)} mm`;
     dropHint.classList.add('hidden');
 
@@ -154,6 +157,7 @@ async function loadFile(file) {
   }
   inputName.textContent = file.name;
   convertBtn.disabled = false;
+  document.getElementById('trim-enter').classList.remove('hidden');
   document.getElementById('stats-panel').classList.add('hidden');
   document.getElementById('warnings').innerHTML = '';
 
@@ -324,6 +328,12 @@ function _updatePlaneHelper() {
 
 function _showCutTool(tool) {
   _hideCutControls();
+  for (const id of ['cut-box-btn', 'cut-plane-btn', 'cut-lasso-btn', 'cut-components-btn']) {
+    document.getElementById(id).classList.remove('active');
+  }
+  const btn = {box: 'cut-box-btn', plane: 'cut-plane-btn', lasso: 'cut-lasso-btn',
+               components: 'cut-components-btn'}[tool];
+  if (btn) document.getElementById(btn).classList.add('active');
   _clearHelpers();
   _exitComponents();
   if (tool === 'box') {
@@ -459,7 +469,8 @@ async function _sendCutPreview() {
   const fd = new FormData();
   fd.append('file', selectedFile);
   fd.append('cuts', JSON.stringify(cutOps));
-  document.getElementById('cut-status').textContent = 'Cutting…';
+  document.getElementById('cut-status').textContent = 'Trimming…';
+  trisBeforeCut = lastTriCount;
   try {
     const res = await fetch('api/edit', { method: 'POST', body: fd });
     if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'cut failed'); }
@@ -473,10 +484,15 @@ async function _sendCutPreview() {
     scene.add(obj);
     currentMesh = obj;
     frameObject(obj);
-    meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (cut)`;
-    document.getElementById('cut-status').textContent = `${cutOps.length} cut(s) · ${nTris.toLocaleString()} tris`;
+    lastTriCount = nTris;
+    meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (trimmed)`;
+    // plain words: what was removed, not how the engine counts it
+    const removed = trisBeforeCut ? trisBeforeCut - nTris : 0;
+    document.getElementById('cut-status').textContent = removed > 0
+      ? `Removed ${((removed / trisBeforeCut) * 100).toFixed(0)}% of the model · ${cutOps.length} trim${cutOps.length === 1 ? '' : 's'} so far`
+      : `Nothing was removed — try Keep/Remove the other way round`;
   } catch (e) {
-    document.getElementById('cut-status').textContent = 'Cut error: ' + e.message;
+    document.getElementById('cut-status').textContent = 'Could not trim: ' + e.message;
   }
 }
 
@@ -536,6 +552,27 @@ function _updateCutButtons() {
   if (u) u.disabled = cutOps.length === 0;
   if (r) r.disabled = redoStack.length === 0;
 }
+
+// --- trim is a MODE over the model, not a panel beside it -------------------
+const trimBar = document.getElementById('trim-bar');
+const trimEnter = document.getElementById('trim-enter');
+
+function setTrimMode(on) {
+  trimBar.classList.toggle('hidden', !on);
+  trimEnter.classList.toggle('active', on);
+  trimEnter.textContent = on ? 'Close trimming' : 'Trim away parts…';
+  if (!on) {
+    _hideCutControls();
+    _exitComponents();
+    _clearHelpers();
+  }
+}
+trimEnter.addEventListener('click', () => setTrimMode(trimBar.classList.contains('hidden')));
+document.getElementById('trim-done').addEventListener('click', () => setTrimMode(false));
+// Escape leaves the mode, the way every modal surface should
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !trimBar.classList.contains('hidden')) setTrimMode(false);
+});
 
 document.getElementById('cut-apply-btn').addEventListener('click', _applyCut);
 document.getElementById('cut-undo-btn').addEventListener('click', _undoCut);

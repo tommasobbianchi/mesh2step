@@ -150,3 +150,74 @@ def test_prism_rounded_into_a_cylinder_is_flagged(browser, live_url, tmp_path):
     assert "changed the volume by" in warnings, warnings
     assert "11.07" in warnings, warnings
     page.close()
+
+
+def test_trimming_is_a_mode_over_the_model(browser, live_url, tmp_path):
+    """Trimming used to be nine controls sitting in a sidebar whether or not you
+    were trimming. It is now a mode: hidden until a model is loaded, entered from
+    one button, dismissed with Escape."""
+    import trimesh
+
+    p = tmp_path / "two.stl"
+    box = trimesh.creation.box((10, 10, 10))
+    far = trimesh.creation.box((4, 4, 4)).apply_translation([30, 0, 0])
+    trimesh.util.concatenate([box, far]).export(str(p))
+
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+    page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
+
+    # nothing loaded: no trim entry point at all
+    assert page.locator("#trim-enter").is_hidden()
+    assert page.locator("#trim-bar").is_hidden()
+
+    page.set_input_files("#file-input", str(p))
+    page.wait_for_timeout(1500)
+    assert page.locator("#trim-enter").is_visible(), \
+        "trim should be offered once a model is on screen"
+    assert page.locator("#trim-bar").is_hidden(), \
+        "the tools must not appear before you ask for them"
+
+    page.click("#trim-enter")
+    assert page.locator("#trim-bar").is_visible()
+    page.click("#cut-box-btn")
+    assert "active" in (page.get_attribute("#cut-box-btn", "class") or "")
+
+    page.keyboard.press("Escape")
+    assert page.locator("#trim-bar").is_hidden(), "Escape must leave the mode"
+    page.close()
+
+
+def test_a_trim_actually_removes_geometry(browser, live_url, tmp_path):
+    import trimesh
+
+    p = tmp_path / "twin.stl"
+    near = trimesh.creation.box((10, 10, 10))
+    far = trimesh.creation.box((4, 4, 4)).apply_translation([40, 0, 0])
+    trimesh.util.concatenate([near, far]).export(str(p))
+
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+    page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
+    page.set_input_files("#file-input", str(p))
+    page.wait_for_timeout(1500)
+    before = page.inner_text("#mesh-info")
+
+    page.click("#trim-enter")
+    page.click("#cut-box-btn")
+    page.click("#cut-box-controls > summary")   # typing coordinates is the fallback path
+    # keep only the region around the big box
+    for field, value in (("box-xmin", -8), ("box-xmax", 8), ("box-ymin", -8),
+                         ("box-ymax", 8), ("box-zmin", -8), ("box-zmax", 8)):
+        page.fill(f"#{field}", str(value))
+        page.dispatch_event(f"#{field}", "change")
+    page.click("#cut-apply-btn")
+    page.wait_for_timeout(2500)
+
+    after = page.inner_text("#mesh-info")
+    assert after != before, f"trim changed nothing: {before!r} -> {after!r}"
+    assert "trimmed" in after.lower(), after
+    # the feedback says what happened, in a proportion a person can judge
+    status = page.inner_text("#cut-status")
+    assert "%" in status and "Removed" in status, status
+    page.close()

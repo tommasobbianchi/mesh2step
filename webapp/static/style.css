@@ -269,3 +269,51 @@ select {
 .result-line { font-size: 12.5px; line-height: 1.6; opacity: 0.85; }
 .result-line.quiet { opacity: 0.45; margin-top: 4px; }
 .result-card .download-btn { width: 100%; margin-top: 14px; }
+
+/* --- trimming happens on the model, not in a panel --- */
+.secondary-btn {
+  width: 100%; margin-top: 10px; padding: 10px; border-radius: 9px; cursor: pointer;
+  background: transparent; color: inherit; border: 1px solid var(--border);
+  font-size: 13px; opacity: 0.8;
+}
+.secondary-btn:hover { opacity: 1; }
+.secondary-btn.active { border-color: var(--accent); color: var(--accent); opacity: 1; }
+
+.trim-bar {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 20;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+  max-width: min(760px, calc(100% - 24px));
+  padding: 10px 12px; border-radius: 14px;
+  background: color-mix(in srgb, var(--panel, #1b1b1e) 88%, transparent);
+  border: 1px solid var(--border); backdrop-filter: blur(14px);
+  box-shadow: 0 10px 34px rgba(0,0,0,0.32);
+}
+.trim-tools { display: flex; gap: 4px; }
+.chip {
+  padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px;
+  background: transparent; color: inherit; border: 1px solid transparent;
+}
+.chip:hover { background: rgba(127,127,127,0.14); }
+.chip.active { background: var(--accent); color: #fff; }
+.chip.primary { border-color: var(--accent); color: var(--accent); }
+.chip:disabled { opacity: 0.35; cursor: default; }
+
+.segmented { position: relative; display: inline-flex; border: 1px solid var(--border);
+             border-radius: 8px; overflow: hidden; font-size: 12.5px; cursor: pointer; }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented span { padding: 7px 11px; opacity: 0.5; }
+.segmented input:checked ~ .seg-on { background: var(--accent); color: #fff; opacity: 1; }
+.segmented input:not(:checked) ~ .seg-off { background: var(--warn, #d9a441); color: #14140f; opacity: 1; }
+
+.trim-inline { display: flex; gap: 6px; align-items: center; font-size: 12.5px; }
+.trim-inline input[type=number] { width: 84px; }
+.trim-numbers { font-size: 12px; }
+.trim-numbers > summary { cursor: pointer; opacity: 0.55; padding: 6px; }
+.num-grid { display: grid; grid-template-columns: auto 84px 84px; gap: 4px; align-items: center; padding-top: 6px; }
+.trim-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.trim-status { flex-basis: 100%; text-align: center; font-size: 11.5px; opacity: 0.6; }
+#viewport-section { position: relative; }
+
+/* .trim-bar sets display:flex and is declared after .hidden at equal specificity,
+   so it won and the bar showed before anyone asked for it. */
+.trim-bar.hidden, .trim-inline.hidden, .trim-numbers.hidden { display: none; }

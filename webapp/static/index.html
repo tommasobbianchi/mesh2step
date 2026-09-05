@@ -49,6 +49,53 @@
         </div>
         <canvas id="viewport"></canvas>
       </div>
+      <div id="trim-bar" class="trim-bar hidden">
+        <div class="trim-tools" role="group" aria-label="Trim tool">
+          <button id="cut-box-btn" class="chip">Box</button>
+          <button id="cut-plane-btn" class="chip">Slice</button>
+          <button id="cut-lasso-btn" class="chip">Freehand</button>
+          <button id="cut-components-btn" class="chip">Loose part</button>
+        </div>
+
+        <label class="segmented" title="Keep what you selected, or remove it">
+          <input type="checkbox" id="cut-keep-inside" checked />
+          <span class="seg-on">Keep</span><span class="seg-off">Remove</span>
+        </label>
+
+        <div id="cut-plane-controls" class="trim-inline hidden">
+          <select id="plane-axis" aria-label="Slice direction">
+            <option value="x">across</option>
+            <option value="y">along</option>
+            <option value="z">height</option>
+          </select>
+          <input id="plane-offset" type="number" step="any" aria-label="Slice position" />
+          <label class="checkbox-label"><input type="checkbox" id="plane-side-max" /> other side</label>
+        </div>
+
+        <div id="cut-component-panel" class="trim-inline hidden">
+          <span id="component-info">Click a coloured part</span>
+          <button id="component-keep-btn" class="chip" disabled>Keep only this</button>
+          <button id="component-delete-btn" class="chip" disabled>Remove it</button>
+        </div>
+
+        <details id="cut-box-controls" class="trim-numbers hidden">
+          <summary>Numbers</summary>
+          <div class="num-grid">
+            <label>X</label><input id="box-xmin" type="number" step="any" /><input id="box-xmax" type="number" step="any" />
+            <label>Y</label><input id="box-ymin" type="number" step="any" /><input id="box-ymax" type="number" step="any" />
+            <label>Z</label><input id="box-zmin" type="number" step="any" /><input id="box-zmax" type="number" step="any" />
+          </div>
+        </details>
+
+        <div class="trim-actions">
+          <button id="cut-undo-btn" class="icon-btn" disabled title="Undo (Ctrl+Z)">↶</button>
+          <button id="cut-redo-btn" class="icon-btn" disabled title="Redo (Ctrl+Shift+Z)">↷</button>
+          <button id="cut-reset-btn" class="icon-btn" title="Undo every trim">Start over</button>
+          <button id="cut-apply-btn" class="chip primary">Apply</button>
+          <button id="trim-done" class="chip">Done</button>
+        </div>
+        <div id="cut-status" class="trim-status"></div>
+      </div>
       <div id="viewport-footer">
         <span id="mesh-info" class="mesh-info">No model loaded</span>
         <label class="wireframe-toggle"><input id="wireframe-toggle" type="checkbox" /> Wireframe</label>
@@ -61,6 +108,7 @@
         <label class="upload-btn">Choose a model…<input id="file-input-2" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
         <div id="input-name" class="active-map-name">No file chosen</div>
 
+        <button id="trim-enter" class="secondary-btn hidden">Trim away parts…</button>
         <button id="convert-btn" class="export-btn" disabled>Convert to CAD</button>
         <p class="primary-hint">Circles and flat faces are rebuilt as real CAD geometry.</p>
 
@@ -71,64 +119,7 @@
 
       <details id="advanced" class="advanced">
         <summary>Options</summary>
-<section class="panel-section">
-        <h2>Select &amp; cut</h2>
-        <div class="form-row">
-          <button id="cut-box-btn" class="icon-btn">Box</button>
-          <button id="cut-plane-btn" class="icon-btn">Plane</button>
-          <button id="cut-lasso-btn" class="icon-btn">Lasso</button>
-          <button id="cut-components-btn" class="icon-btn">Components</button>
-        </div>
-        <div class="form-row">
-          <label class="checkbox-label"><input type="checkbox" id="cut-keep-inside" checked> Keep inside</label>
-        </div>
-        <div id="cut-box-controls" class="hidden">
-          <div class="form-row">
-            <label>X min</label><input id="box-xmin" type="number" step="any" />
-            <label>X max</label><input id="box-xmax" type="number" step="any" />
-          </div>
-          <div class="form-row">
-            <label>Y min</label><input id="box-ymin" type="number" step="any" />
-            <label>Y max</label><input id="box-ymax" type="number" step="any" />
-          </div>
-          <div class="form-row">
-            <label>Z min</label><input id="box-zmin" type="number" step="any" />
-            <label>Z max</label><input id="box-zmax" type="number" step="any" />
-          </div>
-        </div>
-        <div id="cut-plane-controls" class="hidden">
-          <div class="form-row">
-            <label>Axis</label>
-            <select id="plane-axis">
-              <option value="x">X</option>
-              <option value="y">Y</option>
-              <option value="z">Z</option>
-            </select>
-            <label>Offset</label>
-            <input id="plane-offset" type="number" step="any" />
-          </div>
-        <div class="form-row">
-          <label class="checkbox-label"><input type="checkbox" id="plane-side-max"> Keep max side</label>
-        </div>
-        <p class="hint">Drag the arrow handle in the viewport to slide the plane, or type an offset.</p>
-      </div>
-      <div id="cut-component-panel" class="hidden">
-        <div id="component-info" class="hint">Click a colored part to select it.</div>
-        <div class="form-row">
-          <button id="component-delete-btn" class="icon-btn" disabled>Delete selected</button>
-          <button id="component-keep-btn" class="icon-btn" disabled>Keep only selected</button>
-        </div>
-      </div>
-      <div class="form-row">
-        <button id="cut-apply-btn" class="export-btn">Apply cut</button>
-          <button id="cut-reset-btn" class="icon-btn">Reset cuts</button>
-        </div>
-        <div class="form-row">
-          <button id="cut-undo-btn" class="icon-btn" disabled title="Undo (Ctrl+Z)">↶ Undo</button>
-          <button id="cut-redo-btn" class="icon-btn" disabled title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
-        </div>
-        <div id="cut-status" class="hint"></div>
-      </section>
+
 <section class="panel-section">
         <h2>Engine</h2>
         <div class="form-row">
