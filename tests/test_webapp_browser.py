@@ -97,3 +97,24 @@ def test_convert_renders_stats_in_the_browser(browser, live_url, cube_stl, engin
     assert "Download" in stats
     assert errors == [], errors
     page.close()
+
+
+def test_lost_circle_gets_an_actionable_warning(browser, live_url, tmp_path):
+    # 96 segments per circle -> 3.75 deg between facets, under the engine's 5 deg
+    # cylinder seed band, so the cylinder comes out as 96 planar strips.
+    import trimesh
+
+    p = tmp_path / "cyl96.stl"
+    trimesh.creation.cylinder(radius=10, height=20, sections=96).export(str(p))
+    page = browser.new_page()
+    page.goto(live_url, wait_until="networkidle", timeout=60000)
+    page.evaluate("document.getElementById('welcome-overlay').classList.add('hidden')")
+    page.set_input_files("#file-input", str(p))
+    page.wait_for_timeout(1500)
+    page.select_option("#engine", "trueform")
+    page.click("#convert-btn")
+    page.wait_for_selector("#stats-panel:not(.hidden)", timeout=120000)
+    warnings = page.inner_text("#warnings")
+    assert "No curved surface was recovered" in warnings, warnings
+    assert "72-120" in warnings
+    page.close()

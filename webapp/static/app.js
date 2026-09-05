@@ -850,6 +850,18 @@ function renderTrueformStats(data) {
   // A positive delta on a part with recovered curved surfaces is the analytic
   // solid being MORE accurate than the tessellation: a 24-facet cylinder's mesh
   // volume sits ~1% under the true cylinder it approximates.
+  // Measured on this engine: the cylinder seed band is [5deg, 60deg] on the angle
+  // between adjacent facets (refit.hpp thetaCylLoDeg). A circle drawn with 72-120
+  // segments falls just under 5deg and is emitted as one plane per facet, while
+  // both coarser (<=71) and much finer (>=128, on radii from ~10mm) tessellations
+  // recover it. Say so rather than let the user stare at 98 planar faces.
+  if ((s.smooth_cylinders || 0) === 0 && (s.smooth_fillets || 0) === 0 && (s.smooth_planes || 0) > 12) {
+    addWarning(`No curved surface was recovered: the part came out as ${s.smooth_planes} planar faces. `
+      + 'If it does have holes or rounds, its circles are probably tessellated with roughly 72-120 '
+      + 'segments, which lands in a gap in the engine\'s detection band. Re-exporting the mesh with '
+      + 'a coarser chord tolerance (about 71 segments per full circle or fewer) or a much finer one '
+      + '(128 or more) recovers them.');
+  }
   const grew = s.mesh_volume && s.volume > s.mesh_volume;
   const curved = (s.smooth_cylinders || 0) + (s.smooth_fillets || 0) > 0;
   if (grew && curved && (s.warnings || []).some((w) => w.includes('volume differs'))) {
