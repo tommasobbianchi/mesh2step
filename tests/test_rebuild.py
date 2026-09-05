@@ -49,3 +49,76 @@ def test_collinear_holes_in_opposite_walls_are_not_one_cylinder(tmp_path):
 def test_a_box_has_no_bands(tmp_path):
     step = _faceted(trimesh.creation.box((10, 10, 10)), tmp_path, "box")
     assert find_bands(step) == []
+
+
+def _volume(step):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.STEPControl import STEPControl_Reader
+
+    r = STEPControl_Reader()
+    r.ReadFile(str(step))
+    r.TransferRoots()
+    p = GProp_GProps()
+    BRepGProp.VolumeProperties_s(r.OneShape(), p)
+    return p.Mass()
+
+
+def test_a_faceted_cylinder_rebuilds_to_three_analytic_faces(tmp_path):
+    import math
+
+    from mesh2step.rebuild import rebuild_cylinders
+
+    step = _faceted(trimesh.creation.cylinder(radius=8, height=15, sections=96),
+                    tmp_path, "cyl96")
+    out = tmp_path / "cyl96_rebuilt.step"
+    res = rebuild_cylinders(step, out)
+
+    assert res["bands"] == 1
+    assert res["faces_after"] == 3, res          # one cylinder + two caps
+    assert res["faces_failed"] == 0
+    assert res["valid"] is True
+    assert abs(res["volume"] - math.pi * 64 * 15) < 1e-3, res["volume"]
+
+
+def test_the_rebuilt_solid_stays_within_the_tessellation_error(tmp_path):
+    """The rebuilt geometry must differ from the facets by no more than the chord
+    sagitta -- that is the error the facets already had, and recovering the true
+    surface is precisely removing it."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt
+    from OCP.STEPControl import STEPControl_Reader
+
+    from mesh2step.rebuild import rebuild_cylinders
+
+    radius, sections = 8.0, 96
+    mesh = trimesh.creation.cylinder(radius=radius, height=15, sections=sections)
+    step = _faceted(mesh, tmp_path, "dev")
+    out = tmp_path / "dev_rebuilt.step"
+    rebuild_cylinders(step, out)
+
+    reader = STEPControl_Reader()
+    reader.ReadFile(str(out))
+    reader.TransferRoots()
+    solid = reader.OneShape()
+
+    sagitta = radius * (1 - math.cos(math.pi / sections))
+    worst = 0.0
+    for p in mesh.vertices[::7]:
+        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*p)).Vertex()
+        d = BRepExtrema_DistShapeShape(v, solid)
+        assert d.IsDone()
+        worst = max(worst, d.Value())
+    assert worst <= 2 * sagitta, f"{worst:.6f}mm exceeds 2x sagitta {2*sagitta:.6f}mm"
+
+
+def test_a_part_with_no_cylinder_is_left_alone(tmp_path):
+    from mesh2step.rebuild import rebuild_cylinders
+
+    step = _faceted(trimesh.creation.box((10, 10, 10)), tmp_path, "boxr")
+    out = tmp_path / "box_rebuilt.step"
+    res = rebuild_cylinders(step, out)
+    assert res["bands"] == 0 and res["ok"] is False
