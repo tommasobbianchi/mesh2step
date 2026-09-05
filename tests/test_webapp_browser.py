@@ -81,8 +81,11 @@ def test_convert_renders_stats_in_the_browser(browser, live_url, cube_stl, engin
         """() => {
             const p = document.getElementById('stats-panel');
             const s = document.getElementById('convert-status');
+            const t = s ? s.textContent.trim() : '';
+            // 'Converting on server...' is set synchronously on click: waiting on
+            // any status text at all would race the request and pass vacuously.
             return (p && !p.classList.contains('hidden'))
-                || (s && !s.classList.contains('hidden') && s.textContent.trim());
+                || (t && !t.startsWith('Converting'));
         }""",
         timeout=120000,
     )
