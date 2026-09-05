@@ -501,7 +501,7 @@ def test_a_timeout_explains_itself_and_cleans_up(client, monkeypatch, cube_stl_b
     )
     assert resp.status_code == 504, resp.status_code
     detail = resp.json()["detail"]
-    assert "still converting" in detail and "Exact engine" in detail, detail
+    assert "did not finish" in detail and "simplifying the mesh" in detail, detail
 
     after = set(Path(tempfile.gettempdir()).glob("mesh2step_*"))
     # only NEW directories matter: the same request also sweeps stale orphans, so

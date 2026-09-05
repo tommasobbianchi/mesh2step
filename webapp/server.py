@@ -42,8 +42,13 @@ _POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS + 2,
 _PENDING: dict[str, dict] = {}
 SYNC_WAIT_S = 20.0    # hold the request this long; past it, hand back a job id
 QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
-CONVERT_TIMEOUT_S = 300.0  # a person will not wait longer; the engine's own
-                           # ceiling is 900s, which nobody ever survives
+# With conversion behind a job, nobody is holding a connection open, so the only
+# real limit is how long the work deserves. Measured on this host: a
+# 64k-triangle gate needs 50-91s of CPU, and at load average 19 -- an unrelated
+# service holding a core -- it gets under a fifth of one, which is 300-500s of
+# wall clock for the same work. A 300s ceiling failed it purely for being
+# unlucky about neighbours.
+CONVERT_TIMEOUT_S = 900.0
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
 if not native_available():
@@ -118,9 +123,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     except NativeTimeout:
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(504, (
-            f"This model is still converting after {int(CONVERT_TIMEOUT_S)} seconds. "
-            f"It has {n_in_tris:,} triangles; try the Exact engine under Options, "
-            "or simplify the mesh in your slicer first."
+            f"This model did not finish within {int(CONVERT_TIMEOUT_S / 60)} minutes. "
+            f"It has {n_in_tris:,} triangles — try simplifying the mesh before "
+            "uploading, or convert it again when the server is quieter."
         )) from None
     except NativeEngineError as e:
         # covers a killed engine too: a restart or an OOM leaves empty stdout and
