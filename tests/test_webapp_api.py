@@ -451,3 +451,15 @@ def test_preview_rejects_unreadable_upload(client):
     )
     assert resp.status_code == 400
     assert "could not read mesh" in resp.json()["detail"]
+
+
+def test_vertex_count_is_the_engines_welded_one(client, cube_stl_bytes):
+    # our STL round-trip stores 3 verts per triangle; a cube has 8, not 36.
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    s = resp.json()["stats"]
+    assert s["n_input_tris"] == 12
+    assert s["n_input_verts"] == 8

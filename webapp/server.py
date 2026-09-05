@@ -101,7 +101,7 @@ def convert(
         # traceback, and the temp dir goes with it.
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
-    n_in_verts, n_in_tris = len(verts), len(tris)
+    n_in_tris = len(tris)
     cut_before = cut_after = None
     repair_info = None
 
@@ -146,9 +146,10 @@ def convert(
     )
     d = _native_stats(res, engine, schema)
     d["backend"] = "native"
-    # the counts the client renders come from BEFORE the native step, because
-    # the binary only ever sees the already-cut, already-repaired mesh.
-    d["n_input_verts"] = n_in_verts
+    # Triangle count comes from BEFORE the native step, because the binary only
+    # ever sees the already-cut, already-repaired mesh. Vertices do NOT: our STL
+    # round-trip stores three per triangle, so len(verts) here is always 3x the
+    # triangles and says nothing -- the engine's welded count is the real one.
     d["n_input_tris"] = n_in_tris
     if cut_before is not None:
         d["n_cut_tris_before"] = cut_before
