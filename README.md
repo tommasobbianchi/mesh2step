@@ -53,6 +53,40 @@ The native engine has no per-cell dedup tolerance. Vertices are welded exactly, 
 coplanar merging is governed solely by `--unify-angle` (alias `--merge-coplanar`, in
 degrees); with no angle given the verbatim output keeps one face per triangle.
 
+## When a band of facets is rebuilt as a cylinder
+
+`trueform` output that still carries faceted holes is post-processed: rims are fitted
+to circles, coaxial rim pairs are grouped into bands, and a band is replaced by one
+analytic cylindrical face. Whether a band earns that is decided by evidence, not by a
+threshold someone picked.
+
+A tessellator applies one chord tolerance to a whole model, so for a band of radius R
+built from `n` flat sides the sagitta `R * (1 - cos(pi/n))` **is** that tolerance,
+realised on that band. Every band that came out of a tessellator therefore agrees on
+it, and the model's tolerance is estimated as the median of the lower half of the
+per-band sagittas -- robust to the coarse outliers, which are exactly what we are
+looking for.
+
+Each band then ends in one of two states:
+
+| State | When | What you see |
+|---|---|---|
+| **rebuilt** | sagitta within 3x the model tolerance | one analytic face, smaller file, no message |
+| **kept faceted, warned** | anything else | the facets, untouched, and a warning naming the band |
+
+A warning carries the numbers that decided it, e.g.
+
+```
+24-facet band r=12.30mm: sagitta 0.1052mm vs model tolerance 0.0010mm
+(106x too coarse) -- kept faceted (designed prism?)
+```
+
+There is deliberately no silent third state for "definitely a prism". A designed
+24-gon and a very coarsely tessellated cylinder are the same solid; only the rest of
+the model says which was meant, and when the evidence is strong enough to keep the
+facets it is also worth telling you. **A wrong rebuild is worse than no rebuild** --
+it invents material -- so every doubt resolves to keeping the facets.
+
 ## Watertight vs. open, honestly
 
 Building the edge cache costs nothing extra to also count edge usage: every shared
