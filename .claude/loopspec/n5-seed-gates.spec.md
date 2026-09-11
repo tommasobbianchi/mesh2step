@@ -149,3 +149,166 @@ trained at all.
 Wanted: hex standoffs and spacers, nuts, octagonal bosses — KiCad's 3D model library is
 the nearest real source; ABC if more are needed. Each needs the same treatment as the
 existing 57: a B-Rep STEP as truth, tessellated at recorded deflections.
+
+---
+
+## P94 — the cylinder seed band's LOW floor makes finely-tessellated cylinders invisible (pending, 2026-09-11)
+
+Found on a user-supplied ground-truth pair (`Mesh2step_test01.stl` + `Mesh2step_test_01.step`,
+staged at `scratchpad/user/`), not on the corpus. Truth from the STEP: **11 faces, 7 planar,
+4 cylindrical** at R = 11.5882 / 13.7518 / 16.6858 / 39.8345, bbox 102.4 × 25.0 × 70.0,
+diag 126.55 — **all four resolvable** at any sane deflection.
+
+Both arms return **zero cylinders**, and not by discarding:
+
+```
+engine segment root=743 regions=327 rejected=0 planes=327 cylinders=0 fillets=0
+smoothBuiltComponents 1  smoothRevertedTrue 0  warnings []  volumeDeltaPct 0.000000
+```
+
+The component is ADOPTED and perfect on volume. The cylinder detector simply never fires:
+`rejected=0` because no cylinder region is ever *formed*. Every one of the ~283 cylinder-band
+facets is committed as its own planar region.
+
+**Measured cause.** Dihedral-angle histogram of the STL (1308 tri, 1962 manifold edges):
+
+```
+  1.2°    4      2.4°   36      2.5°  283      90.0°  656     129.6°   2
+  coplanar (<0.05°) 981
+  cylinder-band facet turn: median 2.50° -> 144 facets per full circle
+```
+
+`refit.hpp:70` sets `thetaCylLoDeg = 5.0` — "Phase B seed band, INCLUSIVE" — and
+`refit_grow.cpp:1646` drops any candidate with `phi < thetaCylLo - angleBandEps`, where
+`angleBandEps` is 8 ulp, i.e. nothing. **A cylinder tessellated at more than 72 facets per
+full circle turns by less than 5° per facet and cannot be seeded at all.**
+
+That is not an exotic case. 72 segments per circle is coarse by modern CAD-export standards;
+this user's file is at 144. It is also consistent with the older finding recorded as "the
+engine loses circles tessellated at 72–127 segments" — same wall, seen from outside.
+
+**P94:** lowering `thetaCylLoDeg` to 2.0 recovers 4 of 4 cylinders on `test01.stl`.
+
+**Refutation conditions, stated in advance:**
+- if `cylinders` stays 0 at 2.0°, the seed floor is not the gate and the `phiToSet` / `g5` /
+  `medArea` predicates downstream of it must be instrumented before any further guess;
+- the floor is a **fabrication guard**: the flatter the seed band reaches, the more a plane's
+  own tessellation noise can seed a cylinder. So the corpus gate is not "recall went up" but
+  **unmatched (fabricated) cylinder faces must not rise** on the main 203 and the negatives,
+  and the four CAD-verified sentinels must hold at 12 / 16 / 12 / 12.
+- a fixed lower constant is the *experiment*, not the fix. If P94 confirms, the floor must be
+  derived from the mesh's own measured planar noise, not from a literal — otherwise the guard
+  is simply moved, not repaired.
+
+### The mechanism is demonstrated by density alone, before any code change
+
+Same source B-Rep, three tessellations, nothing else varied:
+
+| mesh | triangles | facet turn | cylinder regions | planar regions |
+|---|---|---|---|---|
+| OCCT `diag/1000` | 348 | coarse | **4** (= truth) | **7** (= truth) |
+| OCCT `diag/2000` | 484 | finer | 3 | 27 |
+| the user's own export | 1308 | 2.5° | **0** | 327 |
+
+**Recall collapses monotonically as the mesh gets FINER.** At `diag/1000` the segmenter
+reproduces the truth topology exactly — 7 planes + 4 cylinders = 11 faces. This is the seed
+floor and nothing else: a finer mesh lowers the per-facet turn angle until it drops under
+5°, and each band facet is then committed as its own plane.
+
+It is also a serious field defect independent of the benchmark. Users export fine meshes;
+the engine gets worse the more information it is given.
+
+### The user's second file shows the OTHER failure mode, cleanly
+
+`supporto_monitor_fotofinder.3mf` (2664 tri, 120.7 × 119.0 × 50.0 mm) segments
+`regions=30 planes=20 cylinders=10` — segmentation succeeds — and then
+`smoothRevertedTrue=1`, `smoothBuiltCylinders=0`: the whole component is discarded. That is
+the invalid-planar-wire class measured in `n6-post-build-oracle.spec.md`.
+
+Two user files, the two failure modes, one each. Both are now reproducers with the engine's
+own diagnostics attached.
+
+## P94 — CONFIRMED at the seed, PARTIAL at the ship
+
+`STL2STEP_P94_THETA_CYL_LO` added to `deriveTols` (`refit_segment.cpp`), env-gated, default
+unchanged. `test01.stl` (the user's own 1308-triangle export), nothing else varied:
+
+| thetaCylLo | cyl regions | planar regions | rejected | built | in STEP |
+|---|---|---|---|---|---|
+| **5.0°** (current) | **0** | **327** | 0 | 0 | **0** |
+| 2.0° | **4** | **7** | 2 | 2 | **2** |
+| 1.0° | 4 | 7 | 3 | 2 | 2 |
+| 0.5° | 4 | 7 | 3 | 2 | 2 |
+
+Truth is 7 planar + 4 cylindrical = 11 faces. **At any floor below the mesh's 2.5° facet
+turn, segmentation reproduces the CAD topology exactly**, and the result is stable across
+2.0 / 1.0 / 0.5 — this is not knife-edge tuning. The prediction "4 of 4 recovered" holds at
+the seed and is **half-right at the ship**: 2 of the 4 are still lost downstream, at
+region-level rejection during fit/accept. That is a separate, smaller defect and the next
+question on this file.
+
+`monitor.stl` is unaffected by the floor — it already segments 10 cylinder regions at the
+default 5.0° and loses them to the component revert. (Its 5.0 / 2.0 / 1.0 rows in the sweep
+are 1200 s timeouts from parallel contention, not measurements; the standalone run is the
+valid one.)
+
+**Still required before promotion:** the corpus gate. A lower floor lets a plane's own
+tessellation noise seed a cylinder, so the test is not recall but **unmatched (fabricated)
+faces must not rise**, on main 203 and negatives 78, with the four sentinels at 12/16/12/12.
+Running as `p94gate`, A = P92, B = P92 + floor 2.0°.
+
+---
+
+## P94 — GATE RESULT: **REFUTED as a global constant** (2026-09-11, `p94gate`)
+
+A = P92 · B = P92 + `STL2STEP_P94_THETA_CYL_LO=2.0` · main 203 `normal`, negatives 78 `fine`
+· `scripts/radius_audit.py` (truth-matched radii, not raw cylinder counts).
+
+| set | A matched | B matched | delta | A unmatched | B unmatched | delta | worse | better |
+|---|---|---|---|---|---|---|---|---|
+| main 203 (normal) | 220 | 214 | **-6** | 169 | 27 | **-142** | 5 | 2 |
+| negatives 78 (fine) | 265 | 210 | **-55** | 16 | 16 | **0** | 8 | 0 |
+
+B-Rep health: main 200 → **202** closed valid solids (+2); negatives 74 → 74 (unchanged).
+
+### The refutation is not the one that was predicted
+
+The stated gate was "unmatched (fabricated) faces must not rise". **Fabrication fell by 142
+on the main set** — the prediction was wrong in its direction, and the guard I was defending
+was not the binding constraint. The floor is refuted by the *other* column: **truth-matched
+recall drops on both sets**, -6 and -55, with 13 models worse and only 2 better.
+
+The four sentinels (`NEG_SC-59` / `NEG_SOT-143` / `NEG_TSOT-23` / `NEG_SuperSOT-3` at
+12/16/12/12) do **not** appear in either worse list — they hold. The gate fails on recall,
+not on the sentinels and not on validity.
+
+### Where the loss concentrates
+
+The negatives' 8 worse rows are one family — `TO-252` / `PG-TO-220` — and all collapse to the
+same value, **3**, from 7/7/9/9/11/13/13. A single shared mechanism, not eight independent
+losses: at a 2.0° floor these packages' near-flat lead faces enter the cylinder seed band and
+displace the genuine small-radius cylinders that a 5.0° floor leaves to the planar path.
+`L04_pillow`, `L04_top_fillet`, `L08_hinge_plate`, `L08_pillow_block` go 5/4/2/5 → **0** — total
+loss, not degradation, i.e. the component reverts rather than mis-fits.
+
+Against that, `SpeedTestStructure` 3 → **12** and `L09_crank_arm` 2 → **4** are real gains, and
+`test01.stl` goes 0 → 2 (measured separately). The floor genuinely unblocks finely tessellated
+parts. It is not that 2.0° is wrong everywhere; it is wrong **as one number for every mesh**.
+
+### Consequence for the arm
+
+The conclusion written in advance stands and is now measured, not asserted:
+
+> "a fixed lower constant is the *experiment*, not the fix. If P94 confirms, the floor must be
+> derived from the mesh's own measured planar noise, not from a literal — otherwise the guard is
+> simply moved, not repaired."
+
+It did not even confirm as a constant. **Do not promote `thetaCylLoDeg = 2.0`.** The arm moves to
+`n5g-self-calibrated-seed-floor`: the floor becomes a per-mesh quantity derived from the model's
+own dihedral distribution over faces the segmenter has already committed as planar, so a
+144-facet cylinder is seeded on `test01` **without** opening the band on a TO-252 lead. P94's
+value is that it bounds the prize (+2 on `test01`, +9 on SpeedTest, +2 on crank_arm) and names
+the cost of getting it wrong (-55 on one package family).
+
+**Refuted predictions are not edited.** P94's original text stands above; this section is the
+measurement that closes it.

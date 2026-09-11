@@ -1391,3 +1391,153 @@ But P92 predicted ~79 faces across the 13 `@5354` models and delivered **+8 acro
 other 10 reach the recovery path and still ship nothing, so there is a **second blocker behind
 the same exit**. That is the next arm, and `L07_spool` (7 regions, 0 rejects, 2 cylinder
 regions, still 0 after P92) is its minimal reproducer.
+
+---
+
+## P93 — the J6 heal is fired by ZERO-LENGTH edges and matches them to the wrong chains (pending, 2026-09-11)
+
+Measured on the P92 reproducer `L07_spool_normal` with `STL2STEP_J6_DIAG=1`, P92 on:
+
+```
+DIAG_J6 freeE#0 faceRid=1 ci=-1 pa=(19.883,2.162,1.500) pb=(19.883,2.162,1.500) len=0.0000
+DIAG_J6 freeE#1 faceRid=1 ci=-1 pa=(-5.776,-5.536,1.500) pb=(-5.776,-5.536,1.500) len=0.0000
+DIAG_J6 freeE#2 faceRid=2 ci=-1 pa=(-5.776,-5.536,-1.500) pb=(-5.776,-5.536,-1.500) len=0.0000
+DIAG_J6 freeE#3 faceRid=3 ci=-1 pa=(19.883,2.162,10.000) pb=(19.883,2.162,10.000) len=0.0000
+DIAG_J6 summary freeEdges=4 analyticCollapsed=8 analyticPolyline=0
+-> J6 heal uncollapses ci=0 (58 verts), ci=2 (37), ci=3 (37)
+DIAG_J6 ... 133 free edges, every one len=2.1656, all on faceRid=1, the R=20 circle at z=1.5
+-> freeE 4 -> 133, heal blocked (freeE >= j6PrevFreeE), P92 recovery runs, heal-discard @5501
+```
+
+**All four pass-0 free edges are degenerate: `pa == pb`, length 0.** They are not unpaired
+analytic chains. `matchCollapsedChainToSegment(mv, rs, collapsed, pa, pb, matchTol=0.5)` is
+asked which collapsed chain has terminals matching a degenerate point-pair, and it answers —
+by proximity, since any chain terminating within 0.5 mm of that single point matches both
+ends. The heal then replaces three sound analytic chains with mesh polylines, and the shell
+goes from 4 spurious free edges to 133 real ones.
+
+This is the **second blocker behind exit 5354** that P92 exposed, and it is a defect in the
+heal's trigger, not in the recovery path P92 unlocked.
+
+**P93-A (minimal):** skip zero-length free edges in the heal's match loop. The heal then finds
+nothing to uncollapse on these models, `j6UncollapsePass` stays 0, and the component takes the
+ordinary pre-heal explode-recover path.
+
+**P93-B (the prize):** a free edge of zero length cannot open a shell. Exclude zero-length
+edges from both the free-edge count and the closure decision, so a shell whose only free edges
+are degenerate is treated as closed and ships its already-built, already-accepted cylinders.
+
+Run A first; it is strictly a removal and cannot invent geometry. B only if A is inert or
+positive.
+
+**Refutation conditions, stated in advance:**
+- **A is inert** if the 10 non-recovering `@5354` models still ship 0 cylinders — then the
+  degenerate-edge trigger is incidental and the blocker is downstream of the heal.
+- **A is harmful** if any of `NEG_SC-59` / `NEG_SOT-143` / `NEG_TSOT-23` / `NEG_SuperSOT-3`
+  drops below 12 / 16 / 12 / 12, or the 79 faces P92 recovered via a *legitimate* heal
+  regress. The heal was written for a real 8-file J6 set; if those files' free edges are
+  non-degenerate, A cannot touch them, and that is the control.
+- **B is harmful** if B-Rep valid solids fall below 200/203, or unmatched (fabricated)
+  cylinder faces rise — shipping a shell we declared closed by fiat is exactly the shape of
+  error RULE 1.4 exists to prevent.
+
+**Prediction, on the record:** A recovers cylinders on ≥ 5 of the 10, B on ≥ 8 of the 10.
+Scope first: how many of the 13 `@5354` models have an all-zero-length pass-0 free-edge set.
+
+## P93 — REFUTED in scope, and it relocated the problem
+
+`STL2STEP_P93_SKIP_DEGEN` (A) and `STL2STEP_P93_CLOSE_DEGEN` (B) built and measured.
+
+**A and B are both inert on the shipped cylinder count of `L07_spool` (0 → 0).**
+B is not a no-op internally — it flips `buildFaces` from `heal-discard` to success:
+
+```
+without B: bfReturned=0 bfExit=heal-discard builtFaces=0 builtCyl=0
+with    B: bfReturned=1 bfExit=none         builtFaces=7 builtCyl=2 builtPl=5
+           firstFail=t2_shellIsClosed  volAnalytic=18179.3  volMesh=10626.6
+```
+
+— and then the caller's own closure test rejects it anyway. **The degenerate edges were a
+symptom of a genuinely wrong shell, not a spurious flag.** `L07_spool` truth is 9 faces
+(4 cylinders: 2×R=8, 2×R=20) and segmentation proposes **2** cylinder regions for 7 total.
+The analytic shell over-spans the spool's waist, which is exactly the +71 % volume. RULE 1.4
+is right to discard it. B must not be promoted: it would ship a shell we declared closed by
+fiat, which is the error that rule exists to prevent.
+
+**Scope, measured over the whole main set (203 models, P92 on, `STL2STEP_J6_DIAG`):** 28
+models reach a J6 pass-0 diagnostic; **only 2 have an all-zero-length free-edge set.** The
+degenerate-edge trigger is a 2-model curiosity, not the second blocker.
+
+**And the earlier claim "every cylinder found and accepted, none shipped — a 100 % avoidable
+loss" is WITHDRAWN for `L07_spool`.** It rested on `rejected=0`, which says no region was
+*rejected*; it says nothing about whether the regions found were the right ones. Here only
+2 of 4 cylinders were ever segmented.
+
+---
+
+# WHERE THE 137 MISSING FACES ACTUALLY ARE (main 203, P92 on, 2026-09-11)
+
+`smoothCylinders` is a **third lying counter**: it reads 0 on every reverted model, so the
+"regions proposed" question cannot be asked of the RESULT line at all. Measured instead from
+`STL2STEP_SEGMENT_SUMMARY` and `STL2STEP_DIAG_REVERT`.
+
+```
+main 203 -> 202 models with truth, 421 resolvable truth cylinder faces
+shipped 259 (61.5 %)   lost to component revert 137   lost while adopted 25
+```
+
+## 1. Segmentation is NOT the bottleneck
+
+Over the 63 reverted models: **561 cylinder regions segmented against the 137 resolvable
+faces they would need — 4.1×.** Over-segmentation is the norm. Three genuine
+under-segmentations, and they are the whole of it: `L09_bearing_block` (9 faces, **0**
+regions), `L07_grooved_shaft` (2, **0**), `L07_spool` (4, **2**).
+
+## 2. The revert ledger
+
+| firstFail | models | resolvable faces lost |
+|---|---|---|
+| `t1_bfReturnedAndNonEmpty` | 23 | **118** |
+| `t4_volumeBudget` | 40 | 19 |
+
+The volume budget, which has dominated three previous arms, costs **19 faces**. `buildFaces`
+returning nothing costs **118**. Broken down by its exit:
+
+| bfExit | models | faces |
+|---|---|---|
+| **ladder-exhausted @5593** (closed shell, `BRepCheck`-invalid, plan empty) | **13** | **75** |
+| `heal-discard @5501` | 7 | 21 |
+| `built-empty-main @5162` | 2 | 11 |
+| `sameparameter-threw:Geom2dConvert` | 1 | 11 |
+
+## 3. The 75 faces are lost to INVALID PLANAR FACES, and to nothing else
+
+`STL2STEP_COLLAPSE_DIAG` on all 13. The culprit counters are identical in every row —
+`nInvalidFace == culprits`, no shell-level culprit — and the face dump settles what they are:
+
+```
+342 bad faces across the 13 models.   type=pln 342   type=cyl 0
+statuses: UnorientableShape 2907 · BadOrientationOfSubshape 676 · SelfIntersectingWire 98
+```
+
+**Not one cylindrical face is invalid on any of the 13.** Every cylinder is segmented, fitted,
+accepted and built correctly, and the component is discarded because a *planar* neighbour has
+an unorientable or self-intersecting wire. The cascade ladder has no plan for it — exploding a
+plane does not repair a wire — so it exhausts and RULE 1.4 discards, correctly.
+
+This is the **n5e pinch-vertex defect**, previously seen only as the cost of n6's three
+showcase wins. It is now measured as the largest single item in the recall gap.
+
+## 4. The road to 90 %, in measured steps
+
+| step | faces | recall |
+|---|---|---|
+| today | 259 | 61.5 % |
+| + repair invalid planar wires (n5e), 13 models | +75 | **79.3 %** |
+| + `heal-discard` 7 models | +21 | 84.3 % |
+| + `built-empty-main`, `Geom2dConvert`, 3 under-segmentations | +33 | 92.1 % |
+| + `t4_volumeBudget` 40 models | +19 | 96.7 % |
+
+**n5e is the next arm.** `n5e-wire-chaining.spec.md` already carries two candidate fixes, and
+its reproducer set is now 13 models rather than 3. The volume budget, and the whole
+`refineCylinderRadius` family that consumed P84–P90, are worth 19 faces and should be parked.
