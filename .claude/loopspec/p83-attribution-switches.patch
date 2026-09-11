@@ -1,0 +1,52 @@
+diff --git a/src/refit_build.cpp b/src/refit_build.cpp
+index 6d66a31..413a2d2 100644
+--- a/src/refit_build.cpp
++++ b/src/refit_build.cpp
+@@ -360,6 +360,11 @@ double meshTolCap(const MeshView& mv, const Region* r) {
+         // leaves all 83 outputs BYTE-IDENTICAL. The term was inert everywhere it fired,
+         // while licensing OCCT to identify points up to 15.83 mm apart.
+         if (r->chordSagitta > c) { c = r->chordSagitta; sagittaBound = true; }
++        static const bool p83SagOff = std::getenv("STL2STEP_P83_RADIUS_FLOOR") != nullptr;
++        if (p83SagOff && r->radius > 0.0) {
++            const double radiusTerm = r->radius * (1.0 - std::cos(kPi / 4.0));
++            if (radiusTerm > c) { c = radiusTerm; sagittaBound = true; }
++        }
+     }
+     const double cap = c * 1.001 + Precision::Confusion();
+     // n5/P44: how often the MEASURED sagitta is the binding term (it replaced the
+@@ -4612,7 +4617,11 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                         isElips && curve.elips.MinorRadius() > 0.0 &&
+                         curve.elips.MajorRadius() / curve.elips.MinorRadius() <=
+                             kMaxElipsEccentricity;
+-                    if (wellCondElips) {
++                    // P83 attribution build ONLY: re-gate 2549e00 behind the env switch
++                    // it was promoted out of, so the ellipse acceptance can be turned off
++                    // without also reverting ISLE_CAP.
++                    static const bool p83EllipsOff = std::getenv("STL2STEP_P83_NO_ELLIPS") != nullptr;
++                    if (wellCondElips && !p83EllipsOff) {
+                         if (residChain <= budget) snapCap = std::max(snapCap, residChain);
+                     } else {
+                         if (residChain <= budget) {
+@@ -4783,7 +4792,9 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                 // segmented island rim). Refuse analytic build AND halves so
+                 // the cascade explodes the region to shared-meshE facets.
+                 bool isleRefuse = false;
++                static const bool p83IsleOff = std::getenv("STL2STEP_P83_NO_ISLE") != nullptr;
+                 for (const Loop& lp : r.loops) {
++                    if (p83IsleOff) break;
+                     if ((lp.role == LoopRole::CapLow ||
+                          lp.role == LoopRole::CapHigh) &&
+                         capLoopTouchesIslands(rs, &lp)) {
+@@ -5298,8 +5309,10 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+             // Skip large multi-hole parts (Body11, 15300 tris): mixed
+             // uncollapse + abort-recover zeroes the 127-cyl floor. The
+             // 8-file J6 set is all < 8000 tris.
+-            if (freeE > 0 && mv.nTri < 10000 && freeE < j6PrevFreeE &&
+-                j6UncollapsePass < kJ6MaxPasses) {
++            static const bool p83J6Off = std::getenv("STL2STEP_P83_NO_J6MULTI") != nullptr;
++            if (freeE > 0 && mv.nTri < 10000 &&
++                (p83J6Off ? (j6UncollapsePass < 1)
++                          : (freeE < j6PrevFreeE && j6UncollapsePass < kJ6MaxPasses))) {
+                 const double matchTol =
+                     std::max(std::max(0.5, sewTol * 20.0), derivedEpsPlane(mv) * 4.0);
+                 std::vector<int> heal;
