@@ -9,6 +9,8 @@ Run:  uvicorn webapp.server:app --reload   (from repo root, after `pip install -
 import base64
 import json
 import tempfile
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -16,8 +18,8 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import trimesh
@@ -33,9 +35,14 @@ from mesh2step.native import (
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB trust-boundary cap
 RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S3 if multi-worker.
-MAX_CONCURRENT_CONVERSIONS = 2   # the engine takes every core and ~1.4 GB per run;
-                                 # a third simultaneous conversion makes all three
-                                 # miss the deadline instead of two making it
+# The engine takes every core and ~2.0 GB per run (measured 2026-09-07 under the 40-concurrent
+# surge: two live stl2step processes at 2022 MB each). A third simultaneous conversion made all
+# three miss the deadline instead of two making it -- which is why the default is 2.
+#
+# MESH2STEP_SLOTS overrides it for CAPACITY MEASUREMENT on the load-test twin only. The default
+# is the production value, so a live restart cannot change behaviour unless the variable is set,
+# and only mesh2step-loadtest.service sets it.
+MAX_CONCURRENT_CONVERSIONS = int(os.environ.get("MESH2STEP_SLOTS", "2"))
 _CONVERT_SLOTS = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
 _POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS + 2,
                            thread_name_prefix="convert")
@@ -58,11 +65,249 @@ CONVERT_TIMEOUT_S = 900.0
 MAX_INPUT_TRIANGLES = 120_000
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
+# ---------------------------------------------------------------------------
+# Admission control. Everything below bounds how much work may be ACCEPTED; none
+# of it touches the conversion itself.
+# ---------------------------------------------------------------------------
+
+# How many conversions may exist at once, running or waiting for a slot.
+# Derived from the two numbers above it: MAX_CONCURRENT_CONVERSIONS = 2 slots,
+# and a large model measured at 50-91s per conversion. Two run, four wait; the
+# last of the four starts at ~180s, inside QUEUE_WAIT_S = 240s, and still has
+# its full CONVERT_TIMEOUT_S afterwards. A seventh admission cannot be served
+# before QUEUE_WAIT_S expires, so accepting it only means holding its upload on
+# disk for four minutes and then failing it. Refusing it now is the same answer,
+# four minutes earlier and without the disk.
+MAX_ADMITTED_CONVERSIONS = MAX_CONCURRENT_CONVERSIONS * 3
+
+# The depth cap above is the ceiling. The binding limit is usually this one: a
+# request is admitted only if the queue ahead of it is expected to clear inside
+# QUEUE_WAIT_S, using the MEASURED conversion time rather than an assumed one.
+# Without it the cap is only correct while conversions take ~90s; when they take
+# 210s, admitting six means the last one waits out QUEUE_WAIT_S and fails, which
+# is the exact outcome admission control exists to replace with an instant no.
+
+# Floor for Retry-After. The header is computed from the measured queue below,
+# but never below this: a browser retrying faster than the shortest realistic
+# conversion turns a refusal into a second source of load.
+RETRY_AFTER_S = 30
+
+# Ceiling for Retry-After. Past this a caller stops waiting and reloads anyway,
+# so a larger number is not information, it is an invitation to a manual retry.
+RETRY_AFTER_MAX_S = 600
+
+# Seed for the running estimate of how long one conversion takes, in seconds.
+# The value is the 91s upper end of the measurement behind CONVERT_TIMEOUT_S. It
+# is only a seed: the real corpus is slower than that (a 19,042-triangle bench
+# model measured >210s on trueform on this host), and a queue sized on a stale
+# guess is exactly the thing that makes a caller wait QUEUE_WAIT_S and then fail.
+CONVERT_ESTIMATE_SEED_S = 91.0
+# Weight of the newest conversion in that estimate. 0.25 crosses most of the gap
+# between the seed and reality within four conversions -- fast enough to react to
+# a heavy model, slow enough that one quick 12-triangle box does not reopen the
+# gates.
+CONVERT_ESTIMATE_ALPHA = 0.25
+
+# Ceiling on the finished-result registry. Each entry pins one workdir on disk
+# for RESULT_TTL_S = 3600s. At the sustained ceiling of 2 concurrent conversions
+# at ~50s each, an hour produces ~144 results, so 256 holds a full TTL window of
+# real traffic with headroom; past that we are being flooded, not used, and the
+# oldest finished result is the one nobody is coming back for.
+MAX_RETAINED_JOBS = 256
+
+# Ceiling on the in-flight job-ticket registry. Only an ADMITTED conversion can
+# create a ticket, so at most MAX_ADMITTED_CONVERSIONS of these are ever live;
+# the rest are finished results whose owner never polled /api/job. Sized well
+# above the live bound so eviction can only ever fall on a finished one.
+MAX_PENDING_JOBS = 64
+
+# Worst-case disk one admitted conversion can occupy: the upload itself
+# (MAX_UPLOAD_BYTES), the STL round-trip written for the engine (50 B/triangle,
+# 6 MB at MAX_INPUT_TRIANGLES), and the STEP it produces. The STEP term is
+# measured, not assumed: across 55 STL/STEP pairs in the bench corpus the worst
+# ratio is 2,292 bytes per triangle, which is 275 MB at MAX_INPUT_TRIANGLES.
+# 200 + 6 + 275 = 481 MB, rounded up.
+DISK_PER_JOB_BYTES = 512 * 1024 * 1024
+
+# Free space we refuse to spend, whatever the queue looks like. A full
+# filesystem does not fail one request, it breaks the service, the logs and the
+# static site at once; 2 GB is enough for the retained results and the OS to
+# keep functioning while the TTL sweep catches up.
+DISK_FLOOR_BYTES = 2 * 1024 * 1024 * 1024
+
+_SCRATCH_DIR = Path(tempfile.gettempdir())  # where every workdir is created
+
+_admission_lock = threading.Lock()
+_admitted = 0  # conversions accepted and not yet finished
+_convert_estimate_s = CONVERT_ESTIMATE_SEED_S  # EWMA of measured conversion time
+
+
+def observe_convert_seconds(seconds: float) -> None:
+    """Feed one finished conversion into the estimate the queue is sized on."""
+    global _convert_estimate_s
+    seconds = min(max(float(seconds), 1.0), CONVERT_TIMEOUT_S)
+    with _admission_lock:
+        _convert_estimate_s = ((1 - CONVERT_ESTIMATE_ALPHA) * _convert_estimate_s
+                               + CONVERT_ESTIMATE_ALPHA * seconds)
+
+
+def _wait_estimate_s(ahead: int) -> float:
+    """How long a request with `ahead` conversions in front of it should expect.
+
+    `ahead` includes the ones running: a newcomer waits for a slot, and slots are
+    freed at MAX_CONCURRENT_CONVERSIONS per conversion-time.
+    """
+    return max(0.0, ahead - MAX_CONCURRENT_CONVERSIONS + 1) / \
+        MAX_CONCURRENT_CONVERSIONS * _convert_estimate_s
+
+
+def _admission_depth() -> int:
+    with _admission_lock:
+        return _admitted
+
+
+def _would_admit() -> bool:
+    """Cheap, lock-free-enough read of the same predicate _try_admit enforces."""
+    with _admission_lock:
+        return (_admitted < MAX_ADMITTED_CONVERSIONS
+                and _wait_estimate_s(_admitted) <= QUEUE_WAIT_S)
+
+
+def _try_admit() -> tuple[bool, float]:
+    """Take one admission slot, or refuse with the wait we could not promise."""
+    global _admitted
+    with _admission_lock:
+        wait = _wait_estimate_s(_admitted)
+        if _admitted >= MAX_ADMITTED_CONVERSIONS or wait > QUEUE_WAIT_S:
+            return False, wait
+        _admitted += 1
+        return True, wait
+
+
+def _release_admission() -> None:
+    global _admitted
+    with _admission_lock:
+        _admitted = max(0, _admitted - 1)
+
+
+def _retry_after(wait_s: float | None = None) -> int:
+    if wait_s is None:
+        wait_s = _wait_estimate_s(_admission_depth())
+    return int(min(max(wait_s, RETRY_AFTER_S), RETRY_AFTER_MAX_S))
+
+
+def _busy(detail: str, wait_s: float | None = None) -> HTTPException:
+    """429 with a Retry-After, in the same plain voice as the triangle limit."""
+    return HTTPException(429, detail,
+                         headers={"Retry-After": str(_retry_after(wait_s))})
+
+
+def queue_full_message(wait_s: float) -> str:
+    minutes = max(1, int(round(_retry_after(wait_s) / 60)))
+    return (
+        f"The converter is full — it runs {MAX_CONCURRENT_CONVERSIONS} models at "
+        f"a time and everything waiting would take about "
+        f"{minutes} minute{'s' if minutes != 1 else ''} to clear. Nothing was "
+        "uploaded, so nothing is lost: please send it again in a few minutes."
+    )
+
+
+def _disk_headroom_bytes() -> int:
+    """Free bytes we must keep to finish the work already admitted, plus floor."""
+    return DISK_FLOOR_BYTES + _admission_depth() * DISK_PER_JOB_BYTES
+
+
+def _disk_free_bytes() -> int:
+    try:
+        return __import__("shutil").disk_usage(_SCRATCH_DIR).free
+    except OSError:
+        return 0  # unreadable scratch area is not a reason to accept more work
+
+
+DISK_FULL_MESSAGE = (
+    "The server is out of working space for new conversions right now. Nothing "
+    "was uploaded — results are cleared as they expire, so please try again in "
+    "a minute."
+)
+
 if not native_available():
     raise NativeUnavailable()
 
 app = FastAPI(title="mesh2step")
 
+# Endpoints that write an upload to disk before they can judge it. The gate
+# below runs before the body is read, so it protects the disk as well as the CPU.
+_UPLOAD_PATHS = frozenset({"/api/convert", "/api/preview", "/api/edit", "/api/segment"})
+
+# Below this, reading the body costs one read() and refusing early buys nothing,
+# while answering after the body is consumed is a clean, well-framed HTTP
+# exchange. It is the same 1 MB chunk every upload loop in this file already
+# reads. Above it, refusing before the body is the whole point.
+PREREAD_REFUSE_MIN_BYTES = 1024 * 1024
+
+
+@app.middleware("http")
+async def _admission_gate(request: Request, call_next):
+    """Refuse what we cannot serve BEFORE the body is read.
+
+    Starlette parses multipart before the endpoint function runs, spooling
+    anything over 1 MB to disk. By then a refusal has already cost the upload it
+    was meant to avoid. Content-Length is advisory, so this is an optimisation,
+    not the bound: /api/convert re-checks admission authoritatively.
+    """
+    if request.method != "POST" or request.url.path not in _UPLOAD_PATHS:
+        return await call_next(request)
+
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+
+    if declared > MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            {"detail": f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"},
+            status_code=413,
+        )
+
+    if declared >= PREREAD_REFUSE_MIN_BYTES:
+        if _disk_free_bytes() < _disk_headroom_bytes():
+            return JSONResponse({"detail": DISK_FULL_MESSAGE}, status_code=429,
+                                headers={"Retry-After": str(RETRY_AFTER_S),
+                                         "X-Refusal": "preread-disk"})
+        if request.url.path == "/api/convert" and not _would_admit():
+            wait_s = _wait_estimate_s(_admission_depth())
+            return JSONResponse({"detail": queue_full_message(wait_s)},
+                                status_code=429,
+                                headers={"Retry-After": str(_retry_after(wait_s)),
+                                         "X-Refusal": "preread-queue"})
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _server_timer(request: Request, call_next):
+    """Time every upload request SERVER-SIDE, from first byte seen to response.
+
+    Exists because the client number is not the gate. A load generator running 40
+    threads measured 429 p50 = 1.178 s while the server's own refusal path took
+    0.001 s: the second was the generator encoding multipart, not the service.
+    Only the upload paths are timed -- static assets would drown the signal.
+    """
+    if request.url.path not in _UPLOAD_PATHS:
+        return await call_next(request)
+    t0 = time.monotonic()
+    resp = await call_next(request)
+    el = time.monotonic() - t0
+    resp.headers["X-Server-Time"] = f"{el:.4f}"
+    # A 429 with no X-Refusal was raised INSIDE the endpoint, which Starlette only
+    # reaches after the multipart body is parsed -- so its latency is mostly the
+    # upload. A pre-read refusal never touches the body. Conflating the two is how
+    # "429 p50" ended up meaning two different things in two different reports.
+    kind = resp.headers.get("X-Refusal") or (
+        "postparse" if resp.status_code == 429 else "served")
+    print(f"SRVREQ {resp.status_code} {request.url.path} {el:.4f} {kind}",
+          file=sys.stderr, flush=True)
+    return resp
 
 @app.on_event("startup")
 def _startup_sweep() -> None:
@@ -72,15 +317,47 @@ _STATIC = Path(__file__).parent / "static"
 _JOBS: dict[str, dict] = {}  # token -> {"path": Path, "name": str, "ts": float}
 
 
+def _drop_job(token: str) -> None:
+    job = _JOBS.pop(token, None)
+    if not job:
+        return
+    try:
+        __import__("shutil").rmtree(job["path"].parent, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _cap_registries() -> None:
+    """Keep the two in-memory registries bounded, oldest finished first.
+
+    TTL alone is not a bound: it caps how LONG an entry lives, not how many
+    exist. A surge produces entries far faster than an hour retires them, and
+    each _JOBS entry also pins a workdir, so an unbounded registry is an
+    unbounded disk footprint as well.
+    """
+    # _JOBS is finished results only -- every entry here is evictable, and the
+    # oldest is the one least likely to still be wanted.
+    while len(_JOBS) > MAX_RETAINED_JOBS:
+        _drop_job(min(_JOBS, key=lambda t: _JOBS[t]["ts"]))
+
+    if len(_PENDING) <= MAX_PENDING_JOBS:
+        return
+    # Finished-but-unpolled tickets go first; a running conversion is only
+    # dropped if somehow nothing finished is left, and then the oldest, because
+    # dropping it loses work someone is still waiting on.
+    order = sorted(_PENDING.items(), key=lambda kv: (not kv[1]["future"].done(), kv[1]["ts"]))
+    for job, _entry in order[:len(_PENDING) - MAX_PENDING_JOBS]:
+        _PENDING.pop(job, None)
+
+
 def _purge_expired() -> None:
     now = time.time()
     for token in [t for t, j in _JOBS.items() if now - j["ts"] > RESULT_TTL_S]:
-        job = _JOBS.pop(token, None)
-        if job:
-            try:
-                job["path"].parent.exists() and __import__("shutil").rmtree(job["path"].parent, ignore_errors=True)
-            except OSError:
-                pass
+        _drop_job(token)
+    for job in [j for j, e in _PENDING.items()
+                if e["future"].done() and now - e["ts"] > RESULT_TTL_S]:
+        _PENDING.pop(job, None)
+    _cap_registries()
     _sweep_orphans(now)
 
 
@@ -115,11 +392,16 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     900s ceiling. Queuing beats thrashing.
     """
     if not _CONVERT_SLOTS.acquire(timeout=QUEUE_WAIT_S):
+        # Admission should make this unreachable -- MAX_ADMITTED_CONVERSIONS is
+        # sized so the last waiter starts inside QUEUE_WAIT_S. If it ever fires
+        # anyway it is still backpressure, not a server fault, so it answers 429
+        # with a Retry-After like every other refusal.
         __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(503, (
+        raise _busy(
             "The converter is busy with other models right now. "
             "Please try again in a minute — your file was not kept."
-        ))
+        )
+    t_convert = time.time()
     try:
         res = convert_native(
             stl_path, out_path,
@@ -141,6 +423,10 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         raise HTTPException(502, f"The conversion engine failed: {e}") from e
     finally:
         _CONVERT_SLOTS.release()
+        # The queue is sized on how long conversions ACTUALLY take here, not on
+        # how long they took on the machine the constants were written on. A
+        # timed-out or failed run counts too: it held the slot just the same.
+        observe_convert_seconds(time.time() - t_convert)
     d = _native_stats(res, engine, schema)
     d["backend"] = "native"
     # Triangle count comes from BEFORE the native step, because the binary only
@@ -165,6 +451,66 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
 
     d["output_size_bytes"] = out_path.stat().st_size
 
+    # Audit what the ENGINE already turned into cylinders. Its Phase-B seed band takes
+    # any facet step in [5, 60] degrees, so a designed 8-sided prism comes back as its
+    # circumscribed cylinder (+11.07%) with the facets gone from the STEP -- nothing
+    # downstream can decline it, and the engine emits no warning of its own. Saying so,
+    # with the numbers, is all this can do until the seeding itself is fixed
+    # (.claude/loopspec/n5-seed-exclusion.spec.md).
+    if engine == "trueform" and d.get("smooth_cylinders", 0) > 0:
+        try:
+            from mesh2step.intent import audit_engine_cylinders
+
+            rows = audit_engine_cylinders(stl_path, out_path)
+            # every engine-rebuilt band is accounted for in the payload, flagged or not
+            d["engine_cylinder_audit"] = [
+                {"radius": round(r.radius, 4), "sides": r.sides,
+                 "turn_deg": round(r.turn_deg, 3), "sagitta": round(r.sagitta, 6),
+                 "model_tolerance": (round(r.model_tolerance, 6)
+                                     if r.model_tolerance is not None else None),
+                 "ratio": round(r.ratio, 3) if r.ratio is not None else None,
+                 "volume_delta_pct": round(r.volume_delta_pct, 4),
+                 "flagged": r.flagged, "undecidable": r.undecidable}
+                for r in rows
+            ]
+            # a band nothing can decide is the one a person most needs to see
+            for finding in rows:
+                if not (finding.flagged or finding.undecidable):
+                    continue
+                if finding.message not in d.setdefault("warnings", []):
+                    d["warnings"].append(finding.message)
+        except Exception:  # noqa: BLE001 - a diagnostic must never fail a conversion
+            pass
+
+    # A volume move with no analytic rebuild behind it is a state-2 case: the geometry
+    # is kept exactly as produced, and the user is told, with the numbers. Measured on
+    # L07_flanged_bushing_recon -- 258 faces, all planes, against 32 non-planar truth
+    # faces; 245 planes absorb facets deviating up to 1.99 deg against the engine's
+    # absolute 2.0 deg near-flat gate; area barely moves, volume moves 1.70 %.
+    if engine == "trueform" and d["output_size_bytes"] <= CANONIZE_MAX_BYTES:
+        try:
+            from mesh2step.intent import unaccounted_volume_move
+
+            vf = unaccounted_volume_move(stl_path, out_path, d)
+            if vf is not None:
+                d["volume_unaccounted_pct"] = round(vf.volume_delta_pct, 4)
+                if vf.message not in d.setdefault("warnings", []):
+                    d["warnings"].append(vf.message)
+
+            # The SHAPE line beside the volume one: 12 of the 18 corpus models that
+            # flatten curvature move the volume by ~0, so a volume test covers the harm
+            # but not the phenomenon -- a conical seat as forty planes has the right
+            # volume and the wrong shape.
+            from mesh2step.intent import flattening_suspected
+
+            ff = flattening_suspected(stl_path, out_path)
+            if ff is not None:
+                d["flattened_faces"] = ff.faces_absorbing
+                if ff.message not in d.setdefault("warnings", []):
+                    d["warnings"].append(ff.message)
+        except Exception:  # noqa: BLE001 - a diagnostic must never fail a conversion
+            pass
+
     # Recover the circles the engine's seed band missed. Default ON for trueform:
     # a rebuilt file is the geometry the facets were approximating, and it is
     # smaller (a real lid: 245 faces -> 10, 1.95 MB -> 33 KB). Accepted only if
@@ -178,6 +524,12 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
 
             rebuilt_path = workdir / "rebuilt.step"
             rb = rebuild_cylinders(out_path, rebuilt_path)
+            # A band kept faceted on intent evidence is reported whether or not the
+            # rebuild is then accepted: "kept faceted (designed prism?)" with the
+            # numbers behind it is the actionable half, and it is true either way.
+            for warning in rb.get("warnings", []):
+                if warning not in d.setdefault("warnings", []):
+                    d["warnings"].append(warning)
             before = d.get("volume") or 0.0
             moved = abs(rb["volume"] - before) / before if before else 1.0
             if (rb.get("ok") and rb.get("valid") and rb["faces_after"] < rb["faces_before"]
@@ -216,6 +568,26 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     return {"ok": True, "stats": d, "download_token": token}
 
 
+def _convert_job(*, t_admit: float, **kw) -> dict:
+    """Own the admission slot for the whole life of the conversion.
+
+    The slot is taken in the request handler, before the upload is written, and
+    must be given back exactly once however the work ends -- success, engine
+    failure, timeout, or an exception nobody predicted. A leaked slot is
+    permanent: the queue shrinks by one for the life of the process.
+    """
+    try:
+        return _convert_in_worker(**kw)
+    finally:
+        _release_admission()
+        # The service's OWN per-conversion cost: admission granted (before the
+        # upload is even written) to result ready. The client's figure also
+        # carries the upload, the poll interval and the download, so the two
+        # are not the same number and only this one is a capacity gate.
+        print(f"SRVCONV {time.time() - t_admit:.3f} tris={kw.get('n_in_tris')}",
+              file=sys.stderr, flush=True)
+
+
 @app.post("/api/convert")
 def convert(
     file: UploadFile = File(...),
@@ -242,99 +614,120 @@ def convert(
 
     parsed_cuts = _parse_cuts(cuts)
 
-    workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
-    stem = Path(file.filename).stem or "model"
-    in_path = workdir / f"input{suffix}"
-    out_path = workdir / f"{stem}.step"
+    admitted, wait_s = _try_admit()
+    if not admitted:
+        raise _busy(queue_full_message(wait_s), wait_s)
+    t_admit = time.time()
+    # Free space must cover this conversion AND every one already admitted, so
+    # the check is made after taking the slot -- _admission_depth() includes us.
+    if _disk_free_bytes() < _disk_headroom_bytes():
+        _release_admission()
+        raise _busy(DISK_FULL_MESSAGE)
 
-    size = 0
-    with in_path.open("wb") as fh:
-        while chunk := file.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                fh.close()
-                __import__("shutil").rmtree(workdir, ignore_errors=True)
-                raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
-            fh.write(chunk)
-
-    # repair and cuts are MESH preprocessing (trimesh surgery on verts/tris), not
-    # conversion features -- so they run here, on the mesh, and the native engine
-    # converts the result. There is no Python fallback: the native binary is
-    # required and its absence fails at startup (see the module-level check).
-    # ALWAYS normalise through our own loader, not just for non-STL input.
-    # The binary takes STL only, and it also rejects an STL whose facet normals
-    # are all zero ("unreadable or empty STL") -- which plenty of exporters emit,
-    # expecting the reader to derive orientation from vertex winding. Round-tripping
-    # costs one load+write and keeps the engine accepting the same inputs as before.
+    handed_off = False
     try:
-        verts, tris = load_mesh(in_path)
-    except MeshLoadError as e:
-        # an unreadable upload is bad input, not a server fault: 400, not a 500
-        # traceback, and the temp dir goes with it.
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
-    n_in_tris = len(tris)
-    if n_in_tris > MAX_INPUT_TRIANGLES:
-        __import__("shutil").rmtree(workdir, ignore_errors=True)
-        raise HTTPException(413, (
-            f"This model has {n_in_tris:,} triangles. The converter handles up to "
-            f"{MAX_INPUT_TRIANGLES:,} — above that it needs more memory than the "
-            "server can give it. Reduce the mesh (Simplify or Decimate in your "
-            "CAD or slicer) and upload it again."
-        ))
-    cut_before = cut_after = None
-    repair_info = None
+        workdir = Path(tempfile.mkdtemp(prefix="mesh2step_"))
+        stem = Path(file.filename).stem or "model"
+        in_path = workdir / f"input{suffix}"
+        out_path = workdir / f"{stem}.step"
 
-    if parsed_cuts:
-        cr = apply_cuts(verts, tris, parsed_cuts)
-        verts, tris = cr.verts, cr.tris
-        cut_before, cut_after = cr.n_tris_before, cr.n_tris_after
-        if len(tris) == 0:
+        size = 0
+        with in_path.open("wb") as fh:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    fh.close()
+                    __import__("shutil").rmtree(workdir, ignore_errors=True)
+                    raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
+                fh.write(chunk)
+
+        # repair and cuts are MESH preprocessing (trimesh surgery on verts/tris), not
+        # conversion features -- so they run here, on the mesh, and the native engine
+        # converts the result. There is no Python fallback: the native binary is
+        # required and its absence fails at startup (see the module-level check).
+        # ALWAYS normalise through our own loader, not just for non-STL input.
+        # The binary takes STL only, and it also rejects an STL whose facet normals
+        # are all zero ("unreadable or empty STL") -- which plenty of exporters emit,
+        # expecting the reader to derive orientation from vertex winding. Round-tripping
+        # costs one load+write and keeps the engine accepting the same inputs as before.
+        try:
+            verts, tris = load_mesh(in_path)
+        except MeshLoadError as e:
+            # an unreadable upload is bad input, not a server fault: 400, not a 500
+            # traceback, and the temp dir goes with it.
             __import__("shutil").rmtree(workdir, ignore_errors=True)
-            return {"ok": False, "stats": {
-                "engine": engine, "backend": "native",
-                "error": "cut operations removed all triangles",
-                "input_path": file.filename, "output_path": f"{stem}.step",
-            }}
+            raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
+        n_in_tris = len(tris)
+        if n_in_tris > MAX_INPUT_TRIANGLES:
+            __import__("shutil").rmtree(workdir, ignore_errors=True)
+            raise HTTPException(413, (
+                f"This model has {n_in_tris:,} triangles. The converter handles up to "
+                f"{MAX_INPUT_TRIANGLES:,} — above that it needs more memory than the "
+                "server can give it. Reduce the mesh (Simplify or Decimate in your "
+                "CAD or slicer) and upload it again."
+            ))
+        cut_before = cut_after = None
+        repair_info = None
 
-    if repair is not None:
-        from mesh2step import repair as _repair
+        if parsed_cuts:
+            cr = apply_cuts(verts, tris, parsed_cuts)
+            verts, tris = cr.verts, cr.tris
+            cut_before, cut_after = cr.n_tris_before, cr.n_tris_after
+            if len(tris) == 0:
+                __import__("shutil").rmtree(workdir, ignore_errors=True)
+                return {"ok": False, "stats": {
+                    "engine": engine, "backend": "native",
+                    "error": "cut operations removed all triangles",
+                    "input_path": file.filename, "output_path": f"{stem}.step",
+                }}
 
-        rr = _repair.repair_mesh(verts, tris, level=repair)
-        verts, tris = rr.verts, rr.tris
-        repair_info = {
-            "repair_level": repair,
-            "n_repair_faces_before": rr.n_faces_before,
-            "n_repair_faces_after": rr.n_faces_after,
-            "repair_holes_filled": rr.holes_filled,
-            "repair_watertight_after": rr.watertight_after,
-        }
+        if repair is not None:
+            from mesh2step import repair as _repair
 
-    stl_path = workdir / "native_input.stl"
-    trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
-    native_engine = "trueform" if engine == "trueform" else "verbatim"
-    native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
-    # Faceted with no merge requested must keep one face per triangle, which is
-    # what the client already contracts for.
-    fut = _POOL.submit(
-        _convert_in_worker,
-        stl_path=stl_path, out_path=out_path, workdir=workdir, engine=engine,
-        native_engine=native_engine, schema=schema, native_unify=native_unify,
-        merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
-        n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
-        repair_info=repair_info,
-    )
-    try:
-        # Small models still answer in one round trip, exactly as before.
-        return fut.result(timeout=SYNC_WAIT_S)
-    except FuturesTimeout:
-        # Big ones get a ticket instead of a dead connection. A 64k-triangle gate
-        # needs 91s on an idle host and far longer on a busy one; no browser, proxy
-        # or patience survives holding a request open that long.
-        job = uuid.uuid4().hex
-        _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step"}
-        return {"ok": True, "pending": True, "job": job,
-                "message": "Still converting — this model is large."}
+            rr = _repair.repair_mesh(verts, tris, level=repair)
+            verts, tris = rr.verts, rr.tris
+            repair_info = {
+                "repair_level": repair,
+                "n_repair_faces_before": rr.n_faces_before,
+                "n_repair_faces_after": rr.n_faces_after,
+                "repair_holes_filled": rr.holes_filled,
+                "repair_watertight_after": rr.watertight_after,
+            }
+
+        stl_path = workdir / "native_input.stl"
+        trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
+        native_engine = "trueform" if engine == "trueform" else "verbatim"
+        native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
+        # Faceted with no merge requested must keep one face per triangle, which is
+        # what the client already contracts for.
+        fut = _POOL.submit(
+            _convert_job,
+            t_admit=t_admit,
+            stl_path=stl_path, out_path=out_path, workdir=workdir, engine=engine,
+            native_engine=native_engine, schema=schema, native_unify=native_unify,
+            merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
+            n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
+            repair_info=repair_info,
+        )
+        handed_off = True  # the worker owns the admission slot from here on
+        try:
+            # Small models still answer in one round trip, exactly as before.
+            return fut.result(timeout=SYNC_WAIT_S)
+        except FuturesTimeout:
+            # Big ones get a ticket instead of a dead connection. A 64k-triangle gate
+            # needs 91s on an idle host and far longer on a busy one; no browser, proxy
+            # or patience survives holding a request open that long.
+            job = uuid.uuid4().hex
+            _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step"}
+            return {"ok": True, "pending": True, "job": job,
+                    "message": "Still converting — this model is large."}
+    finally:
+        # Every path out of the block above that is not a hand-off -- a bad
+        # mesh, an oversized model, a cut that removed everything, or a raise we
+        # did not foresee -- gives the slot straight back.
+        if not handed_off:
+            _release_admission()
+
 
 
 @app.get("/api/limits")
@@ -357,7 +750,8 @@ def job_status(job: str):
     try:
         return fut.result()
     except HTTPException as e:
-        raise HTTPException(e.status_code, e.detail) from None
+        # headers carry the Retry-After a backpressure refusal is worthless without
+        raise HTTPException(e.status_code, e.detail, headers=e.headers) from None
 
 
 
@@ -403,6 +797,66 @@ def download(token: str):
     return FileResponse(job["path"], media_type="application/step", filename=job["name"])
 
 
+_GUIDE = Path(__file__).parent.parent / "docs" / "USER_GUIDE.md"
+
+
+@app.get("/guide")
+def guide():
+    if not _GUIDE.exists():
+        raise HTTPException(404, "guide not found")
+    import markdown
+
+    body = markdown.markdown(
+        _GUIDE.read_text(encoding="utf-8"),
+        extensions=["tables", "fenced_code"],
+    )
+    css = (
+        ":root{color-scheme:dark}"
+        "body{background:#111114;color:#e8e8ea;font:16px/1.65 system-ui,sans-serif;margin:0}"
+        ".wrap{max-width:840px;margin:0 auto;padding:2rem 1.4rem 4rem}"
+        ".top{display:flex;align-items:center;gap:.7rem;margin-bottom:1.2rem}"
+        ".top img{height:34px}"
+        ".top .name{font:700 1.3rem 'Chakra Petch',system-ui,sans-serif}"
+        ".top .name span{color:#7dd87d}"
+        ".top a.back{margin-left:auto;color:#9db4ff;font-size:.9rem}"
+        "h1{font:700 2rem/1.2 'Chakra Petch',system-ui,sans-serif;margin:.2rem 0 1rem}"
+        "h2{font-size:1.35rem;margin:2.2rem 0 .6rem;border-bottom:1px solid #333;padding-bottom:.3rem}"
+        "h3{font-size:1.1rem;margin:1.6rem 0 .4rem}"
+        "a{color:#9db4ff}"
+        "table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.95rem}"
+        "th{background:#1d1d22;text-align:left}"
+        "th,td{border:1px solid #3a3a42;padding:.45rem .7rem;vertical-align:top}"
+        "tbody tr:nth-child(even){background:#161619}"
+        "pre{background:#0b0b0e;border:1px solid #2c2c33;border-radius:8px;padding:1rem;overflow-x:auto}"
+        "code{font-size:.88em;background:#1d1d22;padding:.1em .35em;border-radius:4px}"
+        "pre code{background:none;padding:0}"
+        ".mermaid{display:flex;justify-content:center;background:#16161b;border:1px solid #2c2c33;"
+        "border-radius:8px;padding:1rem}"
+        "hr{border:none;border-top:1px solid #333;margin:2rem 0}"
+        ".foot{margin-top:3rem;color:#888;font-size:.85rem}"
+    )
+    page = (
+        "<!DOCTYPE html><html lang=\"en\"><head>"
+        "<meta charset=\"UTF-8\" />"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />"
+        "<title>mesh2step — user guide</title>"
+        "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&display=swap\" />"
+        "<style>" + css + "</style>"
+        "</head><body><div class=\"wrap\">"
+        "<div class=\"top\"><img src=\"assets/native-research.svg\" alt=\"Native Research\" />"
+        "<span class=\"name\">mesh<span>2</span>step guide</span>"
+        "<a class=\"back\" href=\"./\">&larr; Back to the app</a></div>"
+        + body +
+        "<p class=\"foot\">mesh2step by Native Research — uploads are deleted after an hour.</p>"
+        "</div>"
+        "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js\"></script>"
+        "<script>mermaid.initialize({startOnLoad:false,theme:'dark'});"
+        "mermaid.run({querySelector:'code.language-mermaid'});</script>"
+        "</body></html>"
+    )
+    return Response(page, media_type="text/html; charset=utf-8")
+
+
 def _native_stats(res: dict, engine: str, schema: str) -> dict:
     """Map the native RESULT payload onto the stats keys the client renders.
 
@@ -418,6 +872,7 @@ def _native_stats(res: dict, engine: str, schema: str) -> dict:
     d = {
         "is_solid": solids > 0 and open_shells == 0,
         "watertight": res.get("watertight", False),
+        "free_edges": res.get("freeEdges", 0),
         "n_faces_built": n_faces_built,
         "volume": res.get("stepVolumeMM3", 0.0),
         "mesh_volume": res.get("meshVolumeMM3"),

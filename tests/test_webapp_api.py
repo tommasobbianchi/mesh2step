@@ -549,8 +549,11 @@ def test_conversions_are_bounded_so_retries_queue_instead_of_thrashing(client, c
             files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
             data={"engine": "faceted"},
         )
-        assert resp.status_code == 503, resp.status_code
+        # backpressure, not a server fault: 429 with a Retry-After the caller
+        # can actually obey, in the same plain voice as the triangle limit.
+        assert resp.status_code == 429, resp.status_code
         assert "busy" in resp.json()["detail"].lower()
+        assert int(resp.headers["Retry-After"]) >= srv.RETRY_AFTER_S
     finally:
         del srv._CONVERT_SLOTS.acquire
         for _ in acquired:
@@ -628,3 +631,148 @@ def test_the_limit_is_published_so_the_page_can_say_it_first(client):
     body = client.get("/api/limits").json()
     assert body["max_triangles"] == 120_000
     assert body["max_upload_mb"] == 200
+
+
+# --------------------------------------------------------------------------- #
+# admission control
+# --------------------------------------------------------------------------- #
+def test_a_full_queue_is_refused_at_once_instead_of_waiting_out_queue_wait(
+        client, cube_stl_bytes):
+    """The point of admission is that the answer arrives NOW.
+
+    Before it, a surge request wrote its upload to disk, joined an unbounded
+    executor queue and waited QUEUE_WAIT_S = 240s for a slot it was never going
+    to get. 429 + Retry-After is the same answer, immediately, and without the
+    file.
+    """
+    import webapp.server as srv
+
+    taken = [srv._try_admit() for _ in range(srv.MAX_ADMITTED_CONVERSIONS)]
+    assert all(ok for ok, _ in taken), "could not fill the admission queue"
+    try:
+        resp = client.post(
+            "/api/convert",
+            files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+            data={"engine": "faceted"},
+        )
+        assert resp.status_code == 429, resp.status_code
+        assert resp.headers.get("Retry-After"), "a refusal without Retry-After is a dead end"
+        assert srv.RETRY_AFTER_S <= int(resp.headers["Retry-After"]) <= srv.RETRY_AFTER_MAX_S
+    finally:
+        for _ in taken:
+            srv._release_admission()
+
+    # and nothing leaked: the very next request is served normally
+    ok = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    assert ok.status_code == 200, ok.status_code
+    assert srv._admission_depth() == 0, "an admission slot leaked"
+
+
+def test_admission_shrinks_when_conversions_are_measured_slower(client, cube_stl_bytes):
+    """The queue is sized on measured time, not on the time the constants assume.
+
+    A 19,042-triangle bench model measured >210s on this host against a 91s seed.
+    At 91s six may wait inside QUEUE_WAIT_S; at 210s only four can, and the fifth
+    must be refused rather than told to wait for a slot that arrives too late.
+    """
+    import webapp.server as srv
+
+    before = srv._convert_estimate_s
+    try:
+        srv._convert_estimate_s = 210.0
+        depth = 0
+        while srv._try_admit()[0]:
+            depth += 1
+            assert depth <= srv.MAX_ADMITTED_CONVERSIONS
+        assert depth < srv.MAX_ADMITTED_CONVERSIONS, (
+            "a slower engine must shrink the queue, not keep admitting to the cap")
+        assert srv._wait_estimate_s(depth) > srv.QUEUE_WAIT_S
+    finally:
+        for _ in range(depth):
+            srv._release_admission()
+        srv._convert_estimate_s = before
+
+
+def test_a_declared_oversize_upload_is_refused_before_the_body_is_read(client):
+    """Content-Length says it is too big; nothing should be spooled to disk."""
+    import webapp.server as srv
+
+    resp = client.post(
+        "/api/convert",
+        content=b"",
+        headers={"content-type": "multipart/form-data; boundary=x",
+                 "content-length": str(srv.MAX_UPLOAD_BYTES + 1)},
+    )
+    assert resp.status_code == 413, resp.status_code
+
+
+def test_the_registries_are_capped_not_merely_expired(tmp_path):
+    """TTL bounds how LONG an entry lives, not how many exist.
+
+    Each _JOBS entry also pins a workdir, so an uncapped registry is an uncapped
+    disk footprint; under a surge entries arrive far faster than an hour retires
+    them.
+    """
+    import webapp.server as srv
+
+    keep = dict(srv._JOBS)
+    srv._JOBS.clear()
+    try:
+        for i in range(srv.MAX_RETAINED_JOBS + 25):
+            d = tmp_path / f"w{i}"
+            d.mkdir()
+            (d / "out.step").write_bytes(b"x")
+            srv._JOBS[f"t{i}"] = {"path": d / "out.step", "name": "out.step",
+                                  "ts": 1000.0 + i}
+        srv._cap_registries()
+        assert len(srv._JOBS) == srv.MAX_RETAINED_JOBS
+        assert "t0" not in srv._JOBS, "eviction must take the oldest first"
+        assert f"t{srv.MAX_RETAINED_JOBS + 24}" in srv._JOBS, "the newest must survive"
+        assert not (tmp_path / "w0").exists(), "an evicted result must free its workdir"
+    finally:
+        srv._JOBS.clear()
+        srv._JOBS.update(keep)
+
+
+def test_pending_eviction_prefers_finished_tickets_over_running_ones(tmp_path):
+    """Dropping a running ticket loses work someone is still waiting on."""
+    import webapp.server as srv
+    from concurrent.futures import Future
+
+    keep = dict(srv._PENDING)
+    srv._PENDING.clear()
+    try:
+        running = Future()                      # never resolved: still converting
+        srv._PENDING["running"] = {"future": running, "ts": 0.0, "name": "a.step"}
+        for i in range(srv.MAX_PENDING_JOBS + 5):
+            f = Future()
+            f.set_result({"ok": True})
+            srv._PENDING[f"done{i}"] = {"future": f, "ts": 100.0 + i, "name": "b.step"}
+        srv._cap_registries()
+        assert len(srv._PENDING) == srv.MAX_PENDING_JOBS
+        assert "running" in srv._PENDING, "an in-flight conversion was evicted"
+        assert "done0" not in srv._PENDING, "the oldest finished ticket should go first"
+    finally:
+        srv._PENDING.clear()
+        srv._PENDING.update(keep)
+
+
+def test_the_disk_guard_refuses_when_free_space_cannot_cover_admitted_work(
+        client, cube_stl_bytes, monkeypatch):
+    """A full filesystem fails far worse than a refused request."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "_disk_free_bytes", lambda: srv.DISK_FLOOR_BYTES // 2)
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+        data={"engine": "faceted"},
+    )
+    assert resp.status_code == 429, resp.status_code
+    assert resp.headers.get("Retry-After")
+    assert "space" in resp.json()["detail"].lower()
+    assert srv._admission_depth() == 0, "the refused request kept its admission slot"

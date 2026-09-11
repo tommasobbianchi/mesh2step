@@ -11,3 +11,7 @@ __pycache__/
 # The parity oracle: golden solids from the stl2step reference engine. These are
 # the specification for v2 and must be versioned, unlike ordinary .step output.
 !tests/data/reference/*.step
+
+# local editor/tooling state, not project content
+.claude/settings.local.json
+.claude/settings.local.json*.bak

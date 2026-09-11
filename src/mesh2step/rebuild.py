@@ -9,14 +9,34 @@ necessary and nowhere near sufficient, so the band's faces decide.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from .canonize import DEFAULT_TOL_MM, find_circles
+from .intent import (
+    band_evidence,
+    classify,
+    face_normals,
+    model_tolerance,
+)
 
-MAX_AXIAL_GAP_MM = 0.5   # a wall with a hole this big in it is not one cylinder
+# A wall's facets share vertices, so a real cylinder's covered intervals butt up
+# against each other to fp precision. The only scale a gap may legitimately have is
+# the model's own chord error, so the threshold comes from the band's rim segments
+# rather than from a constant: 0.3mm between two blind holes used to slip under the
+# old MAX_AXIAL_GAP_MM = 0.5 and merge them into one 40mm bore that is mostly air.
+GAP_SAGITTA_FACTOR = 4.0
+MIN_AXIAL_GAP_MM = 1e-3
+
+
+def _axial_gap_tol(radius: float, segments: int) -> float:
+    if segments < 3:
+        return MIN_AXIAL_GAP_MM
+    sagitta = radius * (1.0 - math.cos(math.pi / segments))
+    return max(GAP_SAGITTA_FACTOR * sagitta, MIN_AXIAL_GAP_MM)
 
 
 @dataclass
@@ -119,15 +139,16 @@ def find_bands(step_path, *, tol_mm: float = DEFAULT_TOL_MM) -> list[CylinderBan
                 continue
             # the wall must be continuous: two rims of collinear holes in opposite
             # walls pass every test above and have a 38mm hole in the middle.
+            gap_tol = _axial_gap_tol(a.radius, min(a.segments, b.segments))
             covered.sort()
             reach = covered[0][1]
             for lo, hi in covered[1:]:
-                if lo - reach > MAX_AXIAL_GAP_MM:
+                if lo - reach > gap_tol:
                     reach = None
                     break
                 reach = max(reach, hi)
-            if reach is None or covered[0][0] > MAX_AXIAL_GAP_MM \
-                    or height - reach > MAX_AXIAL_GAP_MM:
+            if reach is None or covered[0][0] > gap_tol \
+                    or height - reach > gap_tol:
                 continue
             bands.append(CylinderBand(a.radius, tuple(base), tuple(axis), height, members))
     return sorted(bands, key=lambda b: -b.radius)
@@ -200,6 +221,28 @@ def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM) -> d
     w0.Write(str(merged))
 
     bands = find_bands(merged, tol_mm=tol_mm)
+
+    # Decide INTENT before touching geometry: a band whose chord error disagrees
+    # with the rest of the model is a designed polygon, and rebuilding it as its
+    # circumscribed cylinder invents material. Kept bands are warned about, never
+    # dropped silently -- a wrong rebuild is worse than no rebuild.
+    normals = face_normals(merged)
+    evidence = [band_evidence(b, normals=normals) for b in bands]
+    model_tol = model_tolerance(evidence)
+    decisions, warnings, accepted = [], [], []
+    for band, ev in zip(bands, evidence, strict=True):
+        verdict, reason = classify(ev, model_tol)
+        decisions.append({
+            "radius": ev.radius, "sides": ev.sides, "facets": ev.faces,
+            "sagitta": ev.sagitta, "model_tolerance": model_tol,
+            "verdict": verdict, "reason": reason,
+        })
+        if verdict == "rebuilt":
+            accepted.append(band)
+        else:
+            warnings.append(reason)
+    bands = accepted
+
     reader2 = STEPControl_Reader()
     reader2.ReadFile(str(merged))
     reader2.TransferRoots()
@@ -208,8 +251,11 @@ def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM) -> d
     TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
     if not bands:
         merged.unlink(missing_ok=True)
+        reason = ("every candidate band was kept faceted" if decisions
+                  else "no cylinder bands found")
         return {"bands": 0, "faces_before": fmap.Extent(), "faces_after": fmap.Extent(),
-                "ok": False, "reason": "no cylinder bands found"}
+                "ok": False, "reason": reason,
+                "decisions": decisions, "warnings": warnings}
 
     pt = lambda v: np.array([BRep_Tool.Pnt_s(v).X(), BRep_Tool.Pnt_s(v).Y(),  # noqa: E731
                              BRep_Tool.Pnt_s(v).Z()])
@@ -325,4 +371,6 @@ def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM) -> d
         "volume": float(props.Mass()),
         "valid": bool(BRepCheck_Analyzer(out).IsValid()),
         "ok": failed_n == 0,
+        "decisions": decisions,
+        "warnings": warnings,
     }

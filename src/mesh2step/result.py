@@ -25,7 +25,8 @@ class ParityResult:
     mesh_volume_mm3: float = 0.0
     step_volume_mm3: float = 0.0
     volume_delta_pct: float = -1.0
-    watertight: bool = True
+    watertight: bool = True   # n5h: measured on the written shape (free_edges == 0)
+    free_edges: int = 0       # edges with <2 adjacent faces in the written shape
     seconds: float = 0.0
     warnings: list = field(default_factory=list)
 
@@ -75,6 +76,7 @@ class ParityResult:
             step_volume_mm3=d.get("stepVolumeMM3", 0.0),
             volume_delta_pct=d.get("volumeDeltaPct", -1.0),
             watertight=d.get("watertight", True),
+            free_edges=d.get("freeEdges", 0),
             seconds=d.get("seconds", 0.0),
             warnings=d.get("warnings", []),
             smooth="facesAfterSmooth" in d,
@@ -114,6 +116,7 @@ class ParityResult:
             "stepVolumeMM3": self.step_volume_mm3,
             "volumeDeltaPct": self.volume_delta_pct,
             "watertight": self.watertight,
+            "freeEdges": self.free_edges,
             "seconds": self.seconds,
             "warnings": self.warnings,
         }
