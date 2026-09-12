@@ -313,3 +313,35 @@ that is a structural change to the adoption order, not a patch to the measuremen
 Not attempted here: it is a change to the shipping path's control flow, it needs its own spec
 and its own corpus A/B, and this arm is already seven rounds deep. `STL2STEP_N16_ORIENT_T4`
 stays in the tree, OFF, as the record of two refuted repairs.
+
+## 12. DEPLOYED — v1.4.0-n15arc, 2026-09-12
+
+Promoted on Tommaso's explicit instruction. Sole owner of the change: this session.
+
+```
+binary      md5 965bcd7a752a, built from a CLEAN tree -- STL2STEP_N12_FORCE_ADOPT
+            and STL2STEP_N12_DUMP_PROBE stripped before the build (grep count 0),
+            because FORCE_ADOPT bypasses the t4 safety gate and is marked never-ship
+install     ~/.local/share/mesh2step-native-v1.4.0-n15arc/{stl2step,lib,run.sh}
+            lib = the 31 frozen OCCT .so, copied from mesh2step-native/lib
+gate        run.sh exports P92 + P103 + N5F + N15_ARCS
+drop-in     ~/.config/systemd/user/mesh2step.service.d/native.conf
+rollback    native.conf.n5f-rollback (v1.3.0-n5f stays installed)
+```
+
+Pre-flight: unit active, zero conversions in the preceding 10 minutes, no `stl2step`
+process running.
+
+Gates re-run on the clean tree before promotion: normal 71.95 -> 71.95 (identical),
+fine 37.67 -> 50.13, valid closed solids 200/203 and 74/78 unchanged in both arms.
+Verified THROUGH `run.sh` on the installed binary, so the env gate is proven live and
+not merely compiled in: SOT-23 12, SOT-143 16, SuperSOT-3 12, TSOT-23 12,
+NEG_TO-263-9_TabPin5 19 (was 1).
+
+Post-deploy verification, driving the deployed service over the public API
+(`POST /api/convert` + `GET /api/job/{id}`) with Tommaso's own test part:
+`ok=true`, watertight, download token issued, 24.95 s. Old vs new on that part:
+both 0 cylinders, both watertight (327 vs 329 faces) -- no regression; the new engine
+attempts the analytic rebuild and reverts where the old never attempted.
+
+Rollback is one file copy and a restart.
