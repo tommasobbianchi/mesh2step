@@ -242,7 +242,7 @@ Note `li` is NOT used by the claim loop, which reads each band's own `b.R` and `
 The calibration is a cross-check that all bands obey ONE tessellation law, not an input
 to the geometry. Declining therefore throws away bands that are individually valid.
 
-## 13. n22 quorum bypass — REFUTED, the quorum is load-bearing
+## 13. n22 quorum bypass — I CALLED THIS REFUTED ON PARTIAL DATA. IT IS NOT.
 
 `STL2STEP_N22_NOQUORUM=1` skips all three wholesale declines in claimLawBandsL
 (`empty_cal` :3088, `nDLimited < 5` :3099, `wide_cal`) and claims the bands on their own
@@ -256,8 +256,36 @@ Measured on the user's parts (n21 on, v1.7.0 flags):
 | 26 | 1 | 0  |
 | 2  | 2 | 0  |
 | 34 | 3 | 6  |
+| 13 | 2 | **14** |
+| 15 | 5 | 5  |
+| **total** | **15** | **27** |
 
-Erratic and net-harmful: two models lose every cylinder. **Not shipped.**
+**Correction.** On the first four rows I recorded "erratic and net-harmful" and committed
+that verdict. The last two rows overturn it: the bypass nearly DOUBLES total cylinders
+(15 -> 27) with a 7x on model 13. It is high-variance, not harmful. Still not shipped,
+but for a different and now-understood reason.
+
+**Why the two zeros happen.** mechparts/2 with the bypass:
+
+```
+DIAG_LAWCLAIM_DONE accepted=5
+DIAG_REJECTS  regions=167 rejected=3 cylRegions=5 cylRejected=3 hist[VertexResidual*=3]
+explodes=0
+smoothCylinders=5  smoothBuiltCylinders=0  smoothRevertedComponents=1
+```
+
+Nothing explodes. The bypass admits lower-quality bands, 3 fail VertexResidual, the
+rebuild then fails the COMPONENT-level adoption test, and the whole component is
+reverted -- taking the 2 cylinders it had with the quorum on. These parts are a single
+manifold component, so adoption is all-or-nothing: one bad band costs every cylinder.
+Model 13 (2 -> 14) is the same change where adoption happens to pass.
+
+**This is pending item #2 from the original list**: replace the component-level volume
+verdict with per-region attribution (`collectResidualCulprits`, `faceVolumeContribution`,
+`regionChordVol`, `dVolPredicted` are already in the tree). With per-region adoption the
+3 bad bands would be dropped individually and the good ones kept, which converts n22
+from a gamble into a gain. That is the correct order of work: per-region adoption FIRST,
+then re-measure n22.
 
 The lesson corrects the reading in section 12: `DIAG_LAWDECLINE reason=empty_cal`
 names where model 8 STOPS, but removing that stop does not produce cylinders, so the
