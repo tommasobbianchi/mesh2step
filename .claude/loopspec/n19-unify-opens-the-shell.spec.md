@@ -422,3 +422,60 @@ exploded in the first place, or rebuild them after the shell question is settled
 
 Shipped cylinders on mechparts/9, 11, 22 remain **0**, and no part ships a torus.
 Live service is v1.6.0. Nothing from section 17 is deployed.
+
+## 18. n27 — the targeted explode was destroying VICTIMS, and a delegated executor refuted my premise
+
+Delegated to a DeepSeek executor via /opencode-orchestrate to bisect an apparent flag
+INTERACTION: with the four N27 flags on, L07_collar_normal dropped 1 cylinder -> 0, while
+(per Kimi's log) each flag alone was clean.
+
+**The executor refuted that premise.** It measured `B alone -> 0` five separate ways
+(script x3, manual, and a second binary) and said the stated fact was stale. There is no
+interaction: `{B}` = STL2STEP_N13_TARGETED_EXPLODE alone is the culprit, and every subset
+containing B fails while every subset without it ships 1. I had passed Kimi's number
+through without re-measuring it; the executor catching that is worth more than the fix.
+
+### Mechanism, cited
+
+On L07 the inner cylinder rid=4 (R=1.5, closed360) fails its face build and is exploded
+(refit_build.cpp:5323), leaving **10 free edges owned by 6 PLANE faces**. The targeted arm
+explodes every free-edge owner (:6109) -- but those planes are **victims**: their edges
+went free because the neighbouring cylinder was removed, not because they are defective.
+Exploding them makes the shell worse, **10 -> 152 free edges**, because
+uncollapseRegionChains/restoreShared dirty the shared vertex TShapes of the surviving R16
+cylinder rid=0. At recoverPass=1 the blanket explodeAll() (:6144) then wipes rid=0 and
+rid=3 -> 0 cylinders. The off path never touches the planes: its keepCyl else-branch
+(:6117-6128) explodes only the junk partial cylinder rid=3, and the shell closes.
+
+This is the pathology this codebase already recorded -- "of 160 exploded regions, 110 never
+failed a build". The targeted arm was written to cure it and reproduced it.
+
+### Fix (refit_build.cpp:6109-6130, inside the existing B gate)
+
+Skip a free-edge owner that borders, via any chain, a cylinder that is already exploded or
+is partial (non-360). The free edge is that cylinder's fault and exploding the victim
+cannot re-pair the boundary. `did` stays false and the existing blanket else-branch
+explodes the partial cylinder instead -- the same outcome as the off path. With B off the
+new code never executes.
+
+### Verified by me, not taken on trust
+
+| check | result |
+|---|---|
+| off-path L07_collar_normal | 1 cylinder (unchanged) |
+| off-path L08_pillow_block_normal | 5 cylinders (unchanged) |
+| **mechparts/22** | **0 -> 3 cylinders, ok:true, watertight:true** |
+| mechparts/9, 11, 15, 8 | (in progress) |
+| cadbench normal+fine A/B | (in progress; gates 73.67 / 50.13) |
+
+mechparts/22 is the first genuine cylinder recovery on the user's curved parts this
+session, independently reproduced.
+
+### The four N27 flags
+
+| flag | change |
+|---|---|
+| STL2STEP_N27_SEW_TOL_MM | N13_SEW_FREE sewing tolerance override; the default was Precision::Confusion()*100 = 1e-5 mm, six orders below the 0.05-0.07 mm duplicate distance, which is why sewing merged nothing |
+| STL2STEP_N13_TARGETED_EXPLODE | arm decoupled from `did` so it runs at all, PLUS the victim skip above |
+| STL2STEP_N27_T4_REL | t4 budget floor max(budget, frac*meshVol); part 22's realized dV=779 vs budget=90 while the fits predicted only 24.4 |
+| STL2STEP_N27_SEW_FIXFACE | ShapeFix_Face per invalid sewn face, with closure+validity re-check and built[] remap |
