@@ -190,3 +190,54 @@ treated identically.
 
 Also note `builtFi += st.fillets` (stl2step.cpp:1409) copies the PLANNER's count, so
 `smoothBuiltFillets` overstates what was built; only `builtCy` counts real faces.
+
+## 11. n21 coarse-arc rejection — shipped as an explicit TRADE (v1.7.0)
+
+`sagitta/radius > 0.05` on cylinder regions, `STL2STEP_N21_SAGRATIO`.
+
+**The discriminator does not discriminate.** Measured drop lines:
+
+```
+L10_nut_housing_normal:  R=2.0000  sag=0.585786  ratio=0.2929  nTri=2   (x5)
+mechparts/15:            R=10.0000 sag=2.928932  ratio=0.2929  nTri=2   (x6)
+```
+
+Identical shape -- a 90 deg arc in two facets -- differing only in radius, and sagitta/R
+is scale-free. So the gate is really "reject 2-triangle quarter-cylinders", and raising
+the threshold to 0.10/0.15/0.20/0.25 changes nothing on either model (all sit at 0.2929).
+
+| | without | with |
+|---|---|---|
+| mechparts/15 | 1 cyl | 5 cyl |
+| L10_nut_housing_normal | 9 matched | 5 matched |
+| corpus normal | 73.67 | 74.74 (prec 91.93->94.97, built 347->338) |
+| corpus fine | 50.13 | 50.51 (prec 96.08->96.81) |
+| valid closed solids | 200/203, 74/78 | 202/203, 76/78 |
+
+Every aggregate improves; one corpus model pays. Shipped on that basis, env-gated.
+
+**Refuted refinement, do not retry blind:** a contagion form -- drop the coarse patch
+only when an edge-adjacent accepted cylinder is >= 10x finer -- fires on NEITHER model.
+The coarse patches are not edge-adjacent to the fine bands, so the damage travels by
+some other coupling, which is still unidentified.
+
+## 12. The other recall cause: the calibration quorum (model 8)
+
+Model 8 loses nothing -- `DIAG_REJECTS regions=175 rejected=0 cylRegions=2`, zero
+explodes. The law-band stage simply refuses to report:
+
+```
+DIAG_LAWCOST    seedsOk=432 acceptCalls=61344 triVisits=9041271 maxMembers=144
+DIAG_LAWCAL     dLo=0 dHi=0 nD=3 nA=0 empty=1
+DIAG_LAWDECLINE reason=empty_cal nCand=4
+```
+
+61,344 accept calls and 9M triangle visits are computed and then discarded.
+refit_grow.cpp:3088 (`empty_cal`) and :3099 (`nDLimited < 5`) both `return true` without
+claiming anything. The comment states the provenance: "handle-lock has 14 ... fewer than
+5 is a foreign/partial component (Body11's in-band leftover accepted nD=2)" -- constants
+read off cadbench, which has many chains per part. Real machined parts have few.
+
+Note `li` is NOT used by the claim loop, which reads each band's own `b.R` and `b.N`.
+The calibration is a cross-check that all bands obey ONE tessellation law, not an input
+to the geometry. Declining therefore throws away bands that are individually valid.
