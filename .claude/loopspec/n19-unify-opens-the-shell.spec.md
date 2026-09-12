@@ -376,3 +376,49 @@ and zero triangles with two. Verified against the engine's own vertex count (888
 Model 9 is the clearest target in the whole corpus: **98 cylinder regions recognised, 98
 planned, ZERO built**, and the component is adopted anyway. Recognition is not the
 bottleneck there; face building is. That is where the next session starts.
+
+## 17. The cascade is a DISPROPORTIONATE RESPONSE, measured — and four fixes that did not land
+
+The decisive measurement (STL2STEP_N25_DIAG, added because DIAG_PARTIAL_EDGE was
+misread as a failure count when it is a per-edge trace of the diagnostic walk,
+refit_build.cpp:2061):
+
+```
+mechparts/9:  N25_CHAINFAIL chains=11498 failed=69 regionsHit=129 recoverPass=0
+              DIAG_EXPLODE x3777   cylRegions=98  built=0  shipped=0
+```
+
+**69 of 11,498 chains fail (0.6%).** The targeted arm explodes the 129 regions owning
+them; the shell still does not close; recoverPass 1 and 2 then call explodeAll() and
+level all 3,777 analytic regions -- 98 correctly built cylinders included -- to chase 69
+bad chains. Chain construction is 99.4% successful. **The response is the defect, not the
+geometry.** This retires the "mass edge-construction failure" reading entirely.
+
+### Attempts, all instrumented, none successful
+
+| # | change | fired? | result |
+|---|---|---|---|
+| 1 | U2 cascade brake (STL2STEP_N24_U2_BRAKE) | **no** — N24_U2_REACHED=0 | decideCascade's U2 path never executes on mechparts/9. Wrong code path. |
+| 2 | STL2STEP_N13_TARGETED_EXPLODE (pre-existing) | **no** — N13_TARGETED=0 | unreachable: the block is `if (!did && n13Targeted)` (:5921) and the chainEdgeFail arm above it already set did=true. |
+| 3 | blanket brake (STL2STEP_N26_NO_BLANKET) | **yes** — held=1 | explodes 3777 -> 157, **cylinders still 0**: refusing to explode leaves did=false, falls to heal-discard, whole build discarded. Predicted before writing it, then measured. |
+| 4 | + keep built faces on that exit (n26b) | **yes** — kept=1 | ok:true, watertight:true, freeEdges=0, **cylinders still 0**: by the time the brake engages the cylinders were already exploded in the first targeted pass. Keeping the build is too late. |
+
+The lesson from 3 and 4 together: the damage is done at recoverPass=0 by the *targeted*
+arm plus the rebuilds, not only by the blanket. Any fix must stop the cylinders being
+exploded in the first place, or rebuild them after the shell question is settled.
+
+### Second opinion (Kimi), findings that stand on their own
+
+- mechparts/9 has **541 free edges**; N13_SEW_FREE sews 26,533 faces and reports
+  `closed=0 accepted=0`. They are NOT duplicate TShapes a sewing pass can merge at
+  Precision::Confusion()*100. Sewing is a dead end for this part.
+- mechparts/22's t4: realized `dV=779` against `budget=90`, and budget = max(1e-4*meshVol,
+  3*dVolAbs) = 90.28 implies the fits predicted **dVolAbs < 30 mm^3**. The analytic fits
+  mispredicted their own volume effect by ~26x. That is a defect in dVolPredicted, not a
+  tolerance to widen -- and it means a "realized vs predicted" gate would be principled
+  only once dVolPredicted is trustworthy.
+
+### Still true after all of it
+
+Shipped cylinders on mechparts/9, 11, 22 remain **0**, and no part ships a torus.
+Live service is v1.6.0. Nothing from section 17 is deployed.
