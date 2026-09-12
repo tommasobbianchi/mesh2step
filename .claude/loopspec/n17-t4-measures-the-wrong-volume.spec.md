@@ -142,3 +142,31 @@ deployed v1.4.0, and n17 all identical, and `t4 passes it` (`reverted=0`). n18 m
 So t4, today, **rejects a component whose shipped file is 0.011 % correct and accepts one that
 is 15 % wrong.** That is the clearest statement of why its input, not its budget, is the
 defect. Filed as the next target; not introduced by this work.
+
+## DEPLOYED — v1.5.0-n17n18, 2026-09-12
+
+```
+binary    md5 dea8fcad84bc, clean tree (N12_FORCE_ADOPT, N12_DUMP_PROBE and
+          DUMP_WRITE all grep-verified absent before the build)
+install   ~/.local/share/mesh2step-native-v1.5.0-n17n18/{stl2step,lib,run.sh}
+gate      run.sh exports P92 + P103 + N5F + N15_ARCS + N17_ROUNDTRIP_T4 + N18_ARCCOV=29
+rollback  native.conf.n15arc-rollback (v1.4.0-n15arc stays installed)
+```
+
+Pre-flight: unit active, no conversions in the preceding 5 minutes, no `stl2step` running.
+Gates re-run on the clean binary: normal 71.95 -> 73.40, fine 50.13 unchanged, valid closed
+solids 200/203 and 74/78 unchanged. Sentinels verified THROUGH `run.sh` on the installed
+binary: 12 / 16 / 12 / 12.
+
+Post-deploy, the deployed engine on Tommaso's own part:
+`cyl=2 (R=11.5882, R=13.7518) reverted=0 watertight=True volErr=0.0106 %`
+against a reference STEP of 11.6 / 13.8 — where every engine before v1.5.0 shipped none.
+Public API end to end: `ok=true`, watertight, download token, 24.4 s.
+
+### Follow-up found during verification (cosmetic, not a regression)
+
+The webapp still emits `verification: STEP volume deviates 2.231912% from source` on this
+part. That warning is computed against the same in-memory B-Rep number this spec shows to be
+unreliable, so it now contradicts the file it describes (the written STEP is 0.0106 % off the
+mesh). The warning text should be driven by the re-read volume, which the engine already
+computes. Filed; not fixed here.
