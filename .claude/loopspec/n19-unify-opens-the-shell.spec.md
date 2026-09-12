@@ -465,8 +465,12 @@ new code never executes.
 | off-path L07_collar_normal | 1 cylinder (unchanged) |
 | off-path L08_pillow_block_normal | 5 cylinders (unchanged) |
 | **mechparts/22** | **0 -> 3 cylinders, ok:true, watertight:true** |
-| mechparts/9, 11, 15, 8 | (in progress) |
-| cadbench normal+fine A/B | (in progress; gates 73.67 / 50.13) |
+| mechparts/9 | 0 -> 0 (unmoved) |
+| mechparts/11 | 0 -> 0 (unmoved) |
+| mechparts/15 | 1 -> 1 (no regression) |
+| mechparts/8 | 2 -> 2 (no regression) |
+| cadbench normal | 73.67 == 73.67, health 200/203 both, 0 models better or worse |
+| cadbench fine | 50.13 == 50.13, health 74/78 both |
 
 mechparts/22 is the first genuine cylinder recovery on the user's curved parts this
 session, independently reproduced.
@@ -479,3 +483,34 @@ session, independently reproduced.
 | STL2STEP_N13_TARGETED_EXPLODE | arm decoupled from `did` so it runs at all, PLUS the victim skip above |
 | STL2STEP_N27_T4_REL | t4 budget floor max(budget, frac*meshVol); part 22's realized dV=779 vs budget=90 while the fits predicted only 24.4 |
 | STL2STEP_N27_SEW_FIXFACE | ShapeFix_Face per invalid sewn face, with closure+validity re-check and built[] remap |
+
+## 19. v1.8.0 deploy record
+
+`~/.local/share/mesh2step-native-v1.8.0-fc0d7911ba1b`, md5 fc0d7911ba1b.
+Rollback chain: native.conf.v180-rollback (v1.6.0), .v170-rollback, .v160-rollback.
+Gates proven live through run.sh (mechparts/22 cyl=3). API end-to-end: ok:true,
+is_solid, watertight, free_edges=0, 1338 faces, 22.61 s.
+
+Engine patch: .claude/loopspec/patches/n19-n27-engine-arms.patch
+Kimi's lane document: .claude/loopspec/FINDINGS-N27-kimi.md
+
+### What is honestly fixed, and what is not
+
+Fixed: the t4-revert class (mechparts/22) and the victim-plane cascade that cost
+L07_collar its only cylinder. Corpus cost: zero.
+
+NOT fixed: mechparts/9 and /11 still ship 0 cylinders despite recognising 98 and 56
+cylinder regions respectively. Both are blocked on shell closure, and for part 9 sewing
+is provably not the answer (N13_SEW on 26,533 faces: closed=0 accepted=0 -- the 541 free
+edges are not duplicate TShapes at any tolerance tried). 37 of the 40 user parts remain
+unmeasured for cylinder count.
+
+### The pattern, stated once because it recurred three times today
+
+The engine destroys valid geometry while reacting to small localised faults:
+ - 0.6% of chains fail (69 of 11,498) -> 3,777 regions exploded, 98 built cylinders lost;
+ - one 2-triangle 90-degree patch carries an honest 2.93 mm sagitta -> four 144-sided
+   bores fitting to 0.0002 mm are exploded;
+ - six plane faces own free edges they did not cause -> free edges 10 -> 152 -> the whole
+   collar reverts.
+Every fix that worked today was a proportionality fix, not a geometry fix.
