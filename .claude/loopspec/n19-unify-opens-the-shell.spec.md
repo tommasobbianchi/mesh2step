@@ -241,3 +241,57 @@ read off cadbench, which has many chains per part. Real machined parts have few.
 Note `li` is NOT used by the claim loop, which reads each band's own `b.R` and `b.N`.
 The calibration is a cross-check that all bands obey ONE tessellation law, not an input
 to the geometry. Declining therefore throws away bands that are individually valid.
+
+## 13. n22 quorum bypass — REFUTED, the quorum is load-bearing
+
+`STL2STEP_N22_NOQUORUM=1` skips all three wholesale declines in claimLawBandsL
+(`empty_cal` :3088, `nDLimited < 5` :3099, `wide_cal`) and claims the bands on their own
+individual evidence, since the claim loop reads `b.R`/`b.N` and never touches `li`.
+
+Measured on the user's parts (n21 on, v1.7.0 flags):
+
+| model | quorum on | bypassed |
+|---|---|---|
+| 8  | 2 | 2  (no help -- and this was the model that motivated it) |
+| 26 | 1 | 0  |
+| 2  | 2 | 0  |
+| 34 | 3 | 6  |
+
+Erratic and net-harmful: two models lose every cylinder. **Not shipped.**
+
+The lesson corrects the reading in section 12: `DIAG_LAWDECLINE reason=empty_cal`
+names where model 8 STOPS, but removing that stop does not produce cylinders, so the
+suppression on model 8 is downstream of the claim, not at the quorum. The comment's
+cadbench provenance ("handle-lock has 14") made the constant look like a stale artefact;
+it is not -- global tessellation-law consistency is doing real work, and without it bands
+that individually pass go on to destroy each other.
+
+Next investigation should start by asking where model 8's 4 candidate bands die AFTER
+being claimed (n18 arc coverage, n21 coarse-arc, or the commit path), not at the quorum.
+
+## 14. Session ledger — what is shipped, what is refuted
+
+Shipped and live:
+- v1.6.0: law-band serial residual (1.4-2.1x on real parts, geometry bit-identical),
+  n19 first-unify closure guard (a model that shipped NO FILE now ships a valid solid).
+  Six corpus arms neutral.
+- v1.7.0: n21 coarse-arc rejection, an explicit trade (+1.07 normal, +0.38 fine,
+  mechparts/15 1->5, L10_nut_housing_normal 9->5).
+
+Refuted this session, with numbers, so they are not retried:
+1. L08_pillow_block ships 15.06% volume error -- does not exist; 203 normal + 281 fine
+   models all within 0.05%. It was the in-memory figure n17 already discredited.
+2. The ungated fprintf at refit_fillet.cpp:772 dominates runtime -- 28 lines per run.
+3. Seed triples explode combinatorially on real parts -- mechparts/29 has 367, the FAST
+   corpus model L04_pillow has 4944.
+4. n20 seed dedup -- cuts work, costs mechparts/15 its only cylinder.
+5. ShapeFix opens the shell -- free edges do not rise across fix.Perform(); it was unify.
+6. n21 contagion form -- fires on neither model.
+7. n22 quorum bypass -- above.
+
+Still open:
+- The ungated fprintf at refit_fillet.cpp:772 (cosmetic, real).
+- Models 29, 31, 3, 5 ship ZERO cylinders; cause not yet isolated.
+- 3 of the 40 user parts exceed the 120k-triangle app limit (12, 23, 39).
+- The coupling by which a coarse patch destroys a well-tessellated neighbour is still
+  unidentified -- it is not edge adjacency.
