@@ -323,3 +323,56 @@ Still open:
 - 3 of the 40 user parts exceed the 120k-triangle app limit (12, 23, 39).
 - The coupling by which a coarse patch destroys a well-tessellated neighbour is still
   unidentified -- it is not edge adjacency.
+
+## 15. n21 WITHDRAWN from production — validated on the wrong population
+
+Deployed 16:25, rolled back 17:15. Measured on mechparts/11 (98% curved by area):
+
+```
+n21 OFF: cylRegions=56  ChordConsistency*=119   (the pre-existing G3 gate)
+n21 ON : cylRegions=6   ChordConsistency*=169   N21_COARSE dropped=50
+```
+
+**It removes 89% of the recognised cylinder regions on the user's most cylindrical
+part.** Shipped output is 0 either way today (the build fails separately), so nothing
+visible broke -- but the regions are destroyed before the build is reached, so the moment
+the build is fixed n21 would suppress the gain.
+
+Its only demonstrated benefit was mechparts/15, 1 -> 5, on a part that is **7.8% curved**.
+The +1.07 corpus gain is real and reproducible and still does not justify it, because
+cadbench does not resemble these parts.
+
+**The process failure, not the code failure.** The six models I tuned on -- 15, 8, 26, 2,
+34, 13 -- were chosen by a census that sorted by FILE SIZE, so it began with the smallest
+parts, which are also among the least curved. Curvature measured from the mesh alone
+(dihedral 0.3-25 deg):
+
+| part | curved % | | part | curved % |
+|---|---|---|---|---|
+| 11 | 98.1 | | 15 | 7.8 |
+| 23 | 91.4 | |  8 | 4.8 |
+| 25 | 92.9 | | 34 | 19.7 |
+| 9  | 88.0 | |  2 | 42.4 |
+
+Median across 39 parts: **59%**. Every recall decision of the session was taken on parts
+at the bottom of that distribution. Order the work by the property under study, never by
+whatever the filesystem hands back first.
+
+A second instrument bug nearly compounded it: the first curvature pass required TWO
+smooth edges per triangle and reported these parts as 0.0% flat, which would have
+"confirmed" that 1-2 cylinders was correct. A cylinder tessellated as quad strips gives
+each triangle exactly ONE smooth edge -- mechparts/15 has 432 edges in the 0.3-5 deg band
+and zero triangles with two. Verified against the engine's own vertex count (888 unique,
+"0 welded") before believing either number.
+
+## 16. What the curved parts actually fail at — three distinct mechanisms
+
+| model | curved | regions | rejected | built | shipped | cause |
+|---|---|---|---|---|---|---|
+| 11 | 98% |  6 | 205 | 0 | 0 | `buildFaces-false exit=none line=6038` |
+| 9  | 88% | 98 | 444 | 0 | 0 | `counted-not-reverted usedRefit=true cyls=0`; VertexResidual*=210 |
+| 22 | 77% |  3 |   0 | 0 | 0 | t4 volume revert: `dV=779.43 budget=90.29` |
+
+Model 9 is the clearest target in the whole corpus: **98 cylinder regions recognised, 98
+planned, ZERO built**, and the component is adopted anyway. Recognition is not the
+bottleneck there; face building is. That is where the next session starts.
