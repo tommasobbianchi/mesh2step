@@ -82,3 +82,63 @@ LD_LIBRARY_PATH=$L:/snap/freecad/current/usr/lib:/snap/freecad/current/usr/lib/x
 ```
 `STL2STEP_DUMP_WRITE=<path>` (added to the worktree, NOT in the deployed v1.4.0 binary) dumps
 the exact shape handed to the writer, which is what made the comparison possible.
+
+## The fix, measured: round-trip the probe (n17) + arc-coverage gate (n18)
+
+### n17 — ask the authoritative measure when the cheap one fails
+
+`STL2STEP_N17_ROUNDTRIP_T4`: when `|shellVol - meshVol| > budget`, serialise the probe
+through the same writer/reader the customer's file goes through and re-test with the
+**same budget**. Only components the cheap test already rejected pay the cost.
+
+On `Mesh2step_test01` it rescues the component outright:
+```
+N17_ROUNDTRIP rescued root=743 inMemory=132545.8350 roundTrip=135793.0910
+              mesh=135807.5086 budget=31.5173
+-> ships 2 cylinders at R=11.5882 and R=13.7518 against a reference STEP's 11.6 / 13.8,
+   volume 0.011 % off the mesh, watertight, no revert (baseline ships 0)
+```
+
+Corpus, n17 alone on top of the deployed N15: normal 71.95 -> 71.57, recall 60.42 -> 61.00
+but precision 88.92 -> 86.58 (built 352 -> 365, matched 313 -> 316). The whole precision cost
+is ONE model: `L10_cross_slide` ships 11 cylinders where truth has 4 faces at R=2.0 --
+1x R=2.0 (the match), 1x R=7.2111, **7x R=7.2539**, 2x R=9.7021. One curved wall sliced into
+narrow strips: volume right, radii invented. `L06_slotted_plate` is a pure gain (0 -> 2 built,
+0 -> 2 matched).
+
+### n18 — the arc-coverage gate that removes exactly those strips
+
+`STL2STEP_N18_ARCCOV=29` (ScanRuler's constant, restated mechanism only): drop a partial
+cylinder whose span is under ~30 degrees, because over that span the arc is barely curved and
+the radius and axis are guesses. `closed360` regions are exempt by definition.
+
+```
+cross_slide     11 faces -> 3   (all eight at R=7.21/7.25 dropped, the R=2.0 match kept)
+slotted_plate    2 faces -> 2   (untouched)
+at 45 deg        cross_slide -> 0, i.e. it also kills the real R=2.0 -- 29 is the right value
+```
+
+### Both together, corpus A/B against the DEPLOYED v1.4.0 (N15 on in both arms)
+
+```
+normal 203   A 71.95 (r 60.42  p 88.92  m 313  built 352)
+             B 73.40 (r 60.89  p 92.40  m 316  built 342)      +1.45
+             valid closed solids 200/203 in both
+             better L09_crank_arm 2 -> 4 | WORSE L08_pillow_block 5 -> 4
+fine 78      A 50.13 / B 50.13, identical
+sentinels    SOT-23 12 / SOT-143 16 / SuperSOT-3 12 / TSOT-23 12, unchanged
+```
+
+Recall AND precision both rise, and the built count FALLS 352 -> 342: fewer faces, more of
+them real. Shipped-volume error on the changed models: `slotted_plate` 0.0113 %,
+`cross_slide` 0.0341 %, `crank_arm` 0.1217 %.
+
+### One large volume error found, and it is PRE-EXISTING
+
+`L08_pillow_block` ships at **15.06 % volume error with no flags at all** — baseline,
+deployed v1.4.0, and n17 all identical, and `t4 passes it` (`reverted=0`). n18 moves it to
+15.22 % while dropping 5 of its 10 cylinders.
+
+So t4, today, **rejects a component whose shipped file is 0.011 % correct and accepts one that
+is 15 % wrong.** That is the clearest statement of why its input, not its budget, is the
+defect. Filed as the next target; not introduced by this work.
