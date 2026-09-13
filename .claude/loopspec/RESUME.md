@@ -1211,3 +1211,14 @@ This points to wire assembly (a missing Reversed() for one side of a boundary ch
 User: "an accurate semantic description from a vlm would be very helpful ... by drawing cylinders without messing with multiple tiny triangle bad fittings" / "you are proving that the microscopic way is worser than a macroscopic sense of shape". Renders: sem/p9_{iso,iso_back,top,bottom,front,side}.png. Reading: part 9 is a FLAT SPLINED RING, bbox 114.3 x 114.2 x 20 mm, centre about (3066.2, 2090.9). A central bore (radius about 39) with one rectangular keyway notch; an outer ring with 10 rectangular teeth; small edge breaks on the top and bottom edges. All faces are extrusions along Z.
 Checked against the engine's recognition (N91_FACE on n97d): 97 cylinder regions, total mesh area 179.8 mm2, radii scattered 0.2-23.7 (no cluster), none closed360. The bore alone should be about 2*pi*39*20 = 4,900 mm2. So the engine recognised NONE of the real cylinders (bore, outer ring arcs). Its "cylinders" are noise fits on edge-break strips, and the whole sewing/fold investigation (CB-DG) was patching around those. The micro path is abandoned for this part.
 Plan: slice the mesh at mid-height (and near z=0/20 for edge breaks), read each loop as lines + arcs (equal-chord/equal-turn, i.e. circle fits), then build the solid from features (extruded profile, bore, teeth, keyway, edge breaks) in OCP, valid by construction, and validate against the mesh. Script: sem/slice.py.
+
+## DI — part 9 measured as features from slices; the edge break is an exact R2 fillet (2026-09-13)
+sem/slice9.out and sem/profile9.out, centre (3066.215, 2090.868), with bore and root arcs fitting within 0.008 mm:
+- Ring thickness 20.
+- Bore R 37.338 (constant for z 2-18).
+- Keyway: width 17.78 (half 8.89), flanks 4.12, bottom at 40.38 from the centre, towards +Y.
+- Outer root arcs R 51.556 (10 arcs of 16.1 deg each).
+- 10 rectangular teeth: width 17.78, flat tops at 57.15 (= bbox half-size 114.3/2), flanks 6.36, 36 deg pitch starting at +X (the y extent 114.2 matches the corner of the 72 deg tooth).
+- Edge breaks: bore extra radius against z is 1.128 / 0.677 / 0.268 / 0.064 at z = 0.2 / 0.5 / 1.0 / 1.5, i.e. rho - sqrt(rho^2 - (rho - z)^2) with rho = 2.000 exactly. The same holds on the root and mirrored at the top: an R2 fillet on every edge of the top and bottom faces. Vertical edges are sharp at z = 10.
+Minor unexplained: 160 deg R 3.248 arcs at three spots near z = 1 and z = 19.
+Next: sem/build9.py, a CSG model (root cylinder + 10 tooth boxes, minus bore + keyway, unify, R2 fillets on the top and bottom edges) validated for validity, volume against the mesh, vertex distance, and STEP round trip.
