@@ -982,7 +982,9 @@ BQ. **First STEP of part 9 carrying cylinders -- 97 CYLINDRICAL_SURFACE -- but t
    **n81 (+N50_TRIMROT, no N82): the three faces are fixed but face building gives up (binary 308e69ded0e9).** N80 ratios rid 445
    0.979, 838 1.058, 388 0.989 (face area sum 164.8 vs mesh 179.8; all 97 within 1.5x). DIAG_REVERT decision=REVERT builtFaces=0
    firstFail=t1_bfReturnedAndNonEmpty, cause "buildFaces-false exit=none line=7055 regions=3777". N50 changes the recovery flow
-   enough that buildFaces returns false; the exit at refit_build.cpp:7055 is being read.
+   enough that buildFaces returns false. refit_build.cpp:7055 is the site-B discard: the shell is CLOSED but invalid and
+   `if (plan.hostR2 || cascadeSt.u2Done || !shValid) { ... restoreShared(); out.clear(); return false; }` -- the culprit
+   ladder was exhausted without making it valid. n84 reruns with N50 + N82 + N64_VALID_DIAG + N67/N24 ladder diagnostics.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
