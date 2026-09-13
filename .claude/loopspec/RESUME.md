@@ -914,6 +914,16 @@ BJ. **n74: the combined fix set is neutral on the live-release regression parts 
      part 22: live 3 / 3 -> new 3 / 3. All six runs: crashed 0, solids 1, watertight, volumeDeltaPct 0.
    No crash and no lost cylinder on the parts v1.8.0 was validated against. Corpus gate still to run once part 9 ships.
 
+BK. **n75: orientation-aware volume (STL2STEP_N16_ORIENT_T4) gives the SAME shell volume on part 9 -- not a sign error; the
+   1669.6 mm3 shortfall is real (binary afb4d2dc0e0d, n71 flags + DIAG_REVERT + N16_ORIENT_T4).** decision=REVERT builtCyl 97
+   builtPl 28103 firstFail t4_volumeBudget, t1-t3 = 1, shellVol 96169.0163 (identical to n73), meshVol 97838.6286, budget 97.84.
+   Hypothesis (to measure, not assume): expected tessellation sagitta. Coarse cylinders on part 9 have nSides 13-16 and
+   chordSag 0.19-0.29 mm (DIAG_FBF rows); facets lie inside the true arc, so for holes/concave fillets (material outside) the
+   analytic surface removes material the chordal mesh kept. Rough size: ~340 mm2 x ~0.17 mm x ~30 coarse cylinders ~ 1.7e3 mm3.
+   The budget's predicted term uses dVolAbs 15.59 (term B 46.8), so it may not model chord sagitta at all. Next n78: per
+   cylinder region, sum over its mesh triangles of area x radial deviation of the triangle centroid from the fitted cylinder,
+   signed by outwardNormal -- compare the total with dV 1669.6. If it matches, the fix is the prediction, not the tolerance.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
