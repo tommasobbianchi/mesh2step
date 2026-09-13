@@ -1405,3 +1405,7 @@ User pointer: "opencode has a vision model ... from deepseek family". Tests via 
 - p9 keyway: KEYWAY=yes, correct. 9 s.
 - Categories on 8 known parts, 7-12 s each: 9 A, 26 C, 16 D, 1 E, 34 B, 38 C, 22 A all correct; 4 answered A (truth B, a stepped claw plate) wrong. 7/8, with sound reasons (for example "34: raised central region ... stepped-down lower tongue").
 Local qwen3-vl:30b on the 3090 scored 4/8 and miscounted teeth (8, then 12). Decision: DeepSeek vision is the semantic reader. Local qwen VL is unloaded, leaving the 3090 free. Next: DeepSeek category + feature list for all 39 parts, feeding the routing to reconstruction methods.
+
+## EJ — p14 STEP invalidity is not coordinate magnitude, precision or pcurves: STEP translation itself breaks 25 faces (2026-09-13)
+sem/stepexp.py on the valid in-memory shape (p14_mem.brep): in memory valid (1 solid); BREP round trip valid; STEP as-is 25 UnorientableShape faces; translated to origin before writing 26; write.precision.mode=1 25; write.surfacecurve.mode=0 (no pcurves) 25. Refuted: coordinate magnitude, writer precision mode, pcurve writing. The OCCT native BREP keeps it valid, so the STEP face/wire representation is losing orientation. Next suspect: planar faces with several disjoint outer loops or touching inner loops, produced by the level fusion/unify, which STEP FACE_OUTER_BOUND/FACE_BOUND cannot express. Wire census running.
+Note: the SauronsEye-style qwen3-vl:8b got loaded on nativedev (11.4 GB) by another client after the 30b was unloaded; left alone.
