@@ -1540,3 +1540,25 @@ conefit22.py on the 58,277 mm2 "other" patch: the smallest-variance direction of
 ## FF — p22: a 5 deg join threshold changes nothing; smooth blends need fit-residual region growing (2026-09-13)
 featmap with JOINDEG=5 on p22: identical patches (58,277 mm2 / 22,200 triangles "other"; 31,736 "other"; 3 holes R 14.288). On a finely tessellated smooth surface every neighbouring dihedral is small, so dihedral-threshold connectivity cannot separate large blends/fillets from the faces they join. Separating them needs region growing on surface-fit residual (plane/cylinder/cone/torus); that is segmentation-engine work, not a threshold. p22 parked with this note.
 Session state: 29 of 39 solved and FreeCAD-verified (tools/feature_recon/out). Open tail: 2, 4 (tapers inside stepped levels), 1, 3 (multi-axis bosses/overhangs), 14, 39 (level-junction slivers vs STEP), 16, 27 (full-round construction), 22 (smooth blends), 6 (damaged mesh). Integration into the mesh2step product path has not started; decision requested from the user.
+
+## FG — feature pass integrated behind MESH2STEP_FEATURE; quad classifier; region growing (2026-09-13 evening)
+- src/mesh2step/feature.py + webapp hook (_feature_upgrade, engine first, 1h ceiling, process group kill). OFF by default.
+- v1 (pre-engine, shape gate only) cadbench normal: CADScore 73.14 -> 43.86, 18 models worse. Cause: extrusion builds turn
+  real cylinders into planes (L01_cylinder), stepped builds invent staircase cylinders on cones/spheres/blends. REFUTED.
+- v2 (engine first; feature build replaces it only if valid, dV<=1%, dist p95<=0.5% diag, MORE cylinders than the engine,
+  and >=35% of its cylinders supported by quad-detected mesh cylinders): cadbench normal CADScore 73.14 -> 76.02
+  (recall 61.9 -> 77.1, precision 89.4 -> 75.0), matched +143, unmatched +30, 1 model worse (L04_soap_bar 12 -> 5: faces
+  R2.85 vs truth 3.0 passed the 3%+0.05 support tolerance; tie it to deflection). Fine gate running.
+- tools/feature_recon/quads.py (Davide Albertini's idea): coplanar triangle pairs -> quads; adjacent quad normal lines meet
+  on an axis. Normal-cone test BEFORE point test (full-height cylinder strips put every intersection at mid-height);
+  no merging through parallel normals; split patches at radius gaps. Support share: invented builds <= 23.5%,
+  mechparts verified builds >= 48% (except p19, 2.9%).
+- Decimation study: results/decimation_study.md. QEM to 10% destroys the cylinder signal (p32 19 -> 2); exact planar
+  merge removes only 3-11% (CAD exporters already triangulate planes minimally). The 10^3 reduction comes from
+  primitives: verified builds 344x median, 3,637x max.
+- tools/feature_recon/regions.py (Tommaso's recursive planar merge + quad seeds + Attene-style fitting): CAD-sourced
+  cadbench normal models with exact plane/cylinder/other counts: 82/103 (region_census.py; *_recon truths come from an
+  earlier reconstruction's STEP and are excluded). Fixed along the way: prisms read as cylinders (reject >=36 deg quad
+  steps), cylinder axis from the UNCENTRED normal moment (centred cov of a small arc picks the mean normal), grow with
+  the same tolerance the fit accepted. Open: chamfer networks, torus rims fragmenting into small cylinders (puck),
+  cylinders cut by cross holes (t_pipe, cross_block), line-complex torus fit degenerate on cylinders/spheres.

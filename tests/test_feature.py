@@ -1,0 +1,39 @@
+"""Feature builds replace engine output only as the mesh's shape, backed by its quad cylinders."""
+import trimesh
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+from mesh2step.feature import acceptable, measure, support
+
+
+def _box_step(path, x, y, z):
+    w = STEPControl_Writer()
+    w.Transfer(BRepPrimAPI_MakeBox(x, y, z).Shape(), STEPControl_AsIs)
+    w.Write(str(path))
+
+
+def _box_tri(x, y, z):
+    m = trimesh.creation.box(extents=(x, y, z))
+    m.apply_translation((x / 2, y / 2, z / 2))
+    return m.vertices[m.faces]
+
+
+def test_matching_build_is_accepted(tmp_path):
+    _box_step(tmp_path / "b.step", 40, 20, 10)
+    m = measure(tmp_path / "b.step", _box_tri(40, 20, 10))
+    assert acceptable(m), m
+
+
+def test_wrong_volume_is_refused(tmp_path):
+    _box_step(tmp_path / "b.step", 40, 20, 11)  # +10% volume
+    assert not acceptable(measure(tmp_path / "b.step", _box_tri(40, 20, 10)))
+
+
+def test_right_volume_wrong_place_is_refused(tmp_path):
+    _box_step(tmp_path / "b.step", 20, 40, 10)  # same volume, rotated footprint
+    assert not acceptable(measure(tmp_path / "b.step", _box_tri(40, 20, 10)))
+
+
+def test_support_counts_cylinders_the_mesh_shows():
+    assert support([10.0, 10.02, 4.0, 2.5], [9.98, 4.01]) == 0.75
+    assert support([], []) == 1.0

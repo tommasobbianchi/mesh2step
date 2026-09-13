@@ -56,6 +56,9 @@ QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
 # wall clock for the same work. A 300s ceiling failed it purely for being
 # unlucky about neighbours.
 CONVERT_TIMEOUT_S = 900.0
+# The feature pass (MESH2STEP_FEATURE=1) runs several prototype builders after the engine.
+# ponytail: fixed ceiling, per-builder budgets if a slot held this long starves the queue.
+FEATURE_TIMEOUT_S = float(os.environ.get("MESH2STEP_FEATURE_TIMEOUT_S", "3600"))
 # Measured peak RSS is 24.95 MB per 1k triangles + 128 MB (trueform, on meshes
 # that merge nothing). At this limit one conversion peaks near 3.1 GB and two
 # concurrent ones plus the server fit inside the unit's 8G MemoryMax -- see
@@ -382,6 +385,38 @@ def _sweep_orphans(now: float) -> None:
             pass
 
 
+def _feature_upgrade(stl_path, out_path) -> dict | None:
+    """Replace the engine STEP with a feature-level build when one qualifies (MESH2STEP_FEATURE=1).
+
+    Runs in its own process group so an OCCT crash or hang in a prototype builder costs the
+    attempt, never the worker; a timeout kills the whole group. None = engine output kept.
+    """
+    import signal
+    import subprocess
+
+    cand = Path(out_path).with_name("feature.step")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "mesh2step.feature", str(stl_path), "-o", str(cand),
+             "--no-fallback", "--engine-step", str(out_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=FEATURE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return None
+    except OSError:
+        return None
+    lines = [ln for ln in stdout.splitlines() if ln.startswith("RESULT ")]
+    if proc.returncode != 0 or not lines or not cand.exists():
+        return None
+    cand.replace(out_path)
+    res = json.loads(lines[-1][7:])
+    res["output"] = str(out_path)
+    return res
+
+
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info) -> dict:
@@ -409,6 +444,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             no_unify=(engine == "faceted" and merge_coplanar_angle is None),
             timeout=CONVERT_TIMEOUT_S,
         )
+        if (engine == "trueform" and res.get("ok")
+                and os.environ.get("MESH2STEP_FEATURE") == "1"):
+            res = _feature_upgrade(stl_path, out_path) or res
     except NativeTimeout:
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(504, (
@@ -429,6 +467,11 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         observe_convert_seconds(time.time() - t_convert)
     d = _native_stats(res, engine, schema)
     d["backend"] = "native"
+    if res.get("featureMethod"):
+        # a validated feature build: the post-passes below audit ENGINE output only
+        d["backend"] = "feature"
+        d["feature_method"] = res["featureMethod"]
+    trueform_post = engine == "trueform" and "feature_method" not in d
     # Triangle count comes from BEFORE the native step, because the binary only
     # ever sees the already-cut, already-repaired mesh. Vertices do NOT: our STL
     # round-trip stores three per triangle, so len(verts) here is always 3x the
@@ -457,7 +500,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     # downstream can decline it, and the engine emits no warning of its own. Saying so,
     # with the numbers, is all this can do until the seeding itself is fixed
     # (.claude/loopspec/n5-seed-exclusion.spec.md).
-    if engine == "trueform" and d.get("smooth_cylinders", 0) > 0:
+    if trueform_post and d.get("smooth_cylinders", 0) > 0:
         try:
             from mesh2step.intent import audit_engine_cylinders
 
@@ -487,7 +530,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     # L07_flanged_bushing_recon -- 258 faces, all planes, against 32 non-planar truth
     # faces; 245 planes absorb facets deviating up to 1.99 deg against the engine's
     # absolute 2.0 deg near-flat gate; area barely moves, volume moves 1.70 %.
-    if engine == "trueform" and d["output_size_bytes"] <= CANONIZE_MAX_BYTES:
+    if trueform_post and d["output_size_bytes"] <= CANONIZE_MAX_BYTES:
         try:
             from mesh2step.intent import unaccounted_volume_move
 
@@ -516,7 +559,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     # smaller (a real lid: 245 faces -> 10, 1.95 MB -> 33 KB). Accepted only if
     # the result is a valid solid, nothing failed, and the volume moved less than
     # 2% -- otherwise the original conversion is kept, silently and intact.
-    if (engine == "trueform" and d.get("smooth_cylinders", 0) == 0
+    if (trueform_post and d.get("smooth_cylinders", 0) == 0
             and d.get("smooth_planes", 0) > 12
             and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
         try:
@@ -550,7 +593,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     # When nothing was recovered, say WHICH circles were lost -- the radii are
     # the actionable part. Guarded by size: this re-reads the STEP with OCCT, and
     # a 145 MB faceted file measured >300s to read, so it is skipped there.
-    if (engine == "trueform" and not d.get("rebuilt")
+    if (trueform_post and not d.get("rebuilt")
             and d.get("smooth_cylinders", 0) == 0
             and d["output_size_bytes"] <= CANONIZE_MAX_BYTES):
         try:
