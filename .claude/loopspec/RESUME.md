@@ -533,6 +533,12 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    other attempt kinds fail for another reason. Fix under test (n50): STL2STEP_N50_TRIMROT unwraps
    the trimmed surface's BasisSurface() before the DownCast. Part 9: arm a N50 only, arm b N50 +
    N13_SEW_FREE + N48_SEW_PARTIAL.
+   All attempt kinds on the 28 fail the same way (off.log DIAG_PARTIAL_TOPO, raw/pre-fix/post-fix/
+   ensure phases): rect-trim 63x4, untrim 63x4, rot-ax 60x4, seam-box 32x4 -> UnorientableShape only;
+   rot-trim raw 61 UnorientableShape, post-fix 49 + 12 BadOrientationOfSubshape. ShapeFix_Face never
+   changes the status. Wire walk: stalls in 80-95 attempts per kind and open wires in 20-83; 56-64
+   attempts per kind have missing pcurves. So the rot-trim DownCast bug is one defect among several;
+   the shared one is at wire level (stalls, open wires, missing pcurves), not the surface choice.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
