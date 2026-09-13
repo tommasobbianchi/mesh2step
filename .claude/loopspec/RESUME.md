@@ -1333,3 +1333,9 @@ auto25b (AXIS=2, 60 samples, 14-step bisection per boundary):
 - p34: 8 levels. Valid, dV -0.072% (unbisected: +2.034%), faces {27 plane, 18 cyl}, mesh->model mean 0.0054, p95 0.038, max 0.038, STEP valid. Levels 1-5 (z 0-7.58, area 2457 -> 2638, rising steadily) are a sloped region approximated by 5 steps.
 - p2: 22 levels, +1.871% (unbisected +2.967%), {192 plane, 58 cyl}, max 0.50. Three runs of thin levels with monotonic area (z 5-9.8, 9.8-15, 15-20) are chamfers/tapers staircased at 0.5-1 mm.
 Next: auto25c merges runs of thin consecutive levels with the same loop count and monotonic area into ONE ruled loft (BRepOffsetAPI_ThruSections) between the sections at the run's two boundaries.
+
+## DX — lofting "taper" runs is refuted; bisected stepped extrusion (auto25b) stays the method (2026-09-13)
+auto25c (ruled ThruSections between the boundary sections of runs of thin monotonic levels):
+- p34: 4 groups (one loft over z 0-7.58). dV -0.183%, max distance 1.136 (auto25b: -0.072%, max 0.038). Faces {16 plane, 8 cyl, 3 other}.
+- p2: the lofts at z 5-9.8 and 15.5-20 worked, but z 9.8-15 fell back on a loop-count mismatch. dV -0.810%, max 5.0 (auto25b: +1.871%, max 0.50). 12 'other' faces.
+The sloped regions are not straight ruled tapers (and a plain loft does not pair the loop geometry reliably), so lofting makes the shape worse. Refuted. auto25b is the accepted stepped method; running it on the remaining stepped parts 14, 4, 3, 8, 17, 39 (b25b2).
