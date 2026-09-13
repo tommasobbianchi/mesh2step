@@ -659,6 +659,19 @@ AP. **n53: N50 rotation fix + N13_SEW_FREE + N48_SEW_PARTIAL + N52 (Wireframe) o
    Gaps sit around a handful of rescued cylinders and come in near-coincident pairs just outside the
    0.1 mm sew tolerance. Widening the sew tolerance is not the fix (it would weld 0.5 mm offsets);
    those faces' boundary edges must meet their neighbours.
+   Pairing of the 18 recover-1 non-zero free edges (nearest partner by endpoints, n53 log):
+     ORIENTATION CONFLICT (identical segment, both faces traverse it in the SAME direction, gap 0):
+       cylinder 445 <-> plane 844 (6.297 mm); cylinder 456 <-> facet (6.196 mm). Sewing will not merge
+       same-direction duplicates, so these rescued cylinder faces carry the wrong orientation.
+     SPURS INSIDE ONE FACE (partner on the same face): cylinder 467 three edges 0.007-0.027 mm;
+       cylinder 456 two 0.019 mm edges traversed back and forth (out-and-back spur in the wire).
+     OFFSETS JUST OVER SEW TOL (reversed, i.e. correctly oriented): planes 1407 <-> 2794 at 0.170 mm
+       (two pairs, 1.2 and 2.0 mm long); plane 1813 <-> facet at 0.105 mm; two 0.085 mm facet edges.
+   All cylinder owners (445, 456, 467) are faces the N50 fix rescued: some rescued faces come out
+   inverted or with spurs. Next: n58 lets the ShapeFix_Shape repair (FixOrientationMode, small,
+   connected, degenerated) run when non-zero free edges remain (STL2STEP_N58_REPAIR_ANY), still
+   accepted only if freeAfter == 0, same face count, validity rule; plus STL2STEP_N13_SEW_ORIENT.
+
 
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
