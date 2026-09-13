@@ -844,6 +844,12 @@ BD. **Part 11's residual gap is ONE plane fitted 0.17-0.19 mm off its neighbours
    free-edge owner that borders an exploded or partial cylinder (the v1.8.0 N27 victim skip), the same class of
    protection that leaves part 9's last 4 invalid planes unexploded (fact BC). Widening the sew tolerance to 0.2
    would also close it but is not an acceptable fix.
+   Code (refit_build.cpp, n13Targeted arm in the open-shell recovery): for each region owning a free edge, it is a
+   "victim" and skipped if ANY chain neighbour is a cylinder that is exploded OR partial (!closed360). Plane 634 borders
+   partial cylinder 12 -> skipped; with did=false the else-branch then explodes every non-closed360 cylinder. The rule's
+   premise ("the edge went free because the neighbour cylinder was removed") holds only for an EXPLODED neighbour;
+   for a built partial neighbour the gap here is the plane's own 0.174 mm offset. Test n70
+   (STL2STEP_N70_VICTIM_EXPLODED_ONLY): victim only when the neighbouring cylinder is exploded.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
