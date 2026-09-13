@@ -986,6 +986,17 @@ BQ. **First STEP of part 9 carrying cylinders -- 97 CYLINDRICAL_SURFACE -- but t
    `if (plan.hostR2 || cascadeSt.u2Done || !shValid) { ... restoreShared(); out.clear(); return false; }` -- the culprit
    ladder was exhausted without making it valid. n84 reruns with N50 + N82 + N64_VALID_DIAG + N67/N24 ladder diagnostics.
 
+BR. **The 97-cylinder STEP breaks in the write/read round trip, on its cylinder trims (n83b: FreeCAD re-read of
+   scratchpad/n19/n82_9.keep.step).** Re-read: 1 Solid, isValid False, 27,282 faces = 27,182 Plane + 100 Cylinder (97 written).
+   INVALID: 7 cylinder faces (area 5941.4 mm2 in total) and 120 plane faces (4116.2 mm2). Cylinder face areas after re-read:
+   6038.2, 3821.3, 981.4, 695.3, 450.0, 69.5, 28.3, 14.3 ... and negative-area (inverted) faces (-7.02, -3.06); in memory the
+   cylinder faces totalled ~294 mm2 and their mesh regions 180 mm2. So some cylinder faces lose their trimming on export and
+   re-import spanning large parts of the full cylinder -- which also explains the garbage round-trip volumes (rtv 2.7e167).
+   n82 did not have N50_TRIMROT: its rot-trim faces carry pcurves in the wrong frame on a Geom_RectangularTrimmedSurface; OCCT
+   tolerates that in memory, but STEP stores the basis surface + pcurves and the trim re-reads wrong (the external advice:
+   never hand the builder a trimmed surface). n84 = N50 + N82 is running; fallback built next as STL2STEP_N85_NO_RECTTRIM
+   (rot-trim attempt on the untrimmed rotated Geom_CylindricalSurface).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
