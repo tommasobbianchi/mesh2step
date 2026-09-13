@@ -138,6 +138,13 @@ I. **DeepSeek V4.1 Flash relaunched** (job ocflash1, worktree wt-ds, 90-min time
    orientation defect: replace bindCylPCurves' straight UV lines with pcurves projected from the
    3D edges, env-gated, measured on part 9. Findings -> wt-ds/FINDINGS-PCURVE.md.
 
+J. **Part 11's 37 bad shell faces are mostly tiny PLANES, and none has a pinch vertex.**
+   Baseline site-B dump: 21 planes (median 5 tris), 11 cylinders (median 4), 5 unowned facets;
+   every face-level code seen is 27 UnorientableShape, and most carry no face-level code at all
+   (fault on sub-shapes). N5E_FACEPINCH on all 37: pinchVerts=0, wires=1, maxShare=2. The
+   n5e pinch-vertex defect is NOT the cause here. DeepSeek's cylinder-pcurve angle can cover at
+   most the 11 cylinder faces on part 11.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
