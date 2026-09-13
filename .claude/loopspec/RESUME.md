@@ -332,6 +332,14 @@ AB. **How far refused pairs miss the existing constructions (N40_GAP, binary 434
        tilt 4.6-6.2 deg per step with radii growing 3.06 -> 3.25 -> 3.52 -> 3.90; miss/tol <=10 for 51.
        68 rows have >=5 deg between axes. Reads as a cone or bend approximated by cylinders.
      part 9 plane|cyl 9: miss/tol <=2 for 3, <=100 for 2, >100 for 4.
+   Grouped (regions linked by refused parallel pairs):
+     part 11: 260 rows = 39 region pairs, 45 regions, 6 groups of 3/4/6/9/10/13 strips. All
+       internal tangency. Radius spread per group 47%, 45%, 39% (13, 10, 9 strips) -- radius
+       changing monotonically along parallel, offset axes is an EXTRUDED non-circular profile, not
+       a fillet split in pieces; only the 3-strip (2.8%) and 6-strip (7.3%) groups look like one
+       fillet fitted in pieces.
+     part 9: 52 rows = 26 pairs, 46 regions, 20 groups (16 are pairs), radius spread 6-39%, axes
+       ~5 deg apart: not one cylinder in pieces either.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
