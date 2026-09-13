@@ -893,6 +893,16 @@ BH. **n72: part 11's 0.174 mm gap survives exploding BOTH owners -- it is vertex
    "two distinct mesh vertices confused into one TVertex" class), not from plane 634's fit (maxVertexDev 0.0149).
    Next step for part 11 (later): trace which snap moves those vertices. Part 9 is one gate from shipping (n73).
 
+BI. **n73: part 9 now passes closure AND BRepCheck with 97 cylinders; it reverts only on the volume budget (binary
+   afb4d2dc0e0d, n71 flags + DIAG_REVERT + DIAG_PLAN).** DIAG_REVERT comp=37223 decision=REVERT builtFaces=28200
+   builtCyl=97 builtPl=28103 regions=3777 firstFail=t4_volumeBudget: t1 bfReturnedAndNonEmpty=1, t2 shellIsClosed=1,
+   t3 brepCheckIsValid=1, t4 volumeBudget=0. shellVol 96169.0163 vs meshVol 97838.6286 -> dV 1669.61 mm3 (1.71%);
+   budget 97.84 (= N27_T4_REL 0.001 x meshVol; term A 1e-4 x meshVol 9.78, term B 3 x dVolAbs 46.77, dVolAbs 15.59).
+   N17 round-trip volume returned garbage (rtv 2.7e173), so the round-trip rescue cannot apply.
+   Raising the budget is forbidden (tolerance widened to pass a gate). A 1.7% shortfall on a closed valid shell is either
+   real missing volume or faces counted with the wrong sign; existing switch STL2STEP_N16_ORIENT_T4 measures with
+   orientation. n75 reruns with it and keeps the STEP to check its independently re-read volume and cylinder count.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
