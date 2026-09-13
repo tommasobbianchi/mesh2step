@@ -320,6 +320,19 @@ AA. **n37/n38: FixSameParameter at the validity gate ships no cylinders -- the g
    at cylinder boundaries (fact Z). n37 stays unshipped; its first copy inside the sewing block
    was unreachable without STL2STEP_N13_SEW_FREE and has been removed.
 
+AB. **How far refused pairs miss the existing constructions (N40_GAP, binary 43431a0885f1).**
+   tol = max(epsPlane, maxVertexDev) as in cylCylTangentContact / planeCylSideContact.
+     part 11 cyl|cyl 270: 260 have parallel axes (<0.01 deg), ALL FilletStrip|FilletStrip; the
+       tangent-contact miss min(|d-(Ra+Rb)|, |d-|Ra-Rb||)/tol is <=10 for 228 and <=100 for 32.
+       Example: R 18.617 / 17.940, d 0.853, internal gap 0.176, tol 0.0246 (7x). Reads as one fillet
+       split into strips fitted with ~4% different radius and offset axis.
+     part 11 plane|cyl 27: 23 with axis within 3 deg of the plane (CylGrow), |gap|/tol <=10 for 22
+       (e.g. R 16.61, axis 1.32 deg off plane, gap -0.77, tol 0.13).
+     part 9 cyl|cyl 111, all CylGrow|CylGrow: 52 "parallel" only by the 8 deg test -- the samples
+       tilt 4.6-6.2 deg per step with radii growing 3.06 -> 3.25 -> 3.52 -> 3.90; miss/tol <=10 for 51.
+       68 rows have >=5 deg between axes. Reads as a cone or bend approximated by cylinders.
+     part 9 plane|cyl 9: miss/tol <=2 for 3, <=100 for 2, >100 for 4.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
