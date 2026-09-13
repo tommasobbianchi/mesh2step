@@ -292,6 +292,22 @@ Y. **DeepSeek V4.1 Flash (medium), part 9, STL2STEP_PCURVE_PROJ: pcurve projecti
    FixSameParameter works by raising edge tolerance to the measured deviation; fine for part 11's
    0.1 mm in-plane edges, NOT acceptable for part 9's 3.6 mm chords -- report resulting tolerances.
 
+Z. **Refused cylinder boundary intersections, by cause (STL2STEP_P2_DIAG, binary a47b14d30b55,
+   today's base flag set).** IntAna_ResultType: 4 = Ellipse, 9 = NoGeometricSolution.
+     part 11: plane|cyl 27, all ty=4 (ellipse found, refused by the chainResidual gate in
+              pickIntAna / intAnaAcceptResidual), none tangent, side or perpendicular;
+              cyl|cyl 270, all ty=9 -- 260 parallel-offset axes (the tangent/offset constructions
+              refused), 10 not parallel. Radius pairs come in graded chains (22.1-23.7-25.7-28.0-31.6),
+              i.e. stacked bands, not fillet|bore.
+     part 9:  plane|cyl 9, all ty=4; cyl|cyl 111, all ty=9 -- 52 parallel-offset, 59 not parallel.
+   Existing constructions (planeCylSideContact -> generator, planePerpCylinder -> cap circle,
+   cylCylTangentContact / cylCylParallelOffset) use tol = max(epsPlane, maxVertexDev). Probes
+   running: N40_GAP (how far each refused pair misses those tests, in units of tol) and N41_CHAIN
+   (is the refused mesh chain itself a planar equal-chord arc, a line, an ellipse-like planar curve
+   or a space curve; max vertex distance to each fitted surface). User's proposal (2026-09-13):
+   recover the edge from the chain's own geometry -- a run of equal chords in one plane turning by
+   a constant angle, ending where a third segment joins -- instead of intersecting two fits.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
