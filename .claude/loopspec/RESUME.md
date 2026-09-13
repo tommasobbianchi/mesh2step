@@ -187,6 +187,26 @@ O. **DeepSeek V4.1 Flash confirmed the straight-UV pcurve defect with citations 
    aligns; (2) it labels the change "N30", colliding
    with STL2STEP_N30_FILLET_SAGRATIO in wt-p84; (3) duplicate #include.
 
+P. **Part 9's LAST blocker after keep-open + purge is 3 edges with InvalidSameParameterFlag.**
+   In-face statuses (StatusOnShape) on the purged shell: edgeOnFace code 11 on 6 entries -- 3
+   edges, each seen from its two faces -- and nothing else (no wire-on-face, no vertex-on-edge;
+   all 48,710 edges / 20,375 vertices clean on their own). Samples: tol=25 sameParam=0 (x4, the
+   spCap ceiling), tol=0.1166 sameParam=0 (x2). BRepCheck_Status (0-based, from the OCCT header):
+   8 InvalidCurveOnSurface, 10 InvalidSameRangeFlag, 11 InvalidSameParameterFlag,
+   27 UnorientableShape, 32 BadOrientationOfSubshape. Hypothesis: these are cylinder-face edges
+   whose straight-UV pcurve (bindCylPCurves) cannot be reconciled with the 3D chord -- i.e. the
+   defect DeepSeek's STL2STEP_PCURVE_PROJ targets. Owner/pcurve probe running.
+Q. **Stage order** (refit_segment.cpp:57-67): claimLawBandsL -> claimCylindersB1 ->
+   claimFilletsC1 -> claimArcBandsN15 -> rejectTorusSlicesN5F -> rejectLowCoverageN18 ->
+   rejectCoarseArcN21. On part 11, 1,742 bands are claimed (710 at R~4.001) but only 972
+   cylinder regions reach n18 and none of n18's 938 drops is at R~4.0: ~770 bands leave before
+   n18. Prime suspect: rejectTorusSlicesN5F (shipped on) -- groups >= 6 regions within 2% radius
+   and rejects them as torus slices when their axes are coplanar-and-spread (or isotropic with
+   sliver areas, P109). Probe running with STL2STEP_N5F_AXCOH=1.
+R. **n18 drops on part 11 are fragments of real cylinders.** 938 drops, arc per band median
+   4.7 deg (934 under 10 deg); per radius they sum to ~100-150 deg (R~66.2: 28 bands 143 deg;
+   R~60.0: 26 bands 148 deg; R~55.2: 26 bands 153 deg; R~53.2: 20 bands 146 deg).
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
