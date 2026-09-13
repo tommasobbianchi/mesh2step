@@ -650,6 +650,16 @@ AP. **n53: N50 rotation fix + N13_SEW_FREE + N48_SEW_PARTIAL + N52 (Wireframe) o
    So the 20 cylinder faces that N50 rescues bring REAL gaps (non-zero free edges up to 6.3 mm) that
    sewing at 0.1 mm cannot pair -- closure needs those edges to match their neighbours, not only the
    zero-length cleanup.
+   Residual detail (J6_DIAG rows, owner type from DIAG_EXPLODE):
+     recover 0 non-zero 25: owners plane 9, cylinder 8, facet 8; lengths 0.007-0.105 mm (11),
+       1.2-2.0 mm (8), 6.2-6.3 mm (6); nearest partner free edge within 0.1 mm 13, 0.5 mm 10, 2 mm 1,
+       farther 1; every endpoint touches another free edge within 0.01 mm (closed gap loops).
+     recover 1 non-zero 18: owners cylinder 7, plane 6, facet 5; partner within 0.1 mm 11, 0.5 mm 6,
+       farther 1. Cylinder owners 445, 456, 467 -- all three rescued by N50 (not in DIAG_FBF).
+   Gaps sit around a handful of rescued cylinders and come in near-coincident pairs just outside the
+   0.1 mm sew tolerance. Widening the sew tolerance is not the fix (it would weld 0.5 mm offsets);
+   those faces' boundary edges must meet their neighbours.
+
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
