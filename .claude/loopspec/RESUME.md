@@ -871,6 +871,17 @@ BF. **n70: the exploded-only victim rule (STL2STEP_N70_VICTIM_EXPLODED_ONLY) mak
    Plane 634 is now exploded, but cylinder 12 (a free-edge owner) goes with it, and the rebuild creates 5 new real gaps.
    n72 lists those 5 (J6_DIAG) before choosing the next change.
 
+BG. **n71: N14_NONREGION + plane-first makes part 9's closed shell VALID with 97 cylinders still in it -- then the component
+   reverts at a later gate (binary afb4d2dc0e0d, n67 flags + N14_NONREGION).**
+     recover 0: 86 bad -> N67_U0 planes=86; recover 1: 11 bad (plane 27: 10, cylinder 27: 1) -> planes=10;
+     recover 2: 2 bad (plane 27: 2) -> planes=2; recover 3: N60_RESHAPE_COLLAPSED removed 39 -> freeAfter 0, VALID=1
+       (N13_SEW freeE=362->0 closed=1 accepted=1).
+     Explodes: 98 planes, 1 cylinder (no blanket). Yet RESULT: smoothRevertedTrue=1, smoothBuiltCylinders 0,
+     "analytic rebuild reverted on one component -- kept faceted"; STEP has 0 CYLINDRICAL_SURFACE.
+   The revert cause is not in RESULT (revCause -> out.revertCause, stl2step.cpp ~1062). Candidates after a closed valid
+   shell: the closed-valid residual detector branch (RULE 2.2-2.4) or the stl2step.cpp gates (shell-not-closed,
+   brepcheck-invalid on the full analyzer, volume budget dV). n73 reruns with STL2STEP_DIAG_REVERT + DIAG_PLAN.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
