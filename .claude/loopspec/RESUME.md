@@ -1501,3 +1501,11 @@ sem/bE/summary.txt:
 - p1: stepped along X +1.36% (512 planes), Y +1.99% (664 planes, STEP invalid), Z +1.43% (440 planes). The intersection is EMPTY (solids 0, volume 0).
 - p3: stepped along X -0.19% (274 planes), Y -0.08% (355 planes, 29 cyl, STEP valid), Z -0.89%. The intersection is valid but -7.03%, with 1340 planes + 621 cylinders (splintered).
 Refuted: intersecting per-axis staircases compounds their errors and splinters the faces. The single-axis stepped builds are close on volume but are 19-26-level staircases with hundreds of planes, i.e. approximation, not recognition; they are NOT counted as solved even at |dV| < 1%. Multi-axis parts need the feature route instead (base stock from the dominant stepped axis, then feature-map holes/slots/bosses along the other axes, as for the turned parts).
+
+## EZ — glue-mode fuse on p14 (partial): GlueFull reduces invalid faces 25 -> 15, not to 0 (2026-09-13)
+sem/bglue/summary.txt (fuse of level prisms with BRepAlgoAPI_Fuse.SetGlue; STEP re-read invalid-face count):
+- auto25f (unsnapped) + GlueShift: 25 invalid, {134 plane, 166 cyl}
+- auto25f + GlueFull: 15 invalid, {60 plane, 166 cyl} (the glue merges more coincident faces)
+- auto25g (snapped) + GlueShift: 31 invalid
+- auto25g + GlueFull: running
+Glue helps but does not remove the near-coincident-arc slivers. Not solved. The semantic route (base stock + real features, autoblock) is the likelier fix for p14/p39; it is being tested on 3, 1, 5.
