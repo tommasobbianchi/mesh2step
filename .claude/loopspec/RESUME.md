@@ -812,6 +812,14 @@ BA. **Why the closed-but-invalid cascade kills cylinders when planes are the cul
    wouldSaturate() counts only cylinders (50% cap). Test n67 (STL2STEP_N67_PLANE_CULPRITS_FIRST): U0 returns the
    invalid non-hub planes first without join-suspect recruitment, and plane-only U0 sets get up to 12 rounds.
 
+BB. **n66: part 11 with the wire fix + closure set nearly closes but not quite (binary 0580f978a399, N61 + sew free +
+   N48 + N52 + N60 + N62_VTX_TOL + N64 diag + N29_ARCH_MAXTRI=200000 + N22_NOQUORUM).**
+     recover 0: sew 46 -> 18 kept; reshape removes 9 of 9 collapsed -> 9 real free edges remain (not applied).
+     recover 1: sew 17 -> 13; removes 8 of 8 collapsed -> 5 real free edges remain.
+     DIAG_FBF type=1 = 3; J6 not closed 18 / 13; explodes 1487 planes / 34 cylinders; smoothCylinders 6,
+     built 0, adoptedNoCyl 1.
+   Part 11 does not reach the closed-but-invalid stage; its blocker is 5-9 real gaps. n68 lists them (J6_DIAG).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
