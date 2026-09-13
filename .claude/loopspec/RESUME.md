@@ -160,6 +160,15 @@ M. **Part 9 after keep-open + purge is clean at every OWN-status level** -- 48,7
    remaining fault must be context status (edge-on-face / wire-on-face / vertex-on-edge, i.e.
    StatusOnShape(ctx)), which no dump has read yet; being measured.
 
+N. **Part 11's bad planes are invalid ON THEIR OWN -- compared pass by pass.** Census
+   (STL2STEP_N5F_UV) vs site-B flags agree 19/19 in pass 0 and 2/2 in pass 1: standalone
+   valid=0. Pass-0 bad planes have simple 5-6 edge outlines, positive UV area (16-25), no
+   missing pcurve; pass 1 has one inverted outline (uvArea -104.5) and one reversed 10-edge
+   face; passes 2-3 have no bad planes (remaining invalidity is on cylinders/facets). An
+   earlier "all standalone-valid" reading was wrong: it kept only the LAST census pass per rid,
+   after those faces had been exploded and rebuilt. Suspect: edge-on-face status (a curve
+   borrowed from a neighbour not lying in the plane); probe N32_FACECTX running.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
