@@ -862,6 +862,15 @@ BE. **n69: the last 4 invalid faces on part 9 are NOT region faces -- the culpri
    exact case the ported STL2STEP_N14_NONREGION (collectNonRegionNeighbourhood) targets. It was refuted earlier in a
    different state (shell never closed); site B is only reachable now. n71: n67 flags + N14_NONREGION.
 
+BF. **n70: the exploded-only victim rule (STL2STEP_N70_VICTIM_EXPLODED_ONLY) makes the targeted arm act on part 11, but
+   the shell still does not close (binary 5ba69e52207d, n66 flags + N67 + N70).**
+     recover 0: sew 46 -> 18 kept; reshape removes 9 collapsed -> 9 real; N13_TARGETED freeE=18 regions=5 ->
+       N70_TARGET exploded rid 12 (CYLINDER), 424, 634, 1361 (planes); 1381 still a victim (its cylinder was exploded).
+     recover 1: free 9 before sew; sew 9 -> 13 (worse, NOT kept); reshape removes 8 of 13 collapsed -> 5 real remain.
+     DIAG_FBF 3; explodes 1487 planes / 34 cylinders (blanket); smoothBuiltCylinders 0.
+   Plane 634 is now exploded, but cylinder 12 (a free-edge owner) goes with it, and the rebuild creates 5 new real gaps.
+   n72 lists those 5 (J6_DIAG) before choosing the next change.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
