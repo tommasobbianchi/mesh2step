@@ -971,6 +971,19 @@ BP. **USER DIRECTIVE (2026-09-13): shape recognition over exact volume.** "our g
    up to 67x their regions (fact BO) are malformed surfaces and get fixed (n81 tests N50_TRIMROT). Saved as auto-memory
    feedback_shape_over_volume.
 
+BQ. **First STEP of part 9 carrying cylinders -- 97 CYLINDRICAL_SURFACE -- but the written B-rep is INVALID (n82, binary
+   4f0a342c6522, n71 flags + DIAG_REVERT + N82_T4_ADVISORY).** N82_T4_ADVISORY kept the shell (dV 1669.6, budget 97.8,
+   rtv 2.7e167); DIAG_REVERT decision=KEEP builtCyl 97 builtPl 28103, t1-t4 = 1. Post-build pipeline: unify 28,200 -> 27,255
+   faces, "check INVALID (ran during write)", warning "smooth: B-Rep invalid after build -- no ShapeFix rewrite on smooth runs",
+   B-Rep volume 96168.833; STEP 75.7 MB written with 97 CYLINDRICAL_SURFACE / 27,255 ADVANCED_FACE; verify re-read 27,282
+   faces with a garbage volume (2.8e167 %). So the in-memory shell passed BRepCheck (t3) but the unified/written shape does not;
+   the three oversized rot-trim faces (fact BO) are still in it. Kept file: scratchpad/n19/n82_9.keep.step; n83 checks it with
+   FreeCAD (invalid faces by surface type and area).
+   **n81 (+N50_TRIMROT, no N82): the three faces are fixed but face building gives up (binary 308e69ded0e9).** N80 ratios rid 445
+   0.979, 838 1.058, 388 0.989 (face area sum 164.8 vs mesh 179.8; all 97 within 1.5x). DIAG_REVERT decision=REVERT builtFaces=0
+   firstFail=t1_bfReturnedAndNonEmpty, cause "buildFaces-false exit=none line=7055 regions=3777". N50 changes the recovery flow
+   enough that buildFaces returns false; the exit at refit_build.cpp:7055 is being read.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
