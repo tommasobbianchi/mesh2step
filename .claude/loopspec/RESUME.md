@@ -463,7 +463,12 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
      Outcome unchanged: explodes 3679 planes / 98 cylinders, smoothBuiltCylinders 0.
    Sewing closes 90% (541->54) and 77% (137->31) of the gap and is discarded because it is not 100%.
    Keeping a partial sew would leave 54 edges for the targeted arm instead of 541, but it also exposes
-   110 orientation-invalid faces that the final gate would reject.
+   110 orientation-invalid faces that the final gate would reject (status 23 is
+   BRepCheck_InvalidImbricationOfWires; 27 UnorientableShape; 32 BadOrientationOfSubshape).
+   An accepted sew sets `sh = ns; shClosed = true;`, and the J6 free-edge census + targeted heal that
+   follow read `sh`. Experiment n48 (STL2STEP_N48_SEW_PARTIAL, running on part 9): keep a sew that
+   preserves the face count and strictly reduces free edges, adopt it as `sh` but leave shClosed false,
+   so the targeted arm sees only the unpaired edges and every closure/validity gate still applies.
 
 
 
