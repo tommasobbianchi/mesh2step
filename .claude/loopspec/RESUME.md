@@ -1292,3 +1292,12 @@ Treatment values near 6.0 may be capped by the search range; to re-check. Next: 
 sem/fcbatch.out (n83_check.py on each part's best build from batch2). Every one reports "Solid valid True solids 1" and INVALID faces {} (none):
 p7 37 faces (31 cyl), p9 134 (77 cyl), p10 50 (30 cyl, 14 cone), p11 41 (22 cyl), p12 38 (14 cyl, 20 torus), p13 23 (16 cyl), p15 17 (3 cyl), p18 13 (5 cyl), p19 72 (34 cyl, 33 torus, 2 B-spline), p20 25 (14 cyl), p21 17 (7 cyl), p23 68 (25 cyl, 38 torus), p24 23 (17 cyl), p25 50 (20 cyl, 24 torus), p28 10 (6 cyl), p29 50 (9 cyl, 18 cone), p30 32 (26 cyl), p31 53 (7 cyl, 14 cone), p32 18 (10 cyl), p33 33 (30 cyl), p35 48 (27 cyl), p36 102 (47 cyl), p37 61 (25 cyl).
 Total: 23 parts, 556 cylinder faces, all valid in both OCCT and FreeCAD.
+
+## DQ — widening the treatment search to T/2 is refuted; p16 moves to the 3D bucket (2026-09-13)
+batch3 (rho/chamfer search up to T/2, t up to 0.49T):
+- p18: fillet 6.45, max dist 0.185, dV -0.146% (batch2: 6.0 / 0.003 / +0.014%)
+- p21: fillet 6.4, 0.164, -0.201% (batch2: 6.0 / 0.004 / -0.013%)
+- p25: fillets 5.9-6.75, 0.310, -0.266% (batch2: 0.113 / +0.042%)
+- p32: fillets 6.75-7.0, 0.414, -1.023% (batch2: 0.006 / -0.021%)
+Every part got WORSE. The area-deficit offset proxy d = dA/P over-estimates at large offsets, so the 6 mm cap was not truncating real values. p16 is still wrong (fillet 9.7, +10.7%, 422 cylinder facets): a full-round link is not a prism plus fillets. Reverted auto2d to the batch2 range (copy in sem/auto2d.batch2.py); the batch2 results stand as the accepted builds.
+Status: 23 of 39 parts solved by the extrusion path. Remaining (16): 1, 2, 3, 4, 5, 6, 8, 14, 16, 17, 22, 26, 27, 34, 38, 39, which are 3D, full-round or tapered.
