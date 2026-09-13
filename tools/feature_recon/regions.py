@@ -74,7 +74,8 @@ def fit_smooth(ts, V, F, n, area, tol):
     evm, vecm = np.linalg.eigh((N * w[:, None]).T @ N / w.sum())
     if math.sqrt(max(evm[0], 0)) < 0.02:
         ax = vecm[:, 0]; u, v = frame(ax); c2, R, dev = fit_circle(np.c_[P @ u, P @ v])
-        if dev <= 5 * tol:
+        # a cylinder's diameter must fit the model box: a larger radius is a mis-fit of a flat patch
+        if dev <= 5 * tol and R < np.linalg.norm(V.max(0) - V.min(0)):
             return ("cylinder", round(float(R), 4), (ax, c2[0] * u + c2[1] * v))
     # cone: n.axis is constant -> a null direction of the centred covariance; a small patch has a second one
     # (its mean normal), so every null candidate is tried against the vertices
@@ -119,7 +120,7 @@ def fit_revolution(ts, V, F, n, area, tol):
         return None
     c = np.cross(ax, abar)
     P = V[np.unique(F[ts])]; q = P - c; h = q @ ax; rho = np.linalg.norm(q - np.outer(h, ax), axis=1)
-    lim = 5 * tol; diag = tol * 1e4
+    lim = 5 * tol; diag = np.linalg.norm(V.max(0) - V.min(0))
     cc, r, dev = fit_circle(np.c_[h, rho])
     if dev <= lim and lim < abs(cc[1]) < diag and r < diag:
         return ("torus", (round(float(cc[1]), 4), round(float(r), 4)), (ax, c, cc))
@@ -243,7 +244,7 @@ def regions(tri):
             ring.update(frontier)
         ring = list(ring)
         best = None
-        if len(ring) >= 8:
+        if len(ring) >= 5:
             for fit in (fit_smooth, fit_revolution):
                 model = fit(ring, V, F, n, area, tol)
                 if model is None:
@@ -269,6 +270,57 @@ def regions(tri):
     for reg in held:
         if np.all(label[reg] == -2) and comp_size.get(reg[0], 0) == len(reg):
             label[reg] = len(kinds); kinds.append(("plane", reg, None))
+    # a cylinder wall cut by a cross hole is grown from two sides into fragments that share an
+    # axis and radius: one CAD face, not several. Re-merge adjacent coaxial cylinders.
+    def _cyl_geo(reg):
+        P = V[np.unique(F[reg])]; N = n[reg]; w = area[reg]
+        evm, vecm = np.linalg.eigh((N * w[:, None]).T @ N / w.sum())
+        ax = vecm[:, 0]; u, v = frame(ax)
+        c2, R, _ = fit_circle(np.c_[P @ u, P @ v])
+        return ax, c2[0] * u + c2[1] * v, R
+    cyl_idx = [i for i, (k, _, _) in enumerate(kinds) if k == "cylinder"]
+    if len(cyl_idx) > 1:
+        geo = {i: _cyl_geo(kinds[i][1]) for i in cyl_idx}
+        adj = collections.defaultdict(set)
+        for i in cyl_idx:
+            for t in kinds[i][1]:
+                for u in nb[t]:
+                    j = label[u]
+                    if j in geo and j != i:
+                        adj[i].add(j)
+        par = {i: i for i in cyl_idx}
+        def find(x):
+            while par[x] != x:
+                par[x] = par[par[x]]; x = par[x]
+            return x
+        for i in cyl_idx:
+            for j in adj[i]:
+                if j <= i:
+                    continue
+                axi, ci, Ri = geo[i]; axj, cj, Rj = geo[j]
+                if abs(axi @ axj) < math.cos(math.radians(5)):
+                    continue
+                off = np.linalg.norm((ci - cj) - np.outer((ci - cj) @ axi, axi))
+                if abs(Ri - Rj) > 5 * tol or off > 5 * tol:
+                    continue
+                par[find(i)] = find(j)
+        groups = collections.defaultdict(list)
+        for i in cyl_idx:
+            groups[find(i)].append(i)
+        if any(len(g) > 1 for g in groups.values()):
+            new_kinds, remap = [], {}
+            for i, (k, reg, p) in enumerate(kinds):
+                if k == "cylinder" and len(groups[find(i)]) > 1:
+                    r = find(i)
+                    if r not in remap:
+                        remap[r] = len(new_kinds)
+                        tris = [t for j in groups[r] for t in kinds[j][1]]
+                        new_kinds.append(("cylinder", tris, round(float(geo[groups[r][0]][2]), 4)))
+                    label[reg] = remap[r]
+                else:
+                    new_kinds.append((k, reg, p))
+                    label[reg] = len(new_kinds) - 1
+            kinds = new_kinds
     cov = collections.Counter(); cnt = collections.Counter()
     for k, reg, _ in kinds:
         cov[k] += area[reg].sum(); cnt[k] += 1
