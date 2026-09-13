@@ -1222,3 +1222,11 @@ sem/slice9.out and sem/profile9.out, centre (3066.215, 2090.868), with bore and 
 - Edge breaks: bore extra radius against z is 1.128 / 0.677 / 0.268 / 0.064 at z = 0.2 / 0.5 / 1.0 / 1.5, i.e. rho - sqrt(rho^2 - (rho - z)^2) with rho = 2.000 exactly. The same holds on the root and mirrored at the top: an R2 fillet on every edge of the top and bottom faces. Vertical edges are sharp at z = 10.
 Minor unexplained: 160 deg R 3.248 arcs at three spots near z = 1 and z = 19.
 Next: sem/build9.py, a CSG model (root cylinder + 10 tooth boxes, minus bore + keyway, unify, R2 fillets on the top and bottom edges) validated for validity, volume against the mesh, vertex distance, and STEP round trip.
+
+## DJ — FEATURE-LEVEL RECONSTRUCTION OF PART 9 WORKS: valid solid, 77 cylinders, STEP round trip valid in OCCT and FreeCAD (2026-09-13)
+sem/build9.py (scratchpad) builds, from the DI measurements only: root cylinder R 51.556 + 10 tooth boxes, minus bore R 37.338 + keyway, UnifySameDomain, then R2 fillets on the 88 edges of the top and bottom faces, placed at the measured centre. Run time 1.3 s.
+- Model BRepCheck valid True, volume 97,821.466 against mesh 97,838.629 (-0.018%). Faces: 35 planes, 77 cylinders, 22 tori (the fillets along the circular edges).
+- STEP AP214: 11,325 entities (the micro path's file was about 79 MB). OCCT re-read valid True, volume 97,821.517, same face census.
+- FreeCAD round trip (n83_check.py): Solid valid True, 134 faces {Plane 35, Cylinder 77, Toroid 22}, 0 invalid faces. Largest cylinder face 3,466.4 mm2 = the bore (2*pi*37.338*16*332.5/360 = 3,467).
+- A two-sided surface distance (mesh -> model faces, model -> mesh triangles) is running (sem/dist9.py). The first distance number was taken against the solid, so points inside the solid read 0; it is not reported as fidelity.
+Contrast with the micro path: 96 fake "cylinders" (180 mm2 total, random radii), an invalid STEP, 2.1x volume.
