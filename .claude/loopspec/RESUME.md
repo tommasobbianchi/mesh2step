@@ -1359,3 +1359,15 @@ FreeCAD on sem/bround/p16c.step: "shape type Shell valid True solids 0 faces 25 
 ## EC — p16 with measured rho 9.5: shape right, still a shell; stepped outputs checked as solids (2026-09-13)
 autoround4 (flat band 1.0 -> rho 9.5, inset d 1.1334): 16 fillets, dV -0.036%, mesh->model mean 0.068, p95 0.191, max 0.262, faces {2 plane, 9 cyl, 10 torus, 4 other}. The STEP re-read is still a SHELL (solids 0), so the non-solid result is not due to the rho = T/2 limit. autoround5 converts a closed fillet shell to a solid (ShapeFix_Solid.SolidFromShell + ShapeFix_Shape) before export.
 FreeCAD check of the stepped (auto25b) outputs: p34 Solid valid True, 45 faces; p8 Solid valid, 69; p3 Solid valid, 277; p4 Solid valid, 681. All 0 invalid faces. (p3 and p4 are staircase approximations, not clean features.)
+
+## ED — the VLM runs on the RTX 3090 now; nativedev resources re-prioritised for mesh2step (2026-09-13)
+User: "vlm is managed by you. You need its help. you manage nativedev resources" / "it HAS to work on a gpu" / "mesh2step is the first priority for nativedev. you are the absolute master. the llm is doing nothing on nativedev. you decide and assign priorities".
+Diagnosis of the earlier 25-minute VLM timeout: nativedev's RTX 3090 WORKS (nvidia-smi 24,576 MiB; the memory note claiming "no driver" was stale and is corrected). An idle qwen3.6:35b-a3b held 23.3 GB of it, so qwen3-vl:30b could not load and the request queued or ran on CPU. A second attempt waited 600 s and never loaded the model.
+Actions:
+- Stopped the obsolete glueabmx job (CPU).
+- Unloaded qwen3.6:35b (keep_alive 0): GPU down to 313 MiB.
+- Loaded qwen3-vl:30b-a3b-instruct-q4_K_M pinned (keep_alive -1): 21.2 of 21.2 GB in VRAM.
+Measured: 27.7 s wall (22.6 s one-time load), 131 tok/s.
+Also measured on behemoth: qwen3-vl:8b on the 4070 Ti SUPER took 18 s at 106 tok/s, but its part 9 description was wrong (Ø10 bore, 8 teeth, 1 mm fillets).
+30b on the 3090, part 9: correct on base shape (ring, OD about 114, ID about 74, 20 thick, through). Wrong on details: 12 teeth (true 10), keyway missed, edge treatment called a 1 mm chamfer (true R2 fillet). Conclusion so far: the VLM names feature types; dimensions and counts come from slices. Testing targeted questions on a sharp orthographic top view.
+Stepped batch (auto25b, remaining parts): p14 (5 levels, dV -0.002%), p17 (2 levels, +0.021%) and p39 (5 levels, +0.111%) have volume right, BUT 11,777 / 1,051 / 4,384 planes and a STEP re-read that is INVALID. The segmentation tolerance 0.02 mm is absolute, and these parts are 3-8 m across. auto25d scales it to max(0.02, 2e-4 x diagonal); rerunning 17, 39, 14.
