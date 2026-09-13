@@ -1443,3 +1443,6 @@ sem/recon/summary.txt (recon.sh: auto2d always; auto25g for A/B; autorev for C; 
 - WRONG-SHAPE, valid solid but large dV, not accepted as reconstructions: 5 (turned envelope, 49.6%), 16 (A fallback, 8.2%), 20 (A picked axis X, -71.9%; the axis retry used in batch2 gave +0.062%, now added to recon.sh), 22 (A, 8.8%, tapered), 26 (C envelope, 14.8%), 27 (D, 30.5%), 38 (C envelope, 7.9%).
 - NONE: 1 (E), 3 (E), 6 (E, damaged mesh), 14 (B, STEP invalid, second opinion running), 39 (B, STEP invalid).
 Every valid build from the stepped path is FreeCAD-verified; the stepped path now wins on 11, 12, 28 where it beats auto2d.
+
+## EP — axis retry in recon.sh solves p20: 26 parts solved (2026-09-13)
+recon.sh on p20 with auto2d retried under AXIS=0/1/2: A (auto axis X) -71.9%, A0 -71.9%, A1 build failed, A2 (Z) +0.062% with 14 cylinders and FreeCAD valid. p20 is SOLVED, bringing the total to 26 of 39 (valid solid, |dV| <= 0.65%). Also started: sem/autorev_cut.py, which cuts flats (planar clusters of cut-surface triangles inside the turned envelope) and cross holes (fitted cylinders) out of the turned envelope. Running on p26.
