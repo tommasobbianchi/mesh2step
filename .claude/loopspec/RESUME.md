@@ -548,6 +548,12 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
      70 valid:   1-2 chords 7, >2 chords 63; worst sag <0.01 (2), <0.1 (1), <1 mm (23), >=1 mm (44).
    Valid faces carry MORE and larger chord sag; 9 failing faces have none. Chord sag is not what makes
    the 28 faces unorientable (it still matters for edge tolerance, fact Y).
+   DISCRIMINATOR (first raw attempt, off.log DIAG_PARTIAL_TOPO): 70 valid faces -- walk ok 70/70,
+   all pcurves 70/70, closed wire 70/70. 28 failing -- walk stalled 11, MISSING pcurves 11, closed wire
+   28/28. uvArea sign does not separate them (valid 38 negative / 32 positive; failing 19 / 9).
+   Failing faces are wider (span median 1.650 rad vs 1.189) and 1 of 28 has an inner loop (0 of 70).
+   So 11 of the 28 have a wire the walker cannot traverse and edges without a pcurve; the other 17
+   pass both tests and are still unorientable -- checking UV continuity between consecutive edges.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
