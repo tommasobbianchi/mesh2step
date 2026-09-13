@@ -924,6 +924,16 @@ BK. **n75: orientation-aware volume (STL2STEP_N16_ORIENT_T4) gives the SAME shel
    cylinder region, sum over its mesh triangles of area x radial deviation of the triangle centroid from the fitted cylinder,
    signed by outwardNormal -- compare the total with dV 1669.6. If it matches, the fix is the prediction, not the tolerance.
 
+BL. **n77 per-face volume census is INVALID (probe bug), but its areas refute the sagitta hypothesis (binary b766089a6967).**
+   The probe called BRepGProp::VolumeProperties(face, props, OnlyClosed=Standard_True); a single face is never closed, so every
+   face volume is 0 (sumVol 0 for both types, every TOP row vol=0). Areas are valid: cylinder faces sumArea 288.6891 mm2 (97
+   faces), plane faces 22355.6453 mm2. With only 289 mm2 of cylinder surface, chord sagitta (<= ~0.3 mm) can account for at most
+   ~87 mm3 -- not the 1669.6 mm3 shortfall, so fact BK's tessellation-sagitta explanation is implausible (n78b measures it
+   exactly). (The job's exit=1 is the trailing `grep N76_FACEVOL threw` finding nothing, not a failure.)
+   Next n79: fixed-origin signed volume, GProp_GProps(O) + VolumeProperties(face, OnlyClosed=false), grouped as cylinder faces /
+   analytic plane faces / 3-edge facet faces, against the mesh triangles' signed volume about the same O grouped by region
+   (built cylinder / built plane / exploded-or-island) -- the class whose face and mesh volumes differ holds the shortfall.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
