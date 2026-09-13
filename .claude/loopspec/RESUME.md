@@ -553,7 +553,14 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    28/28. uvArea sign does not separate them (valid 38 negative / 32 positive; failing 19 / 9).
    Failing faces are wider (span median 1.650 rad vs 1.189) and 1 of 28 has an inner loop (0 of 70).
    So 11 of the 28 have a wire the walker cannot traverse and edges without a pcurve; the other 17
-   pass both tests and are still unorientable -- checking UV continuity between consecutive edges.
+   pass both tests and are still unorientable.
+   The 11 "stalled" faces (rids 433 444 445 446 460 508 518 522 618 819 838): for 9 of them the
+   DIAG_PARTIAL_EDGE walk records exactly ONE edge before stalling (508: 8, 522: 9) -- the wire
+   explorer cannot get past the first edge, i.e. consecutive edges do not share a vertex TShape. The
+   "missing pcurves" count is just the edges the walk never reached. Wire-assembly (vertex sharing in
+   buildLoopWire) defect, not a pcurve defect.
+   NOT a discriminator: UV continuity between consecutive pcurves on complete walks -- failing 17:
+   continuous 7, gap<0.1 1, <1 1, >=1 8; valid 70: continuous 40, <0.1 11, <1 7, >=1 12.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
