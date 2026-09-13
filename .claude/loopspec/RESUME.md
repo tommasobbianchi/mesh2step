@@ -427,6 +427,20 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
    So there are two independent losses: 28 cylinders whose own face build fails, and 59 lost to the
    final all-regions explode. The refused-intersection work (Y, Z, AB, AC, AF) explains neither
    directly. Next: the trigger of step 4, and the failure condition behind DIAG_FBF.
+   Step 4 trigger: J6 "shell not closed freeEdges=541 faces=26533 recover=0", then after the targeted
+   explode "freeEdges=137 faces=28686 recover=1" -> recoverPass 1 blanket explodeAll (refit_build.cpp
+   `else if (recoverPass < 2 && !n26BlanketWouldWipe(rs, exploded) && explodeAll())`).
+   Open edges by owner face (DIAG_J6 freeE rows, type from DIAG_EXPLODE):
+     recover 0 (541): plane zero-length 170, plane no-chain(ci=-1) 176, plane chain 91; cylinder
+       no-chain 25, chain 20, zero-length 10; unknown 49. 265 faces, 32 of them cylinders.
+     recover 1 (137): plane zero-length 37, no-chain 31, chain 25; cylinder no-chain 17, chain 11,
+       zero-length 6; unknown 10. 78 faces, 19 cylinders.
+   The shell stays open mainly because of PLANE faces with zero-length and chain-less edges.
+   The 28 DIAG_FBF cylinders: 27 have a single Outer loop of 4-10 chains, 1 has Outer+Inner.
+   Existing switch STL2STEP_N26_NO_BLANKET holds the blanket and (n26b) keeps the built faces as an
+   open shell; not yet measured on part 9 after n26b (n45 running). Exit line inside
+   buildPartialCylinder for the 28: N46_PCYL_FAIL probe (n46 running).
+
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
