@@ -1089,3 +1089,6 @@ N93_RESHAPE_SKIP_CYL=1 on the best config gives the same result: KEEP, 96 cylind
 
 ## CA — n95: orientation-aware volume identical (2026-09-13)
 STL2STEP_N16_ORIENT_T4 is reached (stl2step.cpp:1009 selects orientedShapeVolume, which runs ShapeFix_Shell::FixFaceOrientation and an inside-out check). shellVol is still 207794.07, the same to the digit. Inverted faces are refuted as the cause of the 2.1x volume (caveat: the function returns early when the probe is not a TopAbs_SHELL). The remaining lead is the seam hypothesis; n96 (SEAM_AWAY) is running.
+
+## CB — n96: moving the partial-cylinder seam mid-period makes it worse (2026-09-13)
+STL2STEP_N96_SEAM_AWAY=1 (binary 8ded569fd67e) on the best config: t1 fails (bfReturnedAndNonEmpty=0), decision REVERT, 0 cylinders in the STEP. N24_U2 exploded=4 of 98 cylinders. The seam at u=0 is not what makes the round-trip invalid, and rotating the frame breaks face building. Refuted and not to be enabled. Round-trip invalidity now has three refuted attempts (n94 reshape skip, n95 orientation, n96 seam), so per Rule 8 it goes to a second opinion (Kimi) before any further fix.
