@@ -442,6 +442,16 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
    buildPartialCylinder for the 28: N46_PCYL_FAIL probe (n46 running).
 
 
+AH. **n45: part 9 with STL2STEP_N26_NO_BLANKET ships 0 cylinders (binary 8e264cde7d28).**
+   N26_BLANKET_HELD candidates=3479 cyls=98 alreadyExploded=39 (x2), then
+   N26_KEEP_BUILT faces=28686 (shell left open) -- yet RESULT: smoothRevertedTrue=1,
+   smoothCylinders=0, smoothBuiltCylinders=0, watertight=true, 44436 facet faces. The kept open
+   shell is reverted downstream (the closed-shell gate in stl2step.cpp is the suspect; checking).
+   Ran 2m49s CPU vs ~10 min normally: the early keep-built exit skips the later recovery passes.
+   n46: N46_PCYL_FAIL captured the wrong thing -- all 28 exitLine values are buildOneRegion's own
+   returns (5507/5511/5518), so buildPartialCylinder does not set g_bfExitLine on its failure
+   paths. Its real exit needs a local reason code (reading its return sites).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
