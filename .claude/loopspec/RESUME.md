@@ -740,6 +740,19 @@ AU. **The broken wires collapse onto one vertex after the first chain (n59, bina
    tolerance spheres overlap, collapsing distinct vertices -> broken joints -> stalled walk ->
    UnorientableShape. Test n61: STL2STEP_N61_NO_MAKEWIRE skips that rebuild; part 9 without / with N50.
 
+AV. **Removing collapsed edges through ShapeBuild_ReShape almost closes part 9 (n60d, binary
+   782841947d82, sew partial + N52 + N60_RESHAPE_COLLAPSED; n60b crashed with SIGSEGV in BRepGProp on a
+   collapsed edge without a 3D curve -- replaced by a null-safe curve sample).**
+     arm a (no N50): recover 0 free=54 collapsed=54 removed=51 -> freeAfter 3 (faces unchanged 26533);
+       recover 1 free=39 collapsed=39 removed=38 -> freeAfter 1. Shell still not accepted, FBF 28, built 0.
+       For comparison ShapeFix_Wireframe on the same shells: 54 -> 47, 39 -> 38.
+     arm b (N50 + N58): recover 0 free=84 collapsed=58 removed=57 -> freeAfter 27; recover 1 free=65
+       collapsed=46 removed=45 -> freeAfter 20 (the real gaps of fact AP remain). FBF 8, built 0.
+   The residual in arm a is exactly the collapsed edges the removal refused: their 3D curve's start, middle
+   and end are not within 1e-4 mm. Next n62: remove a collapsed free edge when its whole curve lies inside
+   its vertex's tolerance sphere (extent <= max(1e-4, BRep_Tool::Tolerance(vertex))) -- geometrically part of
+   the vertex, no tolerance widened -- and log every collapsed edge still kept (type, extent, vertex tol).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
