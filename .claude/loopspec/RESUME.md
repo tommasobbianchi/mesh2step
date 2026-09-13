@@ -509,6 +509,19 @@ AI. **n48: keeping a partial sew (STL2STEP_N48_SEW_PARTIAL) cuts the collateral 
    The 28 DIAG_FBF cylinders are still exploded first (unchanged). What blocks closure is now 39
    free edges that sewing at 0.1 mm cannot pair; n49 (J6_DIAG on the kept sew) lists them.
 
+AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conventions (measured from
+   scratchpad/n30/off.log, DIAG_PARTIAL_EDGE pcUV vs DIAG_PARTIAL_RID u-range; a pcurve edge is
+   "in-range" if its mid-u lies in the region's fitted span (x1.3), "2pi-shift" if u+-2pi does,
+   "MIRRORED" if -u does).**
+     28 failing faces: line in-range 3303, line 2pi-shift 1146, line MIRRORED 645; elips 2pi-shift
+       258, MIRRORED 156, in-range 100. 23 of 28 have at least one mirrored edge.
+     70 valid faces (contrast): line in-range 4743, 2pi-shift 51, MIRRORED 54; elips in-range 237,
+       MIRRORED 78, 2pi-shift 69. 10 of 70 have a mirrored edge.
+   Failing faces mix u conventions inside one wire far more often (2pi-shift 1146 vs 51 lines), which
+   fits their status 27 UnorientableShape (a UV wire that crosses itself) better than the
+   chord-sag explanation alone. The classification is crude near u=0; reading the u computation on
+   both pcurve paths (bindCylPCurves regionU vs ShapeFix projection onto cylSurfaceForRegion) next.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
