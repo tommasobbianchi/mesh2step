@@ -1324,3 +1324,6 @@ autorev with the enclosing-loop bore and outer-loop centre (batchrev2.summary):
 - p38: axis X, 17 outer vertices. Valid, +7.9%, {7 cyl, 9 cone}, p50 3.17 at this model's scale (7.7 m long).
 - p5: axis Y, centre score 0.05, +49.6%. p5 is mainly a milled body with a turned section, not a turned part, so a revolve is the wrong base.
 Next for B: find the mesh regions away from the envelope and fit planes (flats) and cylinders (cross holes) there, then subtract them from the envelope.
+
+## DV — local VLM (qwen3-vl:30b-a3b on nativedev CPU) timed out after 25 min on 3 renders (2026-09-13)
+sem/vlm.sh via the Ollama /api/chat endpoint: urllib raised TimeoutError after 1500 s. nativedev has no GPU driver, so inference runs on CPU, and 3 x 80-dpi renders plus a long prompt is too slow. The semantic reading was done from the renders directly in this session instead (DH, DR). To use the local VLM, send one small image with a short prompt, or run it on behemoth's GPU.
