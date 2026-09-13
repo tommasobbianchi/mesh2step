@@ -446,7 +446,11 @@ AH. **n45: part 9 with STL2STEP_N26_NO_BLANKET ships 0 cylinders (binary 8e264cd
    N26_BLANKET_HELD candidates=3479 cyls=98 alreadyExploded=39 (x2), then
    N26_KEEP_BUILT faces=28686 (shell left open) -- yet RESULT: smoothRevertedTrue=1,
    smoothCylinders=0, smoothBuiltCylinders=0, watertight=true, 44436 facet faces. The kept open
-   shell is reverted downstream (the closed-shell gate in stl2step.cpp is the suspect; checking).
+   shell is reverted downstream: buildFaces returns true with BUILDFACES-EXIT:kept-built-open-shell,
+   then stl2step.cpp:922 `ok = BRep_Tool::IsClosed(probe); if (!ok) revCause = "shell-not-closed"`
+   reverts the component. Accepting open shells there would be suppressing a revert, which the
+   project forbids -- so the route for the 59 cylinders is to CLOSE the shell (the plane-face
+   zero-length and chain-less open edges), not to keep it open.
    Ran 2m49s CPU vs ~10 min normally: the early keep-built exit skips the later recovery passes.
    n46: N46_PCYL_FAIL captured the wrong thing -- all 28 exitLine values are buildOneRegion's own
    returns (5507/5511/5518), so buildPartialCylinder does not set g_bfExitLine on its failure
