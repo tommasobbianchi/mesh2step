@@ -219,8 +219,23 @@ S. **Band-merge rejections on part 11, counted (N31, N29+N22 on):** lawBandsMerg
    that; a distance histogram of the rejected pairs (N33) is running to decide whether a
    looser tolerance would reunite fragments or merge different features.
 
-Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
-V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
+T. **Part 11's bad faces fail the same way part 9 finally does: unreconciled straight edges.**
+   In-face probe (N32_FACECTX) on 37 bad shell faces, paired with their type:
+     plane    edge code 11 InvalidSameParameterFlag: 17   wire code 18 SelfIntersectingWire: 4
+     cylinder edge code 11: 8                              wire code 18: 3
+     facet    edge code 11: 1                              wire code 18: 4
+   No vertex-on-edge errors. Every edge on these faces is a straight line (a few ellipses).
+   BRepCheck_Status 15-21 from the header: 15 InvalidRange, 16 EmptyWire, 17 RedundantEdge,
+   18 SelfIntersectingWire, 19 NoSurface, 20 InvalidWire, 21 RedundantWire.
+   A straight edge on a PLANE should be trivially same-parameter unless its 3D line is not in
+   the plane; plane-distance probe (N34_PLANEEDGE) running.
+
+Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
+Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
+API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
+variant for that model, so one is defined in ~/.config/opencode/opencode.jsonc
+(provider.deepseek.models.deepseek-flash.variants.medium = {reasoningEffort: medium}) and
+`opencode models deepseek --verbose` now lists low/high/max/medium.
 
 Notes from this resume: DeepSeek session ocds3 ended on its 50-minute timeout (exit 124),
 not a conclusion. Kimi stopped on its usage cap (a rolling 5-hour window, not runtime).
