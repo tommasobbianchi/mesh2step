@@ -1355,3 +1355,7 @@ autoround3 (SEGTOL 0.12). Outline at t = 0.25T offset outward by the analytic d 
 
 ## EB — p16 autoround3 file is a SHELL, not a solid (FreeCAD) (2026-09-13)
 FreeCAD on sem/bround/p16c.step: "shape type Shell valid True solids 0 faces 25 {Cylinder 9, Toroid 10, Plane 2, BSplineSurface 4}". The 0.495T fillet left no flat side band, so OCCT produced a shell (hence in-memory BRepCheck False) with 4 B-spline patches. "STEP re-read valid" alone is not enough; every build must also be checked for solid count. The measured flat band (autoround: 9.6-10.4, about 0.8 mm) means rho is about 9.6, not T/2. autoround4 takes rho from the measured band width (capped at 0.49T), fillets at that rho, and prints the re-read solid count. Running on p16.
+
+## EC — p16 with measured rho 9.5: shape right, still a shell; stepped outputs checked as solids (2026-09-13)
+autoround4 (flat band 1.0 -> rho 9.5, inset d 1.1334): 16 fillets, dV -0.036%, mesh->model mean 0.068, p95 0.191, max 0.262, faces {2 plane, 9 cyl, 10 torus, 4 other}. The STEP re-read is still a SHELL (solids 0), so the non-solid result is not due to the rho = T/2 limit. autoround5 converts a closed fillet shell to a solid (ShapeFix_Solid.SolidFromShell + ShapeFix_Shape) before export.
+FreeCAD check of the stepped (auto25b) outputs: p34 Solid valid True, 45 faces; p8 Solid valid, 69; p3 Solid valid, 277; p4 Solid valid, 681. All 0 invalid faces. (p3 and p4 are staircase approximations, not clean features.)
