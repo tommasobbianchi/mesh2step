@@ -1398,3 +1398,10 @@ autoround6 (core + piped rims + band, fused, holes cut): pieces built in 1.3 s, 
 p14 STEP re-read: 25 faces BRepCheck_UnorientableShape (one of 6.78e6 mm2 with 26 edges), edge tolerances 1e-7, no edge errors. The in-memory model was valid, so the orientation breaks across the write/re-read of the fused, unified stepped solid. Testing NOUNIFY and a ShapeFix_Shape before write (auto25f).
 Observation: parts 8, 14, 17, 38, 39 have bbox dimensions that are exact multiples of 25.4 (p8 70x130x32, p39 305x100x16, p38 170x60x60 in /25.4). These STLs look like inch geometry written as mm-scaled values.
 User: "opencode has a vision model, search for it is from deepseek family". `opencode models deepseek --verbose` lists image input on deepseek/deepseek-v4-flash-vision-exp, deepseek/deepseek-flash and deepseek/deepseek-v4-flash (not v4-pro). Testing vision-exp on the same p9 counting questions and the 8-part category test.
+
+## EI — DeepSeek v4-flash-vision-exp (via opencode) is the VLM to use: correct counts, 7/8 categories (2026-09-13)
+User pointer: "opencode has a vision model ... from deepseek family". Tests via `opencode run --pure -m deepseek/deepseek-v4-flash-vision-exp "<question>" -f <image>` (question BEFORE -f, because -f is an array flag and swallows later positionals):
+- p9 silhouette teeth: TEETH=10, correct. It annotated the image itself (wrote p9_annot.png with markers) and counted at 36 degree spacing. 43 s.
+- p9 keyway: KEYWAY=yes, correct. 9 s.
+- Categories on 8 known parts, 7-12 s each: 9 A, 26 C, 16 D, 1 E, 34 B, 38 C, 22 A all correct; 4 answered A (truth B, a stepped claw plate) wrong. 7/8, with sound reasons (for example "34: raised central region ... stepped-down lower tongue").
+Local qwen3-vl:30b on the 3090 scored 4/8 and miscounted teeth (8, then 12). Decision: DeepSeek vision is the semantic reader. Local qwen VL is unloaded, leaving the 3090 free. Next: DeepSeek category + feature list for all 39 parts, feeding the routing to reconstruction methods.
