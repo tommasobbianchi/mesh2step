@@ -247,6 +247,16 @@ U. **Tori cannot reach the STEP at all: the engine has no torus primitive.** Mea
    Sphere), and refit_fillet.cpp:1213 emits TorusNYI. The goal "every torus in the output" needs
    a torus fit + face build; no gate or tolerance change can deliver it.
 
+V. **Part 11 law-band merge refusals, measured (N33_MERGEHIST, binary f416fa4145ac).** Histograms
+   count every call (2940). Relative radius difference: <5e-4 718, <1e-3 278, <2e-3 160, <5e-3 89,
+   <1e-2 26, >=1e-2 1669. failR=2222 = 2940-718 exactly, so kRelRMax = 5e-4: every refusal is at
+   >=0.05%, 438 of them within 0.2% (near-misses), 1669 genuinely different radii. Axis angle,
+   over the 718 that pass radius: <1e-5 14, <1e-4 49, <1e-3 18, >=1e-2 637; failAxisDir=637, so
+   every axis refusal is >=0.57 deg -- different axes, i.e. the torus slices of fact U, not noise.
+   Note: the cutoff `cdir < 0.9999995` is ~1.0e-3 rad; its "~1e-6 rad" comment
+   (refit_lawband.cpp:996) is wrong. Consequence: loosening axis tolerance cannot merge these
+   bands; only a torus primitive can. The radius near-misses are a separate, smaller lever.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
