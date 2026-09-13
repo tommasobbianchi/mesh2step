@@ -1415,3 +1415,10 @@ Wire census of the valid in-memory p14: 166 cylinders (1 wire), 75 planes with 1
 
 ## EL — loop snapping does not fix p14 (31 invalid after STEP); Rule 8, second opinion requested (2026-09-13)
 auto25g on p14: faces {80 plane, 113 cyl} (fewer, as intended), dV +0.005%, mesh->model max 0.75, but the STEP re-read has 31 invalid faces and FreeCAD reports Solid valid False with 31 invalid planes (worse than 25). The sixth failed attempt on this STEP invalidity (translation, precision mode, no pcurves, no unify, ShapeFix before write, loop snapping). Per Rule 8, no seventh solo attempt: Kimi hand-off at sem/kimi_step14.md (measured facts, refuted attempts, files). p14/p39 are parked; the main line continues with routed reconstruction over all 39 parts once the DeepSeek classification finishes. First DeepSeek categories: p1 E, p2 A, p3 E, p4 A.
+
+## EM — Kimi is quota-blocked, so the p14 second opinion escalates to DeepSeek v4-pro via opencode; loop snapping helps p39 (2026-09-13)
+kimi_run on sem/kimi_step14.md: EXIT 1, "QUOTA: Kimi usage limit reached". Per Rule 8 escalation, the same hand-off goes to opencode (oc_run.sh, deepseek/deepseek-v4-pro), job ds-step14.
+auto25g, rest of batch:
+- p39: 5 levels, {104 plane, 128 cyl}, dV +0.116%, STEP re-read 12 invalid faces (auto25e: 34). FreeCAD: Solid valid False, 12 invalid planes.
+- p17: still valid (FreeCAD Solid valid True, 99 faces, 0 invalid). No regression.
+Loop snapping removes some sliver faces (p39 34 -> 12) but not all, and p14 got worse (25 -> 31), so it is not the complete mechanism.
