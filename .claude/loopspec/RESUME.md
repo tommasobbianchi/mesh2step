@@ -257,6 +257,11 @@ V. **Part 11 law-band merge refusals, measured (N33_MERGEHIST, binary f416fa4145
    (refit_lawband.cpp:996) is wrong. Consequence: loosening axis tolerance cannot merge these
    bands; only a torus primitive can. The radius near-misses are a separate, smaller lever.
 
+SCOPE (user, 2026-09-13): tori and spheres are NOT today's issue -- they go to the next version.
+   Today: full cylinders and fractions of cylinders (fillets and similar partial cylinders) must be
+   reconstructed. Fact U stays as a record for the next version; the torus sweep and torus code
+   map were cancelled. Dropping torus slices (n5f) is correct for today's scope.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
