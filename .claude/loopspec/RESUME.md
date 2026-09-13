@@ -562,6 +562,17 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    NOT a discriminator: UV continuity between consecutive pcurves on complete walks -- failing 17:
    continuous 7, gap<0.1 1, <1 1, >=1 8; valid 70: continuous 40, <0.1 11, <1 7, >=1 12.
 
+AK. **After the kept sew, part 9's shell has NO real gap: every remaining free edge is zero-length
+   (n49, binary c7d79f196bb9, base + N13_SEW_FREE + N48_SEW_PARTIAL + J6_DIAG).**
+     recover 0: 54 free edges = 54 zero-length (facet/unknown owner 28, plane 20, cylinder 6), 22 owner
+       faces (cylinders 456, 519, 822). No non-zero free edge at all.
+     recover 1: 39 free edges = 39 zero-length (facet 22, plane 12, cylinder 5), 13 owner faces
+       (cylinders 456, 519).
+   So the final blanket that kills the 59 healthy cylinders fires on degenerate edges only. Test n52
+   (STL2STEP_N52_DROP_ZEROLEN): when every free edge of the sewn shell is shorter than 1e-4 mm, drop
+   them with ShapeFix_Wireframe::FixSmallEdges, re-test closure, remap faces through the fix context;
+   the existing validity rule still applies.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
