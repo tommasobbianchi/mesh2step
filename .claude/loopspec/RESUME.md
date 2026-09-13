@@ -1371,3 +1371,15 @@ Measured: 27.7 s wall (22.6 s one-time load), 131 tok/s.
 Also measured on behemoth: qwen3-vl:8b on the 4070 Ti SUPER took 18 s at 106 tok/s, but its part 9 description was wrong (Ø10 bore, 8 teeth, 1 mm fillets).
 30b on the 3090, part 9: correct on base shape (ring, OD about 114, ID about 74, 20 thick, through). Wrong on details: 12 teeth (true 10), keyway missed, edge treatment called a 1 mm chamfer (true R2 fillet). Conclusion so far: the VLM names feature types; dimensions and counts come from slices. Testing targeted questions on a sharp orthographic top view.
 Stepped batch (auto25b, remaining parts): p14 (5 levels, dV -0.002%), p17 (2 levels, +0.021%) and p39 (5 levels, +0.111%) have volume right, BUT 11,777 / 1,051 / 4,384 planes and a STEP re-read that is INVALID. The segmentation tolerance 0.02 mm is absolute, and these parts are 3-8 m across. auto25d scales it to max(0.02, 2e-4 x diagonal); rerunning 17, 39, 14.
+
+## EE — what the VLM is good for, measured; scale-relative tolerance fixes the large stepped parts (2026-09-13)
+qwen3-vl:30b on the 3090 (keep_alive -1, <1 s per call once loaded):
+- Targeted questions on a shaded sharp top view of p9: TEETH=8 (true 10), KEYWAY=no (true yes). The render was checked visually and shows all 10 teeth and the keyway, so the model is wrong, not the input.
+- Pure black silhouette (no triangle seams): TEETH=12 (still wrong), KEYWAY=yes (right).
+- As a part-category classifier (A flat extrusion, B stepped, C turned, D full-round, E multi-axis) on 8 parts with known labels: 4/8. Right: 26 C, 38 C, 16 D, 1 E. Wrong: every flat/stepped plate (9 A, 22 A, 34 B, 4 B) came back as E "3D milled".
+Decision: the VLM does NOT count or measure. Flat-vs-stepped routing uses the deterministic section-invariance/level tests. The VLM decides turned / full-round / multi-axis when the geometry tests fail. Dimensions always come from slices.
+auto25d (tolerance max(0.02, 2e-4 x diagonal)):
+- p17: diag 5378, tol 1.08. 2 levels, {51 plane, 50 cyl}, dV +0.208%, STEP re-read VALID (auto25b had 1,051 planes and an invalid re-read).
+- p39: tol 1.63. 5 levels, {240 plane, 213 cyl}, +0.111%, re-read still invalid.
+- p14: tol 1.37. 5 levels, {134 plane, 166 cyl}, +0.007%, max 1.15 at 6.8 m scale, re-read still invalid.
+FreeCAD check on p14/p39/p17 is running.
