@@ -730,6 +730,16 @@ AT. **n58: ShapeFix_Shape on the MIXED residual (+N50, +N13_SEW_ORIENT, STL2STEP
    explodes 3679/98, built cylinders 0. ShapeFix_Shape both splits faces and removes only about a third of
    the free edges; the inverted rescued cylinder faces and in-face spurs (fact AP) are not repaired by it.
 
+AU. **The broken wires collapse onto one vertex after the first chain (n59, binary 27fe785ac87b,
+   N59_LOOPDUMP, part 9).** Loop order and flags are right ("flags connect to next" for all 109 positions).
+   But the wire edges do not carry the chain terminals: 76 positions "wire ends != chain terminals",
+   29 follow the flag, 4 opposite. Samples: rid 388 pos 0 chain 2264 first 6991 last 6990 (correct); from
+   pos 1 on EVERY edge's first and last vertex resolve to mesh vertex 6990. rid 427: from pos 1 on all
+   11962. rid 433: from pos 1 on all 7302. All three take the refreshOuterWire MakeWire rebuild (seam
+   straddle or nOuterCh > 6). Hypothesis: BRepBuilderAPI_MakeWire::Add merges vertices whose (snap-bumped)
+   tolerance spheres overlap, collapsing distinct vertices -> broken joints -> stalled walk ->
+   UnorientableShape. Test n61: STL2STEP_N61_NO_MAKEWIRE skips that rebuild; part 9 without / with N50.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
