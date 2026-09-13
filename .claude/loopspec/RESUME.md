@@ -710,6 +710,19 @@ AR. **Loop stitching is consistent; the failing faces concentrate on the seam-st
    Edge types on the 8: 242 elips 2 + line 6; 257/388/508/522 lines only; 618/819/838 walk only 1 edge.
 
 
+AS. **n57: every post-sew zero-length free edge is COLLAPSED, and ShapeFix_Shape does not close the
+   shell (binary 1187644f33b5, part 9, sew partial + N52 + N54_SHAPEFIX_SMALL).**
+     arm a (no N50): recover 0 free=54 zero=54 collapsed=54 -> ShapeFix_Shape facesAfter=26538 (was 26533,
+       it SPLIT faces) freeAfter=34 -> not applied; recover 1 free=39 zero=39 collapsed=39 -> faces 27321
+       (was 27317) freeAfter=31. FBF 28, explodes 3679/98, built cyl 0.
+     arm b (+N50): recover 0 free=84 zero=59 collapsed=58; recover 1 free=65 zero=47 collapsed=46 ->
+       all-zero guard blocks the repair (N58 not set). FBF 8, built cyl 0.
+   Collapsed = the same vertex TShape at both ends: the external advice's dangerous case. Generic tools
+   fail on it (Wireframe dropped 7/54; ShapeFix_Shape splits faces). Next n60
+   (STL2STEP_N60_RESHAPE_COLLAPSED): remove each collapsed free edge through a ShapeBuild_ReShape context
+   -- it is a zero-length loop in one face's wire, so its neighbours stay joined at that vertex -- then the
+   same acceptance (freeAfter 0, same face count, validity). Arm a without N50, arm b with N50 + N58.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
