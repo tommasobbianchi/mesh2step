@@ -1317,3 +1317,10 @@ autorev v1 (batchrev.summary): p26 -62%, p5 +64%, p38 -60%. The bore used the mi
 
 ## DT — autoround (offset-based full rounds) failed on both parts (2026-09-13)
 p16: thickness Z = 20, flat band 9.6-10.4 -> rho 9.6. The inset produced 3 wires from 3 loops, but BRepOffsetAPI_MakeOffsetShape on the 0.8 mm core raised StdFail_NotDone. p27: band 0.278-9.18 -> rho 2.504 (the perimeter test misreads this holed ring), and the inset of the 12-loop face returned 0 wires. Offset-solid construction is brittle for thin cores. Next idea: take the outline from a slice inside the round (e.g. 0.2T, smooth), offset it outward in 2D by the analytic d(t) to recover the widest outline, prism it, and fillet the end edges at about 0.49T. Parked until the stepped/turned reruns report.
+
+## DU — turned-part envelope fixed: it matches the turned surfaces; the subtractive features are still missing (2026-09-13)
+autorev with the enclosing-loop bore and outer-loop centre (batchrev2.summary):
+- p26: axis X, 7 outer profile vertices, no bore. Envelope valid, +14.8%, faces {3 cyl, 2 cone, 2 plane}. mesh->envelope p50 0.000, p90 8.39: half the surface lies exactly on the turned envelope; the excess is the flats and cross holes.
+- p38: axis X, 17 outer vertices. Valid, +7.9%, {7 cyl, 9 cone}, p50 3.17 at this model's scale (7.7 m long).
+- p5: axis Y, centre score 0.05, +49.6%. p5 is mainly a milled body with a turned section, not a turned part, so a revolve is the wrong base.
+Next for B: find the mesh regions away from the envelope and fit planes (flats) and cylinders (cross holes) there, then subtract them from the envelope.
