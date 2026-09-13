@@ -1327,3 +1327,9 @@ Next for B: find the mesh regions away from the envelope and fit planes (flats) 
 
 ## DV — local VLM (qwen3-vl:30b-a3b on nativedev CPU) timed out after 25 min on 3 renders (2026-09-13)
 sem/vlm.sh via the Ollama /api/chat endpoint: urllib raised TimeoutError after 1500 s. nativedev has no GPU driver, so inference runs on CPU, and 3 x 80-dpi renders plus a long prompt is too slow. The semantic reading was done from the renders directly in this session instead (DH, DR). To use the local VLM, send one small image with a short prompt, or run it on behemoth's GPU.
+
+## DW — stepped extrusion with bisected level boundaries works; sloped regions still become staircases (2026-09-13)
+auto25b (AXIS=2, 60 samples, 14-step bisection per boundary):
+- p34: 8 levels. Valid, dV -0.072% (unbisected: +2.034%), faces {27 plane, 18 cyl}, mesh->model mean 0.0054, p95 0.038, max 0.038, STEP valid. Levels 1-5 (z 0-7.58, area 2457 -> 2638, rising steadily) are a sloped region approximated by 5 steps.
+- p2: 22 levels, +1.871% (unbisected +2.967%), {192 plane, 58 cyl}, max 0.50. Three runs of thin levels with monotonic area (z 5-9.8, 9.8-15, 15-20) are chamfers/tapers staircased at 0.5-1 mm.
+Next: auto25c merges runs of thin consecutive levels with the same loop count and monotonic area into ONE ruled loft (BRepOffsetAPI_ThruSections) between the sections at the run's two boundaries.
