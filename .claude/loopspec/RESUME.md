@@ -416,6 +416,18 @@ AF. **Why the existing cyl|cyl constructions refuse (N44_CYLCYL, binary 8e264cde
    Conclusion: refused cyl|cyl edges do not explain part 9's 98 lost cylinders either; the explode
    ledger (n43, DIAG_EXPLODE) decides.
 
+AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6da, base flags +
+   N25_DIAG + DIAG_FBF + J6_DIAG).** DIAG_EXPLODE in log order, cumulative (planes / cylinders):
+     1. round 0 per-face build failure (28 DIAG_FBF rows, all type=1): 0 / 28. They are small partial
+        cylinders: nTris 5-28, spanU 0.73-2.10 rad, R 2.86-17.86, maxVertexDev 0.004-0.078, origin
+        CylGrow, lawBand 0.
+     2. chainEdgeFail arm (N25_CHAINFAIL failed=69 regionsHit=129): 126 / 29.
+     3. N13 targeted explode (N13_TARGETED freeE=541 regions=258): 259 / 39.
+     4. final blanket: 3679 / 98 -- every remaining region, including 59 cylinders that never failed.
+   So there are two independent losses: 28 cylinders whose own face build fails, and 59 lost to the
+   final all-regions explode. The refused-intersection work (Y, Z, AB, AC, AF) explains neither
+   directly. Next: the trigger of step 4, and the failure condition behind DIAG_FBF.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
