@@ -851,6 +851,17 @@ BD. **Part 11's residual gap is ONE plane fitted 0.17-0.19 mm off its neighbours
    for a built partial neighbour the gap here is the plane's own 0.174 mm offset. Test n70
    (STL2STEP_N70_VICTIM_EXPLODED_ONLY): victim only when the neighbouring cylinder is exploded.
 
+BE. **n69: the last 4 invalid faces on part 9 are NOT region faces -- the culprit set is empty, so U0 is empty and the
+   U2 blanket fires (binary afb4d2dc0e0d, n67 flags + N69 skip log + N24_DIAG).** Both arms (with and without
+   STL2STEP_N69_ALLOW_SEAMED) are identical: recover 0-2 drain as in n67 (86 -> 14 -> 6 -> 4, all plane face27 at
+   the end); recover 3 "N69_LADDER u0=0 satU0=0 u0Rounds=3 culprits=0 -> leaving U0", "N24_U2_REACHED blanket=97
+   cyls=98 exploded=1 sat=1"; no N69_SKIP line at all (no plane was skipped by the closed360/hub rules -- the
+   seamed-hole hypothesis of fact BC is REFUTED). Explodes 91 planes / 98 cylinders; reverted.
+   N64 counts surface type through BRepAdaptor, so facet triangles (builtRid < 0, from exploded regions) report as
+   "plane". collectFaceCulprits and collectShellCulprits skip rid < 0, so an invalid facet yields no culprit -- the
+   exact case the ported STL2STEP_N14_NONREGION (collectNonRegionNeighbourhood) targets. It was refuted earlier in a
+   different state (shell never closed); site B is only reachable now. n71: n67 flags + N14_NONREGION.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
