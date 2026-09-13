@@ -1,5 +1,5 @@
 diff --git a/src/refit_build.cpp b/src/refit_build.cpp
-index 6d66a31..53b1709 100644
+index 6d66a31..7094c6b 100644
 --- a/src/refit_build.cpp
 +++ b/src/refit_build.cpp
 @@ -28,6 +28,8 @@
@@ -605,7 +605,30 @@ index 6d66a31..53b1709 100644
                          anyFail = true;
                          failedIds.push_back(r.id);
                          r.reject = Reject::FaceBuildFailed;
-@@ -5280,6 +5740,243 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5076,6 +5536,22 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                 TopoDS_Face f = makeFacet(mv, verts, meshE, edgeOk, k);
+                 if (!f.IsNull()) {
+                     ensureFaceValid(f, meshTolCap(mv, nullptr));
++                    // n28 (env-gated): an island facet (iid >= 0) shares edges
++                    // with analytic faces whose build writes a pcurve on the
++                    // shared edge (bindCylPCurves / addPcurvesOnFace). That
++                    // leaves the facet's own wire without a consistent 2D
++                    // representation, so the facet is UnorientableShape and
++                    // the whole shell is BRepCheck-invalid -- which escalates
++                    // the cascade to the U2 blanket and zeroes every cylinder.
++                    // Re-add the facet's plane pcurves; the 3D curve is a
++                    // straight mesh edge in the facet's own plane, so the
++                    // projection is exact.
++                    static const bool n28FixIslePc =
++                        std::getenv("STL2STEP_N28_FIX_ISLE_PC") != nullptr;
++                    if (n28FixIslePc && iid >= 0 && !faceIsValid(f)) {
++                        addPcurvesOnFace(f, sewTol, false);
++                        ensureFaceValid(f, meshTolCap(mv, nullptr));
++                    }
+                     built.push_back(f);
+                     builtRid.push_back(exp ? rid : -1);
+                 }
+@@ -5280,6 +5756,243 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
  
          // J6
          bool shClosed = BRep_Tool::IsClosed(sh);
@@ -849,7 +872,7 @@ index 6d66a31..53b1709 100644
          sh.Closed(shClosed ? Standard_True : Standard_False);
          if (wasClosed && !shClosed) {
              int freeE = 0;
-@@ -5298,10 +5995,28 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5298,10 +6011,28 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
              // Skip large multi-hole parts (Body11, 15300 tris): mixed
              // uncollapse + abort-recover zeroes the 127-cyl floor. The
              // 8-file J6 set is all < 8000 tris.
@@ -879,7 +902,7 @@ index 6d66a31..53b1709 100644
                  std::vector<int> heal;
                  auto addHeal = [&](int ci) {
                      if (ci < 0 || (size_t)ci >= collapseBanned.size()) { DIAG_EXIT(__LINE__); return; }
-@@ -5314,7 +6029,13 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5314,7 +6045,13 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
                      TopoDS_Vertex va, vb;
                      TopExp::Vertices(e, va, vb, Standard_True);
                      gp_Pnt pa = BRep_Tool::Pnt(va), pb = BRep_Tool::Pnt(vb);
@@ -894,7 +917,7 @@ index 6d66a31..53b1709 100644
                  }
                  if (!heal.empty()) {
                      for (int ci : heal) {
-@@ -5346,7 +6067,12 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5346,7 +6083,12 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
              // Revert-class (Body9/12/18/20): after the heal, do not explode
              // recover — that dirties vertex TShapes and worsens R2 volΔ.
              // Body11 never enters this branch (nTri >= 10000 skips the heal).
@@ -908,7 +931,7 @@ index 6d66a31..53b1709 100644
                  warn("BUILDFACES-EXIT:j6-uncollapse");
                  DIAG_EXIT_T(__LINE__, "j6-uncollapse");
                  restoreShared();
-@@ -5377,19 +6103,96 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5377,19 +6119,96 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
                              edgeFailIds.end())
                              edgeFailIds.push_back(id);
                      };
@@ -1006,7 +1029,7 @@ index 6d66a31..53b1709 100644
                          did = explodeAll();
                      else {
                          // Keep Seamed360 holes; drop junk partials (S03 cone
-@@ -5408,10 +6211,31 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5408,10 +6227,31 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
                      recoverPass++;
                      goto try_rebuild;
                  }
@@ -1039,7 +1062,7 @@ index 6d66a31..53b1709 100644
              warn("BUILDFACES-EXIT:heal-discard");
              DIAG_EXIT_T(__LINE__, "heal-discard");
              restoreShared();
-@@ -5437,6 +6261,10 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+@@ -5437,6 +6277,10 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
              std::vector<CascadeHit> culprits;
              collectFaceCulprits(built, builtRid, exploded, culprits);
              collectShellCulprits(sh, built, builtRid, rs, exploded, culprits);
