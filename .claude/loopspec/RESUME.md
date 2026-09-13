@@ -207,6 +207,18 @@ R. **n18 drops on part 11 are fragments of real cylinders.** 938 drops, arc per 
    4.7 deg (934 under 10 deg); per radius they sum to ~100-150 deg (R~66.2: 28 bands 143 deg;
    R~60.0: 26 bands 148 deg; R~55.2: 26 bands 153 deg; R~53.2: 20 bands 146 deg).
 
+S. **Band-merge rejections on part 11, counted (N31, N29+N22 on):** lawBandsMergeable was
+   called on 2,940 edge-adjacent band pairs: failR 2,222 (76 %), failAxisDir 637 (22 %),
+   failTriIdProxy 57 (2 %), merged (cvOk) 24, failAxisSep 0, shortFrag 0. **The triangle-ID
+   "same original face" proxy hypothesis (L) is REFUTED** -- it blocks only 57 pairs. The
+   radius test rejects most; the ~1e-6 rad axis-direction test catches 637 pairs that had
+   already passed the radius test, which are the likeliest true fragments.
+   Tolerances (refit_lawband.cpp:28-31): kRelRMax = 5e-4 (radii within 0.05 % -- 0.03 mm at
+   R=60), kCvThetaMax = 1e-3, kTauSurfFloor = 5e-5; axis direction cdir >= 0.9999995 (~1e-6
+   rad). Independently fitted fragments of a coarse real mesh plausibly differ by more than
+   that; a distance histogram of the rejected pairs (N33) is running to decide whether a
+   looser tolerance would reunite fragments or merge different features.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
