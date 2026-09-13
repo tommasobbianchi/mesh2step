@@ -1146,3 +1146,11 @@ Verified in our code: acceptance at refit_build.cpp:6769 requires validity only 
 
 ## CQ — verified: BRepCheck catches a flipped face only in a solid context (2026-09-13)
 brepcheck_ctx.py (a box shell with one face reversed): BRepCheck_Analyzer(bare shell).IsValid() = True, BRepCheck_Analyzer(solid containing that shell).IsValid() = False (while the shell's own status list still reads NoError). Kimi's claim 2 holds. Consequence: the engine's shellIsValid (t3 and the sew acceptance) runs on a bare shell and cannot see orientation defects. Wrapping the probe shell in a TopoDS_Solid before BRepCheck is a cheap, correct detection gate. It is not a repair: on part 9 it would reject the shell and lose the cylinders, so it has to ship together with a gluing fix.
+
+## CR — offline gluing A/B on the pre-sew dump (n100a_presew.brep, about 7 s per variant) (2026-09-13)
+glueab.py. Input shell before the sew: 375 free edges, 1 same-orientation edge, volume 97,664.8 (mesh 97,838.6), so the built faces are right. The sew is the break:
+- Default sew (tol 0.1, cutting on): free 30, 522 folds, volume 207,803.5. This reproduces the engine exactly.
+- Cutting off: free 187, 425 folds, volume 208,501.
+- FloatingEdgesMode and LocalTolerancesMode: identical to the default.
+- BOPAlgo_MakerVolume without intersection (fuzzy 0.1): empty result, no errors.
+No sewing option fixes it. Next: glueab2.py, covering the anatomy of the 375 free edges and their faces (lengths, strip widths), dropping faces with width 2A/P below 0.05/0.1/0.2 mm before sewing, and MakerVolume with intersection at fuzzy 0.2.
