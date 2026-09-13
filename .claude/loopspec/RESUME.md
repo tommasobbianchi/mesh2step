@@ -109,10 +109,30 @@ C. **Part 9 and part 11 share the blocker: an invalid shell, not a missing cylin
    Part 9 under Kimi's keep-open + sliver purge (binary c60b4bd82890) still ends
    revertCauses brepcheck-invalid, 0 cylinders.
 
+D. **Lifting the 8,000-triangle limit (N29) lets the finder run on part 11 -- then it declines
+   at the consistency check.** DIAG_LAWSEEDS nStrips=10499 triples=140885; DIAG_LAWCAL nD=734
+   nA=17 empty=1 -> DIAG_LAWDECLINE reason=empty_cal nCand=1742. 1,742 candidate cylinder bands
+   are discarded because they do not share one tessellation law -- a check a real part with many
+   different cylinders cannot pass. Still 0 cylinders. Next test: N29 + N22_NOQUORUM together.
+E. **Part 11's recognised "cylinders" are not real bores.** Of 56 exploded cylinder regions, 8
+   failed their own build (7 are FilletStrip, origin=2: 3-6 facets, span median 2.05 rad,
+   chordSagitta/R median 0.50) and 48 were collateral -- but those 48 are tiny too (median 3
+   triangles, 5 sides, none >= 20 triangles). The fillet stage's only shape gate is span
+   30-180 deg (refit_fillet.cpp:1364); nothing checks facet count or sagitta. Test running:
+   STL2STEP_N30_FILLET_SAGRATIO=0.1 (fillet strips only).
+F. **Part 9 after keep-open + purge is still invalid.** 51 bad faces across rounds, 31 with a
+   zero-length edge; edges clamped at 25 mm by the spCap floor (refit_build.cpp:5671
+   `spCap = std::max(spCap, 25.0)`), so those edges disagree with their surface by >= 25 mm.
+   After the purge nowValid=0 with no per-face report; diagnostic run pending (shell codes +
+   remaining bad faces).
+
+Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
+V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
+
 Notes from this resume: DeepSeek session ocds3 ended on its 50-minute timeout (exit 124),
 not a conclusion. Kimi stopped on its usage cap (a rolling 5-hour window, not runtime).
 Kimi is now run via ~/.claude/skills/ask-kimi/scripts/kimi_run.sh (transcript <= 100 KB);
-DeepSeek via oc_run.sh is pinned to --variant high.
+DeepSeek via oc_run.sh defaults to deepseek/deepseek-flash (V4.1 Flash).
 
 ## The pattern worth remembering
 
