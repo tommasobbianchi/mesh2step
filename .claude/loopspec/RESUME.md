@@ -402,6 +402,20 @@ AE. **Kimi second opinion on the edge fix (scratchpad/wt-kimi/FINDINGS-EDGE.md, 
      and each candidate's residual against acceptR.
 
 
+AF. **Why the existing cyl|cyl constructions refuse (N44_CYLCYL, binary 8e264cde7d28).**
+     part 11 (270 refused): every chain is a single mesh edge ~25 mm long (265 >= 20 mm) at 90 deg to
+       BOTH axes, i.e. a chord across ~90 deg of arc on strips of R 18-31 mm; best candidate residual
+       >10x acceptR (1 mm) for 260 (e.g. 12.47 mm). No axis-parallel line can follow it and the
+       tessellation is too coarse to recover the true curve -- together with fact AB (radius spread up to
+       47% along the chain) these are coarse variable-radius blend strips, not a fixable cylinder edge.
+       Kimi's case (a) "2-vertex chord parallel to both axes" matches NONE of them.
+     part 9 (111 refused): chords mostly <20 mm (22 under 1 mm, 3 under 0.1 mm); 91 run <80 deg to the
+       farther axis; best candidate residual <=acceptR for 29 (they would pass, but
+       bestCylCylConstructed only runs under cylCylParallelOffset), <=2x for 19, <=10x for 63.
+       Samples: 0.05-0.24 mm chords along one cylinder's axis -- geometrically harmless as polylines.
+   Conclusion: refused cyl|cyl edges do not explain part 9's 98 lost cylinders either; the explode
+   ledger (n43, DIAG_EXPLODE) decides.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
