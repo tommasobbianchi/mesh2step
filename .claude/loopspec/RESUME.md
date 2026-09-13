@@ -908,6 +908,12 @@ BI. **n73: part 9 now passes closure AND BRepCheck with 97 cylinders; it reverts
    The same face could also be what pulls the in-memory volume 1.7% low. If N16 does not resolve t4, the next probe is a
    per-face signed volume/area census on the probe shell to find the anomalous faces.
 
+BJ. **n74: the combined fix set is neutral on the live-release regression parts (binary afb4d2dc0e0d).** live flags vs
+   live + N61 + N13_SEW_FREE + N48 + N52 + N60 + N62_VTX_TOL + N67 + N14_NONREGION:
+     part 8:  live cyl 2 / built 2 -> new 2 / 2;  part 15: live smoothCylinders 5 built 1 -> new 5 / 1;
+     part 22: live 3 / 3 -> new 3 / 3. All six runs: crashed 0, solids 1, watertight, volumeDeltaPct 0.
+   No crash and no lost cylinder on the parts v1.8.0 was validated against. Corpus gate still to run once part 9 ships.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
