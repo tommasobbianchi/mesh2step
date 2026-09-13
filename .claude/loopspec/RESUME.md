@@ -674,6 +674,20 @@ AP. **n53: N50 rotation fix + N13_SEW_FREE + N48_SEW_PARTIAL + N52 (Wireframe) o
 
 
 
+AQ. **The broken wire joints are ORDER/DIRECTION defects, not geometric offsets (n55, binary
+   e4cd7a5f2ac4, base flags, part 9).** 36 broken joints on the 28 failing faces (2 on other faces).
+     gap: 0 -> 1, <0.1 mm 6, <1 mm 2, <5 mm 14, >=5 mm 13 -- most are whole-edge lengths (5-15 mm).
+     edge kinds at the joint (collapsed analytic A,B): polyline/polyline 21, analytic/polyline 8,
+       polyline/analytic 5, analytic/analytic 2. Same chain on both sides of the joint: 7.
+     Every joint vertex resolves to a mesh vertex; region pairs mix pln|cyl, facet|cyl, cyl|cyl.
+   Pattern in the samples: the vertex at the joint is a terminal of the right chain but the WRONG end
+   (e.g. rid 460 joint 2/7: chain 2653 edge ends at mv 7317 while the next chain 2717 (7563>7615)
+   starts at 7615, its far end; rid 388: next chain 2264 (6990>6991) starts at 6991 while the previous
+   edge ends at 6990). So a chain is traversed backwards or the loop's chain order is not a cycle --
+   i.e. Loop::reversed / Loop::chainIdx (refit_chains.cpp loop extraction) or the wire assembly, not
+   the analytic curves. Next: N59 dumps, per failing face, loop position -> chain, reversed flag,
+   chain terminals, and each wire edge's first/last mesh vertex.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
