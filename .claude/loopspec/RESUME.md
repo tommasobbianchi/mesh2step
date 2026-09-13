@@ -882,6 +882,17 @@ BG. **n71: N14_NONREGION + plane-first makes part 9's closed shell VALID with 97
    shell: the closed-valid residual detector branch (RULE 2.2-2.4) or the stl2step.cpp gates (shell-not-closed,
    brepcheck-invalid on the full analyzer, volume budget dV). n73 reruns with STL2STEP_DIAG_REVERT + DIAG_PLAN.
 
+BH. **n72: part 11's 0.174 mm gap survives exploding BOTH owners -- it is vertex displacement, not a fit offset (binary
+   5ba69e52207d, n70 flags + J6_DIAG). Part 11 PARKED in favour of part 9.**
+     recover 0: DIAG_EXPLODE rid 12 (cylinder R 15.87), 424, 634, 1361 right after N70_TARGET (log lines 1084-1091).
+     recover 1 J6 census (before sew): 9 free edges, still "owned" by 12 and 634 with the same 0.692 / 18.868 / 0.174 mm
+       geometry at 0.174 mm offset, plus a new sliver around plane 1510 (0.004-0.010 mm edges); sew 9 -> 13 (not kept).
+   Code: refit_build.cpp:5971 `builtRid.push_back(exp ? rid : -1)` -- facet faces of an EXPLODED region keep its rid, so
+   those owners are the facet triangles that replaced 12 and 634. Their mesh vertices still sit 0.174 mm from the
+   neighbours' boundary, so the gap comes from shared vertex TShapes being moved by snapping (the meshTolCap / P44
+   "two distinct mesh vertices confused into one TVertex" class), not from plane 634's fit (maxVertexDev 0.0149).
+   Next step for part 11 (later): trace which snap moves those vertices. Part 9 is one gate from shipping (n73).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
