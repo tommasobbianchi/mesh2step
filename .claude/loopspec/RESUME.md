@@ -1342,3 +1342,10 @@ The sloped regions are not straight ruled tapers (and a plain loft does not pair
 
 ## DY — full round by "outline inside the round, 2D offset, fillet 0.495T": valid for p16 but over-segmented (2026-09-13)
 autoround2 on p16 (T 20, rho 10; slice at t = 5 with analytic inset d = 1.3397; outward 2D offset with arc joins; prism; fillet 0.495T): offset wires 3, fillet on 748 edges done. Model valid, dV -1.426%, STEP re-read valid. BUT faces {196 plane, 568 cyl, 6 torus, 354 other}, mesh->model p95 0.12, max 3.19. The loop segmentation (LINE/ARC tol 0.02) split the outline into hundreds of short primitives: the section through the round is noisier than 0.02. Numerically close but not a clean feature model. Rerunning with SEGTOL 0.05/0.08/0.12.
+
+## DZ — p16 segmentation tolerance sweep: SEGTOL 0.12 gives a feature-level outline; holes wrongly rounded (2026-09-13)
+autoround2 with SEGTOL (line/arc fit tolerance):
+- 0.05: 52 fillet edges, {19 plane, 42 cyl, 14 torus, 2 other}
+- 0.08: 54 edges, {19, 43, 14, 4}
+- 0.12: 20 edges, {2 plane, 9 cyl, 14 torus, 4 other}, dV -1.361%, mesh->model mean 0.111, p95 0.042, max 3.19
+In all three, in-memory BRepCheck says invalid while the STEP re-read says valid. The persistent max 3.19 and dV of about -1.4% come from the construction: offsetting the WHOLE face also shrinks the two holes by d, and the 0.495T fillet is applied to the hole edges too, although the holes have straight walls. Fix in autoround3: offset the outer loop only, take the holes from the mid slice unchanged, and fillet only the end edges not lying on a hole.
