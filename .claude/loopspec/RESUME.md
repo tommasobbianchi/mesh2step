@@ -765,6 +765,16 @@ AW. **ROOT CAUSE of the 28 failing partial cylinders: the refreshOuterWire BRepB
    -> UnorientableShape on every attempt. With the rebuild skipped, N50 no longer changes the count.
    Closure is now the only blocker: next n63 = N61 + N13_SEW_FREE + N48 + N60 + N62 (+ J6_DIAG census).
 
+AX. **n62: judging collapsed edges against their own vertex tolerance CLOSES part 9's sewn shell, but the
+   closed shell is invalid (binary e140272e6e17, sew partial + N52 + N60 + N62_VTX_TOL, no N61).**
+     arm a (no N50): every recover pass -> collapsed free edges all removed, freeAfter 0, applied=1, same face
+       count: recover 0 54/54, recover 1 43/43, recover 2 41/41, recover 3 32/32; N62_KEEP none. N27_FIXFACE at
+       recover 3 reports closed=1 valid=0. Explodes: 98 cylinders, 0 planes (the cascade now removes cylinders
+       one by one instead of blanket-exploding everything); RESULT smoothRevertedTrue=1, smoothCylinders 0.
+     arm b (+N50, N58): real gaps remain -> freeAfter 26 / 19; unchanged blanket; built 0.
+   Closure is solved by collapsed-edge removal; VALIDITY of the closed shell is the next blocker. This run
+   still contains the 28 wire-broken faces (no N61); n63 (N61 + closure set) shows the shell without them.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
