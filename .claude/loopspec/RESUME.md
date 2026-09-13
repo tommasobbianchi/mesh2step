@@ -1495,3 +1495,9 @@ Report: sem/kimi14/findings.md (OCP 7.9.3.1; reproducers diag*.py, fix_test.py).
 - No post-processing fixes it: ShapeFix_Shape/Wire/Solid, Sewing+MakeSolid, UnifySameDomain combos, ShapeDivideArea (worse, 26), vertex tolerance 0.01-1.0, write precision/surfacecurve modes 0/1/2, AP203/AP214/AP242, read precision modes, translation. Snapping to identical polylines leaves exactly coincident edges, which is worse (31).
 - Proposed builder-level fixes: build the stepped solid without creating junction slivers (single multi-section construction) or fuse with BOPAlgo glue (GlueShift/GlueFull). Converting circle edges to B-splines before writing is theoretically sound but its prototype segfaulted.
 Testing now: fuse with SetGlue (BOPAlgo_GlueShift / BOPAlgo_GlueFull), with and without loop snapping, on p14 with the STEP re-read invalid-face count.
+
+## EY — multi-axis parts as the intersection of stepped extrusions: refuted (2026-09-13)
+sem/bE/summary.txt:
+- p1: stepped along X +1.36% (512 planes), Y +1.99% (664 planes, STEP invalid), Z +1.43% (440 planes). The intersection is EMPTY (solids 0, volume 0).
+- p3: stepped along X -0.19% (274 planes), Y -0.08% (355 planes, 29 cyl, STEP valid), Z -0.89%. The intersection is valid but -7.03%, with 1340 planes + 621 cylinders (splintered).
+Refuted: intersecting per-axis staircases compounds their errors and splinters the faces. The single-axis stepped builds are close on volume but are 19-26-level staircases with hundreds of planes, i.e. approximation, not recognition; they are NOT counted as solved even at |dV| < 1%. Multi-axis parts need the feature route instead (base stock from the dominant stepped axis, then feature-map holes/slots/bosses along the other axes, as for the turned parts).
