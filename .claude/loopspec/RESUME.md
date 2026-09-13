@@ -84,6 +84,36 @@ No part ships a TORUS. 3 parts exceed the 120k-triangle app limit (12, 23, 39).
     diagnostic walk (refit_build.cpp:2061), not a failure counter. 11,800 meant 11,800 edges
     examined. Real number: N25_CHAINFAIL chains=11498 **failed=69** regionsHit=129.
 
+14. **N14_NONREGION on mechparts/11** (DeepSeek, 2026-09-13) -- component KEPT, all four
+    gates pass (t1..t4=1), but builtFaces=33,836 are ALL planes: builtCyl=0,
+    smoothCylinders=3 planned. The loss is before the gates (56 regions -> 3 planned).
+15. **N28_FIX_ISLE_PC on mechparts/11** (DeepSeek) -- worse: decision=REVERT,
+    firstFail=t1_bf (buildFaces returned nothing), smoothCylinders=0.
+16. **J6_KEEP_OPEN alone on mechparts/9** (Kimi's 08:50 binary) -- 0 cylinders,
+    revertCauses brepcheck-invalid: t3 fails on leftover degenerate sliver faces
+    (rid=-1, zero-length edges, 0.01-0.09 mm2). Kimi's purge of those slivers is the
+    follow-up (binary c60b4bd82890; its log line needs STL2STEP_J6_DIAG=1 to print).
+
+## Verified facts from the resume session (2026-09-13 ~09:20)
+
+A. **The law-band cylinder finder is OFF above 8,000 triangles.** refit_internal.hpp:
+   `archChainBand(mv) { return mv.nTri >= 500 && mv.nTri <= 8000; }`, comment "upper bound
+   ~8000 excludes Body11 file (15300 tris)". Every heavily curved user part is above it;
+   mechparts/11 logs `DIAG_LAWDECLINE reason=out_of_band nTri=46674`. Made overridable as
+   STL2STEP_N29_ARCH_MAXTRI (default 8000, byte-identical) -- measurement on part 11 pending.
+B. **Part 11 is discarded for a CLOSED but INVALID shell (site B).** refit_build.cpp:6216
+   `if (BRep_Tool::IsClosed(sh) && !shValid)` -> :6232 `if (plan.hostR2 || cascadeSt.u2Done
+   || !shValid)` -> :6296 `return false`. With shipped flags: cylRegions=56, 232 face-build
+   explodes of which 56 are exactly the cylinders, then the whole build is discarded.
+C. **Part 9 and part 11 share the blocker: an invalid shell, not a missing cylinder.**
+   Part 9 under Kimi's keep-open + sliver purge (binary c60b4bd82890) still ends
+   revertCauses brepcheck-invalid, 0 cylinders.
+
+Notes from this resume: DeepSeek session ocds3 ended on its 50-minute timeout (exit 124),
+not a conclusion. Kimi stopped on its usage cap (a rolling 5-hour window, not runtime).
+Kimi is now run via ~/.claude/skills/ask-kimi/scripts/kimi_run.sh (transcript <= 100 KB);
+DeepSeek via oc_run.sh is pinned to --variant high.
+
 ## The pattern worth remembering
 
 The engine destroys valid geometry while reacting to small localised faults, and every fix
