@@ -1255,3 +1255,35 @@ sem/batch.summary (auto2d, first version):
 - Wrong axis: p20 (a 160x45x5 plate) was extruded along X, giving -71.9% volume.
 - Failed (7, 10, 12, 13, 15, 16, 18, 19, 21, 22, 23, 24, 25, 28, 30, 31, 32, 33, 37): all StdFail_NotDone from GC_MakeArcOfCircle. A loop that is ONE full circle (round hole) hands the 3-point arc the same start and end point.
 Fixes: a single-arc loop becomes a full gp_Circ edge; degenerate arcs fall back to a segment; an AXIS env override lets the batch retry the other axes when |dV| > 0.5%, keeping the best valid build. Rerunning as batch2 (sem/batch2.summary). Visual check sem/p9_auto_iso.png: the automatic model looks like the part (cylinders on bore and root, tori on fillets).
+
+## DO — batch2: 23 of the 25 extrusion-candidate parts rebuilt as valid feature models (2026-09-13)
+sem/batch2.summary (auto2d with full-circle loops + axis retry). Every accepted build is BRepCheck valid with STEP re-read valid:
+| part | dV | cyl | torus | cone | treatments | mesh->model max |
+|---|---|---|---|---|---|---|
+| 7 | -0.014% | 31 | 1 | 0 | none | 0.015 |
+| 9 | -0.022% | 77 | 22 | 0 | fillet 2.0 | 0.021 |
+| 10 | +0.027% | 30 | 0 | 14 | chamfer 2.0 on one loop | 0.017 |
+| 11 | +0.097% | 22 | 8 | 0 | fillet 3.95 | 0.032 |
+| 12 | -0.057% | 14 | 20 | 0 | fillets 2.0-2.2 | 0.083 |
+| 13 | +0.015% | 16 | 0 | 0 | none | 0.014 |
+| 15 | -0.000% | 3 | 0 | 0 | none | 0.000 |
+| 18 | +0.014% | 5 | 4 | 0 | fillet 6.0 | 0.003 |
+| 19 | +0.007% | 34 | 33 | 0 | none (2 'other' faces) | 0.152 |
+| 20 | +0.062% | 14 | 4 | 0 | fillet 2.0 (axis retry picked Z) | 0.011 |
+| 21 | -0.013% | 7 | 2 | 0 | fillet 6.0 | 0.004 |
+| 23 | +0.037% | 25 | 38 | 0 | fillets 2.95-3.25 | 0.103 |
+| 24 | -0.056% | 17 | 2 | 0 | fillet 4.2 | 0.081 |
+| 25 | +0.042% | 20 | 24 | 0 | fillets 5.9-6.0 | 0.113 |
+| 28 | +0.039% | 6 | 2 | 0 | fillet 3.95 | 0.015 |
+| 29 | +0.061% | 9 | 0 | 18 | chamfer 2.0 | 0.012 |
+| 30 | +0.650% | 26 | 0 | 0 | none | 0.028 |
+| 31 | -0.018% | 7 | 0 | 14 | chamfers 2.0-2.1 | 0.094 |
+| 32 | -0.021% | 10 | 6 | 0 | fillet 6.0 | 0.006 |
+| 33 | +0.437% | 30 | 0 | 0 | none | 0.148 |
+| 35 | -0.022% | 27 | 8 | 0 | fillet 1.0 | 0.018 |
+| 36 | -0.059% | 47 | 17 | 0 | none | 0.161 |
+| 37 | -0.028% | 25 | 26 | 0 | fillet 3.95 | 0.165 |
+NOT solved:
+- p16 (+8.2%, 632 planes): a link with FULL-ROUND edges (radius = half the 20 mm thickness). The mid-slice is the widest outline and the treatment search capped rho at 6 and t at 0.3T.
+- p22 (+8.8%, 437 planes): a triangular plate with large tapered/sloped regions (bore and outer faces), not a pure extrusion.
+Treatment values near 6.0 may be capped by the search range; to re-check. Next: extend the treatment search to T/2 (full rounds), run the FreeCAD round trip on all 23 STEP files, and inspect p22.
