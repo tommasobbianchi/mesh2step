@@ -358,6 +358,18 @@ AC. **The refused cylinder boundary chains are tiny, and their mesh vertices alr
    Rule 8: third attempt on this issue (n37 FixSameParameter, DeepSeek PCURVE_PROJ, Kimi
    J6_KEEP_OPEN all failed) -> second opinion requested from Kimi before writing it.
 
+AD. **Where the cylinders go (N25_DIAG, binary e37c21e9e6da).** First recover pass:
+     part 9 (base flags): chains 11498, failed 69, regionsHit 129; smoothCylinders 98,
+       smoothBuiltCylinders 0, smoothAdoptedNoCyl 1, maxEdgeTol 3.623 mm. Refusals: plane|plane 132,
+       cyl|cyl 112, plane|cyl 12.
+     part 11 (base + N29_ARCH_MAXTRI=200000 + N22_NOQUORUM): chains 4422, failed 58, regionsHit 86;
+       smoothCylinders 6 (not 34/1742 -- different flag set from n5f11), built 0, adoptedNoCyl 1,
+       maxEdgeTol 9.755 mm. Refusals: plane|plane 108, cyl|cyl 40, plane|cyl 8.
+   chainEdgeFail is set only for plane|plane and plane|cyl refusals (refit_build.cpp near the
+   "IntAna none: cyl|cyl is legal polyline" comment), so on part 9 at most 12 chains can hit a
+   cylinder through that arm; most of the 98 are lost elsewhere (cascade/blanket arms, or MakeFace /
+   BRepCheck on faces bounded by cyl|cyl polylines). The per-cylinder loss ledger is Kimi's Q1.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
