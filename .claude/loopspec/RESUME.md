@@ -997,6 +997,15 @@ BR. **The 97-cylinder STEP breaks in the write/read round trip, on its cylinder 
    never hand the builder a trimmed surface). n84 = N50 + N82 is running; fallback built next as STL2STEP_N85_NO_RECTTRIM
    (rot-trim attempt on the untrimmed rotated Geom_CylindricalSurface).
 
+BS. **n84: with N50_TRIMROT the last closed-but-invalid culprit on part 9 is ONE cylinder face, and the U0 round limit sends
+   the ladder to the blanket (binary 4f0a342c6522, n71 flags + N50 + N82 + N64/N67/N24 diagnostics).** N67_U0 planes 84
+   (faceInvalidCyls 2) -> 9 (2) -> 3 (1); then "N69_LADDER u0=1 satU0=0 u0Rounds=3 culprits=1 -> leaving U0",
+   "N24_U2_REACHED blanket=97 cyls=98 exploded=1 sat=1"; explodes 96 planes / 98 cylinders; buildFaces-false (t1=0); STEP
+   0 cylinders (valid faceted fallback). The N67 extra rounds (12) apply only when u0 is all planes; a lone face-invalid
+   cylinder gets the default 2 rounds, so the ladder escalates U1 -> U2 and destroys every partial cylinder to remove one.
+   Next n87 (STL2STEP_N87_U0_ANYTYPE): allow up to 12 U0 rounds for any region type while the set does not saturate
+   (wouldSaturate still guards) -- the per-region fallback of the external advice.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
