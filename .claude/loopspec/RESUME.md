@@ -582,6 +582,24 @@ AL. **n50: fixing the trimmed-surface rotation check (STL2STEP_N50_TRIMROT) make
    More faces built means more free edges before sewing (541 -> 725), so closure is still the blocker.
    Next: n53 = N50 + sew partial + N52_DROP_ZEROLEN (+ J6_DIAG residual census).
 
+AM. **External OCCT advice (user's friend, 2026-09-13) -- recommendations, checked against our data.**
+   - Never pass Geom_RectangularTrimmedSurface to the face builders; trim only by wires. CONFIRMED by
+     fact AL (n50: the trimmed wrapper hid the rotation from bindCylPCurves; fixing it 28 -> 8 FBF).
+   - Align the cylinder X axis to the patch's mid angle so U stays in (-span/2, span/2): equivalent to
+     cylSurfaceForRegion rotating X to uMin (U in [0, span]) as long as span < 2pi.
+   - Consecutive wire edges must share the same TopoDS_Vertex TShape; pre-create junction vertices;
+     sanitize with ShapeFix_Wire FixReorder / FixConnected / FixEdgeCurves / FixDegenerated. Matches
+     fact AJ-stall (9 of 11 stalled faces walk one edge); n51 probe measures broken joints.
+   - Zero-length edges after sewing: ShapeFix_Wireframe::FixSmallEdges may break closure/orientation.
+     Preferred: (A) ShapeFix_Wire::FixSmall per face BEFORE sewing (precision = sew tolerance); or
+     (B) ShapeFix_Shape on the sewn shell with FixWireTool()->FixSmallMode/FixConnectedMode/
+     FixDegeneratedMode = 1, FixFaceTool()->FixOrientationMode = 1, faces tracked via Context().
+     n52 (Wireframe, guarded by freeAfter==0 + face count + validity) runs first; (B) then (A) next.
+   - Replace global explode with local patch substitution (hybrid shell: analytic faces + faceted
+     patches), and use analytic intersections between primitives, mesh chords only against freeform.
+     The engine already intersects first and falls back to chords on refusal (facts Z, AF).
+   - For complex UV loops: BOPAlgo_BuilderFace / BRepTopAdaptor_FClass2d orientation checks.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
