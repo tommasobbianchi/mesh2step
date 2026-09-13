@@ -940,6 +940,16 @@ BM. **n78b REFUTES tessellation sagitta as the source of part 9's volume shortfa
    predictedAbs 173.8597. Observed shell - mesh = -1669.6123. Wrong sign and ~15x too small: the cylinder faces do not
    explain the missing volume. n79 (fixed-origin signed volume per face class vs per mesh-region class) locates it.
 
+BN. **n79: cylinder FACES cover 61% more area than their mesh regions on part 9 (binary 2bad84b24589, n71 flags +
+   N79_CLASSVOL).** Per-face volume about a fixed origin is again unusable (faceVolSum 739.9 vs shellVol 96169.0: plane
+   -0.16, facet3 0.72, cylinder 739.4), but the mesh side sums exactly (97838.6286) and the AREAS are valid:
+     shell faces: cylinder 288.6891 mm2, facet3 9168.4437, plane 13187.2016 (total 22644.3)
+     mesh tris:   cylinder regions 179.8338, exploded 7324.4267 + island 1850.0489 (9174.5), plane 13216.2595 (total 22570.5)
+   Plane faces -29 mm2 and facets -6 mm2 vs their mesh, but cylinder faces +109 mm2 (+61%). Hypothesis (unmeasured): some
+   partial cylinder faces are trimmed on the COMPLEMENTARY arc (2pi - span) -- a boss built that way becomes a dent and
+   removes material, which could produce a loss of this size. Next n80: at each accepted partial cylinder face, log rid,
+   face area vs region mesh area, span, R, outwardNormal and the winning attempt tag.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
