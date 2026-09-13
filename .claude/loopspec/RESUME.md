@@ -1509,3 +1509,11 @@ sem/bglue/summary.txt (fuse of level prisms with BRepAlgoAPI_Fuse.SetGlue; STEP 
 - auto25g (snapped) + GlueShift: 31 invalid
 - auto25g + GlueFull: running
 Glue helps but does not remove the near-coincident-arc slivers. Not solved. The semantic route (base stock + real features, autoblock) is the likelier fix for p14/p39; it is being tested on 3, 1, 5.
+
+## FA — glue fuse cannot clear p14; first feature-route block results (2026-09-13)
+Last glue variant, auto25g (snapped) + GlueFull: 19 invalid faces. No glue variant (25/15/31/19) reaches 0, so p14 stays unsolved on the stepped path.
+autoblock.py v1 (base = mid-section outer outline extruded; cuts = feature-map holes, facing-plane slots, step floors):
+- p3: every base axis gives a base SMALLER than the mesh (-69/-73/-78%): the mid section misses the wide parts, so no build.
+- p1: base Y (+40.6%), 3 holes (R 19.05, 12.7, 25.4), the same slot cut 4x. Invalid, -38.2%.
+- p5: base Y, 6 holes (R 15.875, 2.667 x3, 6.35, 3.556), 11 slot cuts (duplicates) + 2 floors. Valid, -4.45%, faces {25 plane, 8 cyl}, STEP valid.
+Fixes in autoblock2: base = extruded SILHOUETTE (shapely unary_union of the outer loops of 40 slices along the axis); slot pairing one-to-one with the nearest facing wall.
