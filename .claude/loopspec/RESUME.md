@@ -785,6 +785,21 @@ AY. **n63: wire fix + closure set CLOSES part 9 on every pass; validity is the l
    then removes the cylinders one by one. Next n65: N64_VALID_DIAG + N13_SEW_WHY on the same flags -- BRepCheck
    face/edge status tally per surface type on the closed shell.
 
+AZ. **The closed part-9 shell is invalid because of PLANE faces, not cylinders -- yet the cascade explodes the
+   cylinders (n65, binary 0580f978a399, n63 flags + N64_VALID_DIAG + N13_SEW_WHY).** Status tally on the
+   reshape-closed shell, per surface type (face status / edge-in-face status):
+     recover 0: 86 bad faces -- plane face27 UnorientableShape 70, plane face32 BadOrientationOfSubshape 14,
+       plane face23 InvalidImbricationOfWires 1, plane edge8 InvalidCurveOnSurface 1, cylinder face27 1.
+     recover 1: 69 -- plane 27: 55, 32: 12, 23: 1, edge8 1; cylinder 27: 1.
+     recover 2: 66 -- plane 27: 54, 32: 11, 23: 1, edge8 1; cylinder 0.
+     recover 3: 37 -- plane 27: 30, 32: 7, edge8 1; cylinder 0.
+   Sewn shell before reshape (N13_SEW_WHY): 263 x27, 45 x32, 3 x23. FBF 1; explodes 98 cylinders, 0 planes;
+   reverted. So the culprit cascade removes healthy cylinders as victims while the invalid plane faces stay;
+   the bad-plane count falls only because exploding a cylinder rebuilds its neighbours.
+   Two directions: (1) point the closed-but-invalid cascade at the regions that own invalid faces (planes
+   become facets, cylinders stay) -- the external advice's per-region fallback; (2) find why those plane
+   faces are unorientable (likely the same wire-assembly class as the cylinders, fact AW).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
