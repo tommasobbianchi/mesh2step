@@ -145,6 +145,21 @@ J. **Part 11's 37 bad shell faces are mostly tiny PLANES, and none has a pinch v
    n5e pinch-vertex defect is NOT the cause here. DeepSeek's cylinder-pcurve angle can cover at
    most the 11 cylinder faces on part 11.
 
+K. **Part 11 with the size limit AND the consistency check lifted (N29 + N22):** all 1,742
+   bands are claimed, then **938 are rejected as Span by my own n18 arc-coverage gate** (< 29
+   deg), 34 survive, all exploded, 6 planned, 0 shipped. The 1,742 bands collapse into only 52
+   distinct radii (0.5 % clusters): **732 bands at R~4.001**, then 61 @ 100.8, 56 @ 79.4, 54 @
+   57.5 ... -- one set of cylinders sliced into thin 3-4 facet strips, not tiny features.
+L. **Why fragments never merge -- hypothesis, being counted (N31):** lawBandsMergeable
+   (refit_lawband.cpp:943) needs matching R, axes parallel to ~1e-6 rad (cdir >= 0.9999995),
+   close axis lines, AND triangle-ID ranges that overlap or abut -- a "same original face" proxy
+   that holds when an STL writer stores each face's triangles consecutively (synthetic
+   exports) and fails on a real mesh.
+M. **Part 9 after keep-open + purge is clean at every OWN-status level** -- 48,710 edges,
+   20,375 vertices, shell and all faces report no code -- yet still brepcheck-invalid. The
+   remaining fault must be context status (edge-on-face / wire-on-face / vertex-on-edge, i.e.
+   StatusOnShape(ctx)), which no dump has read yet; being measured.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
