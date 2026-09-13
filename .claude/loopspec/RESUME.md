@@ -599,6 +599,24 @@ AM. **External OCCT advice (user's friend, 2026-09-13) -- recommendations, check
      patches), and use analytic intersections between primitives, mesh chords only against freeform.
      The engine already intersects first and falls back to chords on refusal (facts Z, AF).
    - For complex UV loops: BOPAlgo_BuilderFace / BRepTopAdaptor_FClass2d orientation checks.
+   Follow-up from the same source:
+   - ShapeFix_Wire::FixConnected is a repair, not a substitute for building shared vertices; construct
+     one TopoDS_Vertex per junction and reuse it in both edges.
+   - Analytic|analytic boundaries: exact S1 x S2, never mesh -> projected polyline -> fitted curve.
+     Analytic|freeform: keep mesh-node correspondence, piecewise-linear or low-degree UV curve.
+   - BRepLib::SameParameter only reparameterises curves that already describe the same edge; it does
+     not reconcile independently approximated 2D and 3D curves.
+   - Distinguish geometrically tiny edges (distinct close vertices) from topologically collapsed ones
+     (both ends the same vertex after sewing); use a separately justified edgeRemovalTolerance, not the
+     sewing tolerance (n52/n54 use 1e-4 mm vs sew 0.1 mm). Classify each collapsed edge (isolated
+     artifact / merge neighbours / rebuild / legitimate degenerate) and replace via BRepTools_ReShape
+     with local validation, rather than dropping edges blindly after sewing.
+   - Per-region fallback with a quality chain (wire valid -> face valid -> sews -> shell valid, else a
+     local triangulated patch) instead of all-or-nothing; adjacency classes ANALYTIC_ANALYTIC /
+     ANALYTIC_FREEFORM / FREEFORM_FREEFORM each with a fixed boundary policy.
+   To measure next: for the post-sew zero-length free edges, same vertex TShape at both ends
+   (collapsed) or distinct vertices (tiny).
+
 
 AN. **Broken wire joints separate failing partial cylinders from built ones (n51, binary
    4f9f65922432, base flags + N51_WIREJOIN, part 9).** A joint is broken when the last vertex of edge i
