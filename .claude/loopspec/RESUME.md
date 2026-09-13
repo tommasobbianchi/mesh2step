@@ -1243,3 +1243,15 @@ So the slice-and-feature path directly covers most of the user's corpus: extrude
 
 ## DM — auto2d.py reproduces part 9 with no hand input (2026-09-13)
 sem/auto2d.py on mechparts/9, 2.0 s. It finds axis Z (section variation 0.00000). Mid loops: outer (30 lines, 10 arcs R 51.68-51.71) and bore (3 lines, 1 arc R 37.336). The prism is valid. End treatments measured per loop from the slice area deficit: fillet 2.0 (outer) and 2.05 (bore) at both ends. 88 fillets applied. Model valid, volume 97,816.9 against mesh 97,838.6 (-0.022%), faces {plane 35, cylinder 77, torus 22}. Mesh -> model faces over 800 vertices: mean 0.0061, p95 0.0183, max 0.0214. STEP re-read valid. Slightly looser than the hand model (max 0.0078) because each root arc is fitted on its own; a later step can snap concentric equal arcs to a shared centre and radius. Running now: batch over the 24 extrusion parts (sem/batch.sh -> sem/batch.summary).
+
+## DN — first batch over the 24 extrusion parts: 5 exact, 1 wrong axis, 18 failed on one construction bug (2026-09-13)
+sem/batch.summary (auto2d, first version):
+- Exact, each valid with STEP re-read valid:
+  - p9: -0.022%, 77 cyl, fillet 2.0
+  - p11: +0.097%, 22 cyl, fillet 3.95, mesh->model max 0.032
+  - p29: +0.061%, 9 cyl + 18 cones, chamfer 2.0, max 0.012
+  - p35: -0.022%, 27 cyl, fillet 1.0 on one loop, max 0.018
+  - p36: -0.059%, 47 cyl, max 0.16
+- Wrong axis: p20 (a 160x45x5 plate) was extruded along X, giving -71.9% volume.
+- Failed (7, 10, 12, 13, 15, 16, 18, 19, 21, 22, 23, 24, 25, 28, 30, 31, 32, 33, 37): all StdFail_NotDone from GC_MakeArcOfCircle. A loop that is ONE full circle (round hole) hands the 3-point arc the same start and end point.
+Fixes: a single-arc loop becomes a full gp_Circ edge; degenerate arcs fall back to a segment; an AXIS env override lets the batch retry the other axes when |dV| > 0.5%, keeping the best valid build. Rerunning as batch2 (sem/batch2.summary). Visual check sem/p9_auto_iso.png: the automatic model looks like the part (cylinders on bore and root, tori on fillets).
