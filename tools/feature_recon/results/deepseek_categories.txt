@@ -1,0 +1,70 @@
+rendered 2
+rendered 3
+rendered 5
+rendered 6
+rendered 7
+rendered 8
+rendered 10
+rendered 11
+rendered 12
+rendered 13
+rendered 14
+rendered 15
+rendered 17
+rendered 18
+rendered 19
+rendered 20
+rendered 21
+rendered 23
+rendered 24
+rendered 25
+rendered 27
+rendered 28
+rendered 29
+rendered 30
+rendered 31
+rendered 32
+rendered 33
+rendered 35
+rendered 36
+rendered 37
+rendered 39
+p1 [9s] CAT=E | FEATURES=through holes:2, bores:1, bosses:1, slots:1, fillets:1
+p2 [9s] CAT=A | FEATURES=through holes:1, slots:1
+p3 [9s] CAT=E | FEATURES=through holes:3, bosses:2, slots:1
+p4 [11s] CAT=A | FEATURES=boss:6, through_hole:4
+p5 [8s] CAT=C | FEATURES=through holes:1, bosses:1, chamfers:2, fillets:2
+p6 [10s] CAT=E | FEATURES=bores:1, bosses:2, pockets:2, fillets:3
+p7 [10s] CAT=A | FEATURES=through holes:10, bore:1, fillets:12
+p8 [8s] CAT=B | FEATURES=through holes:2, slots:1, chamfers:2
+p9 [8s] CAT=A | FEATURES=through holes:1, teeth:12
+p10 [12s] CAT=A | FEATURES=through holes:6, central through opening:1, fillets:6
+p11 [8s] CAT=A | FEATURES=none:0
+p12 [10s] CAT=A | FEATURES=through holes:5
+p13 [8s] CAT=A | FEATURES=through holes:1, slots:1
+p14 [10s] CAT=B | FEATURES=teeth:24, through holes:5, bore:1, boss:1
+p15 [9s] CAT=B | FEATURES=through holes:2
+p16 [9s] CAT=D | FEATURES=through holes:2, fillets:2
+p17 [15s] CAT=A | FEATURES=through holes:2, teeth:1
+p18 [10s] CAT=A | FEATURES=through holes:2, fillets:2
+p19 [9s] CAT=A | FEATURES=through holes:2, slot:1
+p20 [8s] CAT=A | FEATURES=through holes:1, slots:1
+p21 [10s] CAT=A | FEATURES=bores:1, through holes:4, bosses:4, chamfers:4
+p22 [9s] CAT=A | FEATURES=through holes:4, fillets:3
+p23 [9s] CAT=A | FEATURES=through holes:1, counterbore:1
+p24 [9s] CAT=A | FEATURES=through holes:2, bosses:2
+p25 [9s] CAT=A | FEATURES=through holes:3, fillets:4
+p26 [9s] CAT=C | FEATURES=through hole:1, blind hole:1, flats:6
+p27 [13s] CAT=D | FEATURES=through holes:9, fillets:1
+p28 [9s] CAT=A | FEATURES=through holes:5, bosses:4
+p29 [8s] CAT=A | FEATURES=none:0
+p30 [10s] CAT=B | FEATURES=through holes:4, bosses:2, fillets:1
+p31 [9s] CAT=A | FEATURES=through holes:3, chamfers:1
+p32 [8s] CAT=A | FEATURES=through holes:3
+p33 [13s] CAT=A | FEATURES=bosses:6
+p34 [12s] CAT=B | FEATURES=through holes:2, counterbores:1, slot:1
+p35 [9s] CAT=A | FEATURES=through holes:3, slot:1, counterbores:3
+p36 [10s] CAT=A | FEATURES=through holes:1, slots:1, bosses:1
+p37 [10s] CAT=A | FEATURES=through holes:4, slot:1
+p38 [8s] CAT=C | FEATURES=keyway:1, threads:1, flange:1, taper:1
+p39 [11s] CAT=A | FEATURES=through holes:3

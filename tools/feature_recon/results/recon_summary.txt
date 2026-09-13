@@ -1,0 +1,39 @@
+p1 cat=E | best=NONE | |dV|=999% |  | tried: A:build-failed
+p2 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p2_B.step | |dV|=1.87% | 'cylinder': 49 | tried: A:build-failed B:ok(dV=1.870%)
+p3 cat=E | best=NONE | |dV|=999% |  | tried: A:build-failed
+p4 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p4_B.step | |dV|=1.672% | 'cylinder': 13 | tried: A:build-failed B:ok(dV=-1.672%)
+p5 cat=C | best=C /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p5_C.step | |dV|=49.621% | 'cylinder': 6 | tried: A:build-failed C:ok(dV=49.621%)
+p6 cat=E | best=NONE | |dV|=999% |  | tried: A:build-failed
+p7 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p7_A.step | |dV|=0.014% | 'cylinder': 31 | tried: A:ok(dV=-0.014%) B:freecad-invalid
+p8 cat=B | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p8_B.step | |dV|=0.011% | 'cylinder': 2 | tried: A:build-failed B:ok(dV=0.011%)
+p9 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p9_A.step | |dV|=0.022% | 'cylinder': 77 | tried: A:ok(dV=-0.022%) B:ok(dV=0.092%)
+p10 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p10_A.step | |dV|=0.027% | 'cylinder': 30 | tried: A:ok(dV=0.027%) B:freecad-invalid
+p11 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p11_B.step | |dV|=0.042% | 'cylinder': 41 | tried: A:ok(dV=0.097%) B:ok(dV=0.042%)
+p12 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p12_B.step | |dV|=0.022% | 'cylinder': 43 | tried: A:ok(dV=-0.057%) B:ok(dV=0.022%)
+p13 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p13_A.step | |dV|=0.015% | 'cylinder': 16 | tried: A:ok(dV=0.015%) B:ok(dV=0.054%)
+p14 cat=B | best=NONE | |dV|=999% |  | tried: A:build-failed B:freecad-invalid
+p15 cat=B | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p15_A.step | |dV|=0.0% | 'cylinder': 3 | tried: A:ok(dV=-0.000%) B:ok(dV=-0.000%)
+p16 cat=D | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p16_A.step | |dV|=8.155% | 'cylinder': 2 | tried: A:ok(dV=8.155%) D:build-failed
+p17 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p17_B.step | |dV|=0.208% | 'cylinder': 49 | tried: A:build-failed B:ok(dV=0.208%)
+p18 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p18_A.step | |dV|=0.014% | 'cylinder': 5 | tried: A:ok(dV=0.014%) B:freecad-invalid
+p19 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p19_A.step | |dV|=0.007% | 'cylinder': 34 | tried: A:ok(dV=0.007%) B:ok(dV=0.035%)
+p20 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p20_A.step | |dV|=71.902% | 'cylinder': 6 | tried: A:ok(dV=-71.902%) B:freecad-invalid
+p21 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p21_A.step | |dV|=0.013% | 'cylinder': 7 | tried: A:ok(dV=-0.013%) B:freecad-invalid
+p22 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p22_A.step | |dV|=8.823% | 'cylinder': 7 | tried: A:ok(dV=8.823%) B:freecad-invalid
+p23 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p23_A.step | |dV|=0.037% | 'cylinder': 25 | tried: A:ok(dV=0.037%) B:ok(dV=0.305%)
+p24 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p24_A.step | |dV|=0.056% | 'cylinder': 17 | tried: A:ok(dV=-0.056%) B:freecad-invalid
+p25 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p25_A.step | |dV|=0.042% | 'cylinder': 20 | tried: A:ok(dV=0.042%) B:ok(dV=0.043%)
+p26 cat=C | best=C /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p26_C.step | |dV|=14.793% | 'cylinder': 3 | tried: A:build-failed C:ok(dV=14.793%)
+p27 cat=D | best=D /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p27_D.step | |dV|=30.47% | 'cylinder': 12 | tried: A:build-failed D:ok(dV=30.470%)
+p28 cat=A | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p28_B.step | |dV|=0.009% | 'cylinder': 17 | tried: A:ok(dV=0.039%) B:ok(dV=0.009%)
+p29 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p29_A.step | |dV|=0.061% | 'cylinder': 9 | tried: A:ok(dV=0.061%) B:ok(dV=-0.086%)
+p30 cat=B | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p30_A.step | |dV|=0.65% | 'cylinder': 26 | tried: A:ok(dV=0.650%) B:freecad-invalid
+p31 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p31_A.step | |dV|=0.018% | 'cylinder': 7 | tried: A:ok(dV=-0.018%) B:ok(dV=0.135%)
+p32 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p32_A.step | |dV|=0.021% | 'cylinder': 10 | tried: A:ok(dV=-0.021%) B:freecad-invalid
+p33 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p33_A.step | |dV|=0.437% | 'cylinder': 30 | tried: A:ok(dV=0.437%) B:ok(dV=0.437%)
+p34 cat=B | best=B /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p34_B.step | |dV|=0.074% | 'cylinder': 18 | tried: A:build-failed B:ok(dV=-0.074%)
+p35 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p35_A.step | |dV|=0.022% | 'cylinder': 27 | tried: A:ok(dV=-0.022%) B:freecad-invalid
+p36 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p36_A.step | |dV|=0.059% | 'cylinder': 47 | tried: A:ok(dV=-0.059%) B:freecad-invalid
+p37 cat=A | best=A /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p37_A.step | |dV|=0.028% | 'cylinder': 25 | tried: A:ok(dV=-0.028%) B:ok(dV=0.059%)
+p38 cat=C | best=C /tmp/claude-1000/-home-tommaso-projects-mesh2step/55ed36d6-4f09-4e83-a602-2227174fbd8a/scratchpad/sem/recon/p38_C.step | |dV|=7.932% | 'cylinder': 7 | tried: A:build-failed C:ok(dV=7.932%)
+p39 cat=A | best=NONE | |dV|=999% |  | tried: A:build-failed B:freecad-invalid

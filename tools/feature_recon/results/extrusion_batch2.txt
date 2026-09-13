@@ -1,0 +1,50 @@
+p7 p7.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 12 (outer + 11 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)
+     model valid True volume 165995.400 mesh 166018.051 delta -0.014% | 'plane': 5, 'cylinder': 31, 'torus': 1, 'cone': 0, 'other': 0  [3.2s] | mean 0.0016 p95 0.0037 max 0.0150 | STEP True; re-read valid True
+p9 p9.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 2 (outer + 1 inner) | p: [('fillet', 2.0), ('fillet', 2.05)]
+     model valid True volume 97816.945 mesh 97838.629 delta -0.022% | 'plane': 35, 'cylinder': 77, 'torus': 22, 'cone': 0, 'other': 0  [2.0s] | mean 0.0061 p95 0.0183 max 0.0214 | STEP True; re-read valid True
+p10 p10.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 10 (outer + 9 inner) | p: [('none', 0.0), ('chamfer', 2.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0
+     model valid True volume 124579.960 mesh 124546.805 delta 0.027% | 'plane': 6, 'cylinder': 30, 'torus': 0, 'cone': 14, 'other': 0  [2.7s] | mean 0.0012 p95 0.0061 max 0.0170 | STEP True; re-read valid True
+p11 p11.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 1 (outer + 0 inner) | p: [('fillet', 3.95)]
+     model valid True volume 218266.610 mesh 218054.275 delta 0.097% | 'plane': 11, 'cylinder': 22, 'torus': 8, 'cone': 0, 'other': 0  [0.7s] | mean 0.0149 p95 0.0261 max 0.0315 | STEP True; re-read valid True
+p12 p12.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 7 (outer + 6 inner) | p: [('fillet', 2.0), ('fillet', 2.1), ('fillet', 2.1), ('fillet', 2.2), ('fillet', 2.2), ('f
+     model valid True volume 185488.192 mesh 185594.698 delta -0.057% | 'plane': 4, 'cylinder': 14, 'torus': 20, 'cone': 0, 'other': 0  [1.8s] | mean 0.0359 p95 0.0814 max 0.0825 | STEP True; re-read valid True
+p13 p13.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 268845.407 mesh 268804.495 delta 0.015% | 'plane': 7, 'cylinder': 16, 'torus': 0, 'cone': 0, 'other': 0  [1.1s] | mean 0.0009 p95 0.0072 max 0.0141 | STEP True; re-read valid True
+p15 p15.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 253857.810 mesh 253858.816 delta -0.000% | 'plane': 14, 'cylinder': 3, 'torus': 0, 'cone': 0, 'other': 0  [0.6s] | mean 0.0000 p95 0.0000 max 0.0000 | STEP True; re-read valid True
+p16 p16.axauto | axis Z section-perimeter variation 0.00600 extent 20.000 | 3 (outer + 2 inner) | p: [('chamfer', 6.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 364274.285 mesh 336807.480 delta 8.155% | 'plane': 632, 'cylinder': 2, 'torus': 0, 'cone': 0, 'other': 0  [2.5s] | mean 0.2213 p95 0.6031 max 0.6901 | STEP True; re-read valid True
+p18 p18.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 3 (outer + 2 inner) | p: [('none', 0.0), ('fillet', 6.0), ('fillet', 6.0)]
+     model valid True volume 457939.052 mesh 457874.042 delta 0.014% | 'plane': 4, 'cylinder': 5, 'torus': 4, 'cone': 0, 'other': 0  [0.7s] | mean 0.0016 p95 0.0026 max 0.0028 | STEP True; re-read valid True
+p19 p19.axauto | axis Z section-perimeter variation 0.00001 extent 20.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 1349592.814 mesh 1349496.156 delta 0.007% | 'plane': 3, 'cylinder': 34, 'torus': 33, 'cone': 0, 'other': 2  [1.3s] | mean 0.0055 p95 0.0189 max 0.1523 | STEP True; re-read valid True
+p20 p20.ax2 | axis Z section-perimeter variation 0.00056 extent 5.000 | 4 (outer + 3 inner) | p: [('fillet', 2.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 9600.054 mesh 9594.146 delta 0.062% | 'plane': 7, 'cylinder': 14, 'torus': 4, 'cone': 0, 'other': 0  [0.7s] | mean 0.0017 p95 0.0059 max 0.0106 | STEP True; re-read valid True
+p21 p21.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 6 (outer + 5 inner) | p: [('none', 0.0), ('fillet', 6.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.
+     model valid True volume 184442.217 mesh 184467.083 delta -0.013% | 'plane': 8, 'cylinder': 7, 'torus': 2, 'cone': 0, 'other': 0  [1.2s] | mean 0.0016 p95 0.0028 max 0.0035 | STEP True; re-read valid True
+p22 p22.axauto | axis Z section-perimeter variation 0.00715 extent 40.000 | 5 (outer + 4 inner) | p: [('none', 0.0), ('chamfer', 6.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 982534.380 mesh 902875.640 delta 8.823% | 'plane': 437, 'cylinder': 7, 'torus': 0, 'cone': 0, 'other': 0  [2.1s] | mean 1.6013 p95 4.1196 max 6.5292 | STEP True; re-read valid True
+p23 p23.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 5 (outer + 4 inner) | p: [('fillet', 2.95), ('fillet', 3.1), ('fillet', 3.1), ('fillet', 3.15), ('fillet', 3.25)]
+     model valid True volume 185455.787 mesh 185386.527 delta 0.037% | 'plane': 5, 'cylinder': 25, 'torus': 38, 'cone': 0, 'other': 0  [1.8s] | mean 0.0316 p95 0.0951 max 0.1028 | STEP True; re-read valid True
+p24 p24.axauto | axis Z section-perimeter variation 0.00000 extent 30.000 | 5 (outer + 4 inner) | p: [('none', 0.0), ('fillet', 4.2), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 190016.725 mesh 190123.127 delta -0.056% | 'plane': 4, 'cylinder': 17, 'torus': 2, 'cone': 0, 'other': 0  [1.4s] | mean 0.0476 p95 0.0809 max 0.0813 | STEP True; re-read valid True
+p25 p25.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 4 (outer + 3 inner) | p: [('fillet', 5.9), ('fillet', 6.0), ('fillet', 6.0), ('fillet', 6.0)]
+     model valid True volume 360343.500 mesh 360192.682 delta 0.042% | 'plane': 6, 'cylinder': 20, 'torus': 24, 'cone': 0, 'other': 0  [1.2s] | mean 0.0125 p95 0.0413 max 0.1131 | STEP True; re-read valid True
+p28 p28.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 6 (outer + 5 inner) | p: [('fillet', 3.95), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0
+     model valid True volume 243018.268 mesh 242924.129 delta 0.039% | 'plane': 2, 'cylinder': 6, 'torus': 2, 'cone': 0, 'other': 0  [1.2s] | mean 0.0082 p95 0.0151 max 0.0154 | STEP True; re-read valid True
+p29 p29.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 1 (outer + 0 inner) | p: [('chamfer', 2.0)]
+     model valid True volume 91024.439 mesh 90968.684 delta 0.061% | 'plane': 23, 'cylinder': 9, 'torus': 0, 'cone': 18, 'other': 0  [0.8s] | mean 0.0016 p95 0.0070 max 0.0119 | STEP True; re-read valid True
+p30 p30.axauto | axis Z section-perimeter variation 0.00000 extent 5.000 | 6 (outer + 5 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)
+     model valid True volume 8757.217 mesh 8700.695 delta 0.650% | 'plane': 6, 'cylinder': 26, 'torus': 0, 'cone': 0, 'other': 0  [1.3s] | mean 0.0011 p95 0.0064 max 0.0283 | STEP True; re-read valid True
+p31 p31.axauto | axis Z section-perimeter variation 0.00000 extent 40.000 | 4 (outer + 3 inner) | p: [('chamfer', 2.0), ('chamfer', 2.05), ('chamfer', 2.05), ('chamfer', 2.1)]
+     model valid True volume 454770.305 mesh 454852.677 delta -0.018% | 'plane': 32, 'cylinder': 7, 'torus': 0, 'cone': 14, 'other': 0  [0.8s] | mean 0.0421 p95 0.0697 max 0.0939 | STEP True; re-read valid True
+p32 p32.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('fillet', 6.0), ('fillet', 6.0), ('fillet', 6.0)]
+     model valid True volume 120051.116 mesh 120076.452 delta -0.021% | 'plane': 2, 'cylinder': 10, 'torus': 6, 'cone': 0, 'other': 0  [1.2s] | mean 0.0008 p95 0.0015 max 0.0058 | STEP True; re-read valid True
+p33 p33.axauto | axis Z section-perimeter variation 0.00000 extent 5.000 | 7 (outer + 6 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)
+     model valid True volume 2684.954 mesh 2673.262 delta 0.437% | 'plane': 3, 'cylinder': 30, 'torus': 0, 'cone': 0, 'other': 0  [1.7s] | mean 0.0460 p95 0.1314 max 0.1476 | STEP True; re-read valid True
+p35 p35.axauto | axis Z section-perimeter variation 0.00000 extent 5.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('fillet', 1.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 7945.608 mesh 7947.386 delta -0.022% | 'plane': 13, 'cylinder': 27, 'torus': 8, 'cone': 0, 'other': 0  [0.9s] | mean 0.0011 p95 0.0041 max 0.0183 | STEP True; re-read valid True
+p36 p36.axauto | axis Z section-perimeter variation 0.00000 extent 30.000 | 4 (outer + 3 inner) | p: [('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0)]
+     model valid True volume 203440.621 mesh 203561.394 delta -0.059% | 'plane': 38, 'cylinder': 47, 'torus': 17, 'cone': 0, 'other': 0  [1.2s] | mean 0.0366 p95 0.0620 max 0.1608 | STEP True; re-read valid True
+p37 p37.axauto | axis Z section-perimeter variation 0.00000 extent 20.000 | 6 (outer + 5 inner) | p: [('fillet', 3.95), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0.0), ('none', 0
+     model valid True volume 321033.799 mesh 321125.205 delta -0.028% | 'plane': 10, 'cylinder': 25, 'torus': 26, 'cone': 0, 'other': 0  [1.7s] | mean 0.0137 p95 0.0239 max 0.1652 | STEP True; re-read valid True

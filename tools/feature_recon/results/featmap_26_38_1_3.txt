@@ -1,0 +1,82 @@
+== p26 turned
+turned axis X centre (0.000, -0.000); feature triangles 572 of 2174
+patches (>=0.5% of feature area): 6
+  plane    area    1422.28 tris   152  normal [0.0, 0.0, 1.0] offset 12.700
+  plane    area     456.20 tris     2  normal [0.0, 1.0, 0.0] offset -6.350
+  plane    area     456.20 tris     2  normal [0.0, -1.0, 0.0] offset -6.350
+  cylinder area     320.03 tris   136  axis [0.0, 0.0, 1.0] R 4.826 dev 0.000 HOLE span 22.35
+  cylinder area     320.03 tris   136  axis [0.0, 0.0, 1.0] R 4.826 dev 0.000 HOLE span 22.35
+  plane    area      73.15 tris   144  normal [0.0, 0.0, 1.0] offset -9.652
+summary: {'plane': 4, 'cylinder': 2} holes: 2 bosses: 0
+== p38 turned
+turned axis X centre (7893.566, -0.001); feature triangles 1743 of 7804
+patches (>=0.5% of feature area): 11
+  plane    area  428185.45 tris   148  normal [0.0, 0.0, 1.0] offset 152.400
+  plane    area  293180.81 tris    14  normal [0.0, 0.0, 1.0] offset 76.200
+  plane    area  183745.76 tris     4  normal [0.0, 1.0, 0.0] offset 7868.166
+  plane    area  183745.76 tris     4  normal [0.0, -1.0, 0.0] offset -7918.966
+  cylinder area  145920.29 tris   288  axis [1.0, -0.0, 0.0] R 76.200 dev 0.000 HOLE span 304.80
+  cylinder area  145920.23 tris   288  axis [1.0, -0.0, 0.0] R 76.200 dev 0.001 HOLE span 304.80
+  cylinder area  145920.18 tris   288  axis [1.0, 0.0, 0.0] R 76.200 dev 0.000 HOLE span 304.80
+  cylinder area  145920.18 tris   288  axis [1.0, 0.0, 0.0] R 76.200 dev 0.000 HOLE span 304.80
+  cylinder area   80391.15 tris   136  axis [0.0, 0.0, 1.0] R 76.200 dev 0.000 HOLE span 355.60
+  cylinder area   80391.12 tris   136  axis [0.0, 0.0, 1.0] R 76.200 dev 0.000 HOLE span 355.60
+  plane    area   18235.68 tris   144  normal [0.0, 0.0, 1.0] offset -203.200
+summary: {'plane': 5, 'cylinder': 6} holes: 6 bosses: 0
+== p1 all
+patches (>=0.5% of feature area): 21
+  cylinder area    9120.01 tris   288  axis [0.0, 1.0, 0.0] R 25.400 dev 0.000 HOLE span 57.15
+  other    area    7392.17 tris  1305  axis [0.0, 1.0, 0.0] R 46.112 dev 20.188 BOSS span 57.15
+  plane    area    3952.28 tris   159  normal [0.0, 0.0, -1.0] offset -57.297
+  plane    area    3324.21 tris   288  normal [0.0, 1.0, 0.0] offset 234.939
+  plane    area    3324.21 tris   288  normal [0.0, -1.0, 0.0] offset -177.789
+  other    area    2936.73 tris  5918  axis [0.03, 0.0, -1.0] R 22.804 dev 10.405 BOSS span 40.57
+  other    area    2936.73 tris  5917  axis [-0.03, 0.0, -1.0] R 22.855 dev 10.446 BOSS span 40.57
+  plane    area    2540.32 tris     2  normal [1.0, 0.0, 0.0] offset -35.227
+  plane    area    2540.32 tris     2  normal [-1.0, 0.0, 0.0] offset 105.077
+  other    area    2117.43 tris  7862  axis [1.0, 0.0, -0.0] R 20.614 dev 10.061 BOSS span 63.50
+  other    area    1916.05 tris   206  axis [-0.0, 0.0, 1.0] R 22.290 dev 11.650 BOSS span 88.90
+  other    area    1916.05 tris   206  axis [0.0, -0.0, 1.0] R 22.297 dev 11.651 BOSS span 88.90
+  other    area    1916.05 tris   206  axis [0.0, 0.0, 1.0] R 22.290 dev 11.649 BOSS span 88.90
+  other    area    1916.04 tris   207  axis [-0.0, -0.0, 1.0] R 22.246 dev 11.642 BOSS span 88.90
+  plane    area    1519.64 tris   288  normal [0.0, 0.0, 1.0] offset 187.472
+  cylinder area    1393.33 tris   288  axis [0.0, 0.0, 1.0] R 12.700 dev 0.000 HOLE span 17.46
+  plane    area     846.77 tris     2  normal [0.0, 1.0, 0.0] offset 192.077
+  plane    area     846.77 tris     2  normal [0.0, -1.0, 0.0] offset -220.652
+  plane    area     846.77 tris     2  normal [0.0, 1.0, 0.0] offset 192.077
+  plane    area     846.77 tris     2  normal [0.0, -1.0, 0.0] offset -220.652
+  plane    area     633.18 tris   288  normal [0.0, 0.0, -1.0] offset -170.009
+summary: {'cylinder': 2, 'other': 8, 'plane': 11} holes: 2 bosses: 8
+== p3 all
+patches (>=0.5% of feature area): 34
+  plane    area    2467.14 tris   225  normal [0.0, 0.0, 1.0] offset -6.102
+  plane    area    2467.14 tris   225  normal [0.0, 0.0, -1.0] offset -19.298
+  plane    area    2157.09 tris   229  normal [0.0, 0.0, 1.0] offset 31.998
+  plane    area    2157.09 tris   229  normal [0.0, 0.0, -1.0] offset 18.802
+  other    area    1782.84 tris   296  axis [-0.0, 1.0, 0.0] R 13.765 dev 21.448 BOSS span 19.05
+  other    area    1782.84 tris   296  axis [0.0, 1.0, -0.0] R 13.769 dev 21.440 BOSS span 19.05
+  plane    area    1755.81 tris   203  normal [0.0, -1.0, 0.0] offset -56.137
+  plane    area    1755.81 tris   203  normal [0.0, 1.0, 0.0] offset 106.937
+  other    area    1335.91 tris   148  axis [0.0, 0.0, 1.0] R 25.700 dev 2.515 BOSS span 12.70
+  other    area    1335.91 tris   148  axis [0.0, 0.0, 1.0] R 25.700 dev 2.515 BOSS span 12.70
+  plane    area    1058.79 tris    96  normal [0.0, 1.0, 0.0] offset 68.837
+  plane    area    1058.79 tris    96  normal [0.0, -1.0, 0.0] offset -94.237
+  cylinder area     942.40 tris   288  axis [0.0, 1.0, 0.0] R 7.874 dev 0.000 HOLE span 19.05
+  cylinder area     942.40 tris   288  axis [0.0, 1.0, 0.0] R 7.874 dev 0.000 HOLE span 19.05
+  cylinder area     851.20 tris   288  axis [0.0, 0.0, 1.0] R 7.112 dev 0.000 HOLE span 19.05
+  cylinder area     851.20 tris   288  axis [0.0, 0.0, 1.0] R 7.112 dev 0.000 HOLE span 19.05
+  plane    area     645.16 tris     4  normal [-1.0, 0.0, 0.0] offset 76.898
+  plane    area     645.16 tris     4  normal [-1.0, 0.0, 0.0] offset 76.898
+  cylinder area     633.33 tris   288  axis [0.0, 0.0, 1.0] R 15.875 dev 0.000 BOSS span 6.35
+  cylinder area     633.33 tris   288  axis [0.0, 0.0, 1.0] R 15.875 dev 0.000 BOSS span 6.35
+  plane    area     632.63 tris   288  normal [0.0, 0.0, 1.0] offset 38.348
+  plane    area     632.63 tris   288  normal [0.0, 0.0, -1.0] offset 25.152
+  plane    area     374.44 tris   289  normal [0.0, -1.0, 0.0] offset -87.887
+  plane    area     374.44 tris   289  normal [0.0, 1.0, 0.0] offset 75.187
+  plane    area     322.58 tris     2  normal [0.0, 1.0, 0.0] offset 94.237
+  plane    area     322.58 tris     2  normal [0.0, -1.0, 0.0] offset -68.837
+  plane    area     322.58 tris     2  normal [0.0, 1.0, 0.0] offset 94.237
+  plane    area     322.58 tris     2  normal [0.0, -1.0, 0.0] offset -68.837
+  plane    area     322.58 tris     2  normal [1.0, 0.0, 0.0] offset -64.198
+  plane    area     322.58 tris     2  normal [1.0, 0.0, 0.0] offset -64.198
+summary: {'plane': 24, 'other': 4, 'cylinder': 6} holes: 4 bosses: 6
