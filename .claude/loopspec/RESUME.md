@@ -1432,3 +1432,14 @@ sem/dsv/all/results.txt (8-15 s per part, combined category + features prompt):
 - E: 1 3 6
 Matches my reading for turned (5, 26, 38), full round (16, 27) and multi-axis (1, 3, 6; 6 is really a damaged mesh). A/B is confused: 2 and 4 are stepped but labelled A; 15 is flat but labelled B. Feature counts in the combined prompt are unreliable (p9 teeth:12, although the dedicated counting question gave 10), so counts need dedicated single questions and dimensions come from slices.
 Routing in sem/recon.sh therefore always tries auto2d first (its section-invariance test is deterministic) and additionally runs the stepped path for A or B, autorev for C and autoround5 for D. A build is kept only if FreeCAD reads a single valid solid with 0 invalid faces; the best |dV| wins. Job recon-all is running.
+
+## EO — routed reconstruction over all 39 mechparts: 25 solved, 2 approximate, 7 wrong-shape, 5 none (2026-09-13)
+sem/recon/summary.txt (recon.sh: auto2d always; auto25g for A/B; autorev for C; autoround5 for D; a build is kept only if FreeCAD reads a single valid solid with 0 invalid faces; best |dV| wins):
+- SOLVED (valid solid, |dV| <= 0.65%), 25 parts, with method and cylinder count:
+  - 7 A 31, 8 B 2, 9 A 77, 10 A 30, 11 B 41, 12 B 43, 13 A 16, 15 A 3
+  - 17 B 49, 18 A 5, 19 A 34, 21 A 7, 23 A 25, 24 A 17, 25 A 20, 28 B 17
+  - 29 A 9, 30 A 26 (0.65%), 31 A 7, 32 A 10, 33 A 30 (0.44%), 34 B 18, 35 A 27, 36 A 47, 37 A 25
+- APPROX, valid but staircased: 2 (B, 1.87%, 49 cyl), 4 (B, 1.67%, 13 cyl).
+- WRONG-SHAPE, valid solid but large dV, not accepted as reconstructions: 5 (turned envelope, 49.6%), 16 (A fallback, 8.2%), 20 (A picked axis X, -71.9%; the axis retry used in batch2 gave +0.062%, now added to recon.sh), 22 (A, 8.8%, tapered), 26 (C envelope, 14.8%), 27 (D, 30.5%), 38 (C envelope, 7.9%).
+- NONE: 1 (E), 3 (E), 6 (E, damaged mesh), 14 (B, STEP invalid, second opinion running), 39 (B, STEP invalid).
+Every valid build from the stepped path is FreeCAD-verified; the stepped path now wins on 11, 12, 28 where it beats auto2d.
