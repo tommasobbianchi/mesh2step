@@ -1460,3 +1460,9 @@ sem/featmap.py: connected patches of non-envelope triangles (joined across smoot
 - p1 (all triangles): HOLE R 25.4 along Y (span 57.15), HOLE R 12.7 along Z; several "other" patches (dev 10-20) = merged fillet/boss areas, plus planes.
 - p3 (all): HOLE R 7.874 along Y, HOLE R 7.112 along Z, BOSS R 15.875 along Z, and paired planes.
 Cylinders come as half-patch pairs (mesh seams) and must be merged. This is the subtractive-feature evidence the turned (C) and multi-axis (E) parts need. Next: sem/features.py (patches + half merge) feeding autorev_cut2 (envelope minus flats minus holes) for p26/p38.
+
+## ES — feature-map holes cut from the turned envelope: p26 +4.32%, p38 +2.60% (2026-09-13)
+autorev_cut2 (envelope - flats - feature-map HOLE cylinders; the axial bore is skipped because the envelope profile has it):
+- p26: hole R 4.826 along Z (span 22.35) cut. Valid, dV +4.322% (flats only: +4.689%), faces {13 plane, 5 cyl, 2 cone}, mesh->model p95 0.238, STEP valid.
+- p38: holes R 76.2 (4 half-patches along X, not merged: harmless repeated cuts) + R 76.2 along Z. Valid, +2.604% (flats only: +4.739%), {13 plane, 12 cyl, 9 cone}, STEP valid.
+Remaining p26 excess: a SLOT. Its two side walls (+/-Y planes at 6.35, 2 triangles each but 456 mm2) were dropped by the ">= 10 triangles" flat filter; the two +Z planes at -9.65 and 12.7 are the slot floor and the top flat. Next: flats and walls from the feature map with an area-share filter; pairs of parallel planes whose normals face each other = slot walls, cut as a box between them from the floor to the envelope.
