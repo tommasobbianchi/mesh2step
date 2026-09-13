@@ -1383,3 +1383,9 @@ auto25d (tolerance max(0.02, 2e-4 x diagonal)):
 - p39: tol 1.63. 5 levels, {240 plane, 213 cyl}, +0.111%, re-read still invalid.
 - p14: tol 1.37. 5 levels, {134 plane, 166 cyl}, +0.007%, max 1.15 at 6.8 m scale, re-read still invalid.
 FreeCAD check on p14/p39/p17 is running.
+
+## EF — FreeCAD on the scaled-tolerance stepped parts: p17 solved; p14/p39 have invalid planar faces (2026-09-13)
+- p17: Solid valid True, 101 faces, 0 invalid. p17 is solved as a stepped extrusion: 2 levels, 51 planes + 50 cylinders, dV +0.208%.
+- p14: Solid valid False, 300 faces, 25 invalid planes (7.64e6 mm2).
+- p39: Solid valid False, 453 faces, 34 invalid planes (1.19e6 mm2).
+Likely cause: at the coarse tolerance (1.37 / 1.63) a simplified outline crosses a hole on some level faces. auto25e checks each level face with BRepCheck while building it and rebuilds at tolerance /4, /16, /64 until valid, then runs ShapeFix_Shape on the fused result if still invalid. Rerunning p14 and p39 with the FreeCAD check.
