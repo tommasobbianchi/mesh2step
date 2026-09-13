@@ -1517,3 +1517,10 @@ autoblock.py v1 (base = mid-section outer outline extruded; cuts = feature-map h
 - p1: base Y (+40.6%), 3 holes (R 19.05, 12.7, 25.4), the same slot cut 4x. Invalid, -38.2%.
 - p5: base Y, 6 holes (R 15.875, 2.667 x3, 6.35, 3.556), 11 slot cuts (duplicates) + 2 floors. Valid, -4.45%, faces {25 plane, 8 cyl}, STEP valid.
 Fixes in autoblock2: base = extruded SILHOUETTE (shapely unary_union of the outer loops of 40 slices along the axis); slot pairing one-to-one with the nearest facing wall.
+
+## FB — autoblock2 (silhouette base + one-to-one slots): p5 -0.449%; results persisted into tools/feature_recon (2026-09-13)
+autoblock2:
+- p5: base = silhouette along Y (+45.2% before cuts); 6 holes (R 15.875 Y, 2.667 X/Z/Y, 6.35 Y, 3.556 Z) + 2 floors. Valid, dV -0.449%, faces {84 plane, 8 cyl}, mesh->model p95 0.44, STEP valid. FreeCAD check running.
+- p1: base Z (+86.4%); 3 holes + 1 floor, 12 BOSS patches not handled. Valid, +15.2%. Not solved: bosses and the missing outer contour features need modelling.
+- p3: base Y (+68.6%); 2 holes + 6 floor cuts (duplicated pairs at 68.84/94.24). Valid but 4 SOLIDS, -31.3%. Not solved: floor footprints over-cut; bounding-box footprints are too coarse.
+Persistence: scripts, a README, the DeepSeek categories, recon/extrusion/featmap summaries and the p14 second opinion are committed to ~/projects/mesh2step/tools/feature_recon (commit 63f0266). The 28 solved STEPs are copied to tools/feature_recon/out/ (on disk, git-ignored by *.step). Shell scripts point at the repo path.
