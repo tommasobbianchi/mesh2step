@@ -963,6 +963,14 @@ BO. **n80: three rot-trim partial cylinder faces are built far larger than their
    curved sheet inside the part. rot-trim is exactly the path with the trimmed-surface rotation bug fixed by N50_TRIMROT
    (fact AL), which is NOT in the current flag set. n81 adds STL2STEP_N50_TRIMROT and re-measures the three faces and t4.
 
+BP. **USER DIRECTIVE (2026-09-13): shape recognition over exact volume.** "our goal is not having exact volume. our goal is to
+   reconstruct a shape. you must prioritize 2d or 3d shapes. once we have a valid 3d brep, getting exact measures is trivial."
+   Consequences: (1) the t4 volume budget must not discard a closed, BRepCheck-valid analytic B-rep -- n82
+   (STL2STEP_N82_T4_ADVISORY) logs the mismatch and keeps the shell when t2 and t3 already passed; closure and validity stay
+   mandatory. (2) A large volume gap is still investigated when it reveals a SHAPE defect: part 9's three rot-trim faces built
+   up to 67x their regions (fact BO) are malformed surfaces and get fixed (n81 tests N50_TRIMROT). Saved as auto-memory
+   feedback_shape_over_volume.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
