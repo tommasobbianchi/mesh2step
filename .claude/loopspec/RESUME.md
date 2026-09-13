@@ -1039,6 +1039,15 @@ BW. **n90: the partial-cylinder area guard (STL2STEP_N89_AREA_GUARD, 3x mesh reg
    sewing, or N60 collapsed-edge removal through ShapeBuild_ReShape, which could break a cylinder wire's pcurve continuity so the
    face loses its trim. n92 measures cylinder face areas on the final accepted shell to compare with the at-build areas.
 
+BX. **n91: every cylinder face is correct AT BUILD on part 9 -- the oversized faces appear after the build (binary 0960ba96a9ab,
+   n87 flags + N91_FACEAREA, hook after every builtRid.push_back).** 97 cylinder regions built, builtAs Single 97 (no
+   Seamed360 / TwoHalves), faces > 3x mesh area: 0, total face area 164.79 vs mesh 179.83. So neither buildPartialCylinder nor
+   the closed360 builders produce the 430-5816 mm2 faces seen after re-read (fact BU). They are created later inside buildFaces --
+   sewing, N27 ShapeFix_Face, or N60 collapsed-edge removal via ShapeBuild_ReShape -- since the in-memory probe volume at t4 is
+   already 207794 mm3. Prime suspect N60: removing a collapsed edge from a cylinder wire can break its pcurve continuity so the
+   face loses its trim. n92 compares final-shell cylinder areas with build areas; fallback built as STL2STEP_N93_RESHAPE_SKIP_CYL
+   (N60 removes collapsed edges only from non-cylindrical faces).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
