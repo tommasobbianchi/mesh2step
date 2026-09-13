@@ -1287,3 +1287,8 @@ NOT solved:
 - p16 (+8.2%, 632 planes): a link with FULL-ROUND edges (radius = half the 20 mm thickness). The mid-slice is the widest outline and the treatment search capped rho at 6 and t at 0.3T.
 - p22 (+8.8%, 437 planes): a triangular plate with large tapered/sloped regions (bore and outer faces), not a pure extrusion.
 Treatment values near 6.0 may be capped by the search range; to re-check. Next: extend the treatment search to T/2 (full rounds), run the FreeCAD round trip on all 23 STEP files, and inspect p22.
+
+## DP — FreeCAD round trip: all 23 rebuilt STEP files read back as valid single solids, 0 invalid faces (2026-09-13)
+sem/fcbatch.out (n83_check.py on each part's best build from batch2). Every one reports "Solid valid True solids 1" and INVALID faces {} (none):
+p7 37 faces (31 cyl), p9 134 (77 cyl), p10 50 (30 cyl, 14 cone), p11 41 (22 cyl), p12 38 (14 cyl, 20 torus), p13 23 (16 cyl), p15 17 (3 cyl), p18 13 (5 cyl), p19 72 (34 cyl, 33 torus, 2 B-spline), p20 25 (14 cyl), p21 17 (7 cyl), p23 68 (25 cyl, 38 torus), p24 23 (17 cyl), p25 50 (20 cyl, 24 torus), p28 10 (6 cyl), p29 50 (9 cyl, 18 cone), p30 32 (26 cyl), p31 53 (7 cyl, 14 cone), p32 18 (10 cyl), p33 33 (30 cyl), p35 48 (27 cyl), p36 102 (47 cyl), p37 61 (25 cyl).
+Total: 23 parts, 556 cylinder faces, all valid in both OCCT and FreeCAD.
