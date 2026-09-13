@@ -1389,3 +1389,6 @@ FreeCAD check on p14/p39/p17 is running.
 - p14: Solid valid False, 300 faces, 25 invalid planes (7.64e6 mm2).
 - p39: Solid valid False, 453 faces, 34 invalid planes (1.19e6 mm2).
 Likely cause: at the coarse tolerance (1.37 / 1.63) a simplified outline crosses a hole on some level faces. auto25e checks each level face with BRepCheck while building it and rebuilds at tolerance /4, /16, /64 until valid, then runs ShapeFix_Shape on the fused result if still invalid. Rerunning p14 and p39 with the FreeCAD check.
+
+## EG — p16: the fillet algorithm produces the broken faces, not the solid conversion (2026-09-13)
+diag16.py: the pre-fillet prism is a SOLID and valid. BRepFilletAPI_MakeFillet (rho 9.5 on the 16 outer end edges of a 20 mm plate) returns a COMPOUND holding 1 solid / 1 shell / 25 faces, valid False: 3 faces with BRepCheck_UnorientableShape (1 cylinder, 2 planes). ShapeFix_Solid cannot help (there is a solid, it is just bad), and the STEP writer then emits a shell. So a near-full round is beyond what OCCT's fillet does reliably. autoround6 builds it directly, with no fillet: core = prism of the outline inset by rho (full T); 2 rims = a circle of radius rho piped along the inset outline at z0+rho and z0+T-rho; band = prism of the widest outline over the flat band; fuse, then cut straight holes. Running on p16.
