@@ -521,6 +521,18 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    fits their status 27 UnorientableShape (a UV wire that crosses itself) better than the
    chord-sag explanation alone. The classification is crude near u=0; reading the u computation on
    both pcurve paths (bindCylPCurves regionU vs ShapeFix projection onto cylSurfaceForRegion) next.
+   ROOT CAUSE FOUND for the rot-trim attempts (code, verified on rid 239 in scratchpad/n30/off.log):
+   tryRotTrimmedSheet builds `trim = Geom_RectangularTrimmedSurface(cylSurfaceForRegion(r) [ax rotated
+   by uMin], 0, span, vMin, vMax)` and calls makeFaceBound(trim) -> bindCylPCurves(ow, trim, r).
+   bindCylPCurves does `cyl = Handle(Geom_CylindricalSurface)::DownCast(surf)`, which is NULL for the
+   trimmed wrapper, so `rotated` is false and toUV uses regionU(r) (unrotated frame). Non-line edges
+   go through ShapeFix projection onto the rotated sheet instead. rid 239 (uMin -0.834): line pcurves
+   u in [-0.834, 0.019], ellipse pcurves u 0.834..0.853 in the same wire -> uvA -6.99, st=27.
+   Attempt tags on the 28: rect-trim fwd/rev 112, untrim 112, rot-trim fwd/rev 108 + rev-hole 14,
+   rot-ax 108, seam-box 64 -- all valid=0, so this bug accounts for the rot-trim attempts only; the
+   other attempt kinds fail for another reason. Fix under test (n50): STL2STEP_N50_TRIMROT unwraps
+   the trimmed surface's BasisSurface() before the DownCast. Part 9: arm a N50 only, arm b N50 +
+   N13_SEW_FREE + N48_SEW_PARTIAL.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
