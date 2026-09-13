@@ -632,6 +632,14 @@ AN. **Broken wire joints separate failing partial cylinders from built ones (n51
    n54 (STL2STEP_N54_SHAPEFIX_SMALL, ShapeFix_Shape variant of the zero-length drop) built:
    binary bd73a7cdd582, not yet run.
 
+AO. **n52: ShapeFix_Wireframe::FixSmallEdges does not remove the post-sew zero-length edges (binary
+   c83e072dca09, part 9, base + N13_SEW_FREE + N48_SEW_PARTIAL + N52_DROP_ZEROLEN).**
+     recover 0: free=54 zero=54 -> freeAfter=47, applied=0.  recover 1: free=39 zero=39 -> freeAfter=38.
+   Only 7 and 1 dropped; shell stays open; outcome unchanged (FBF 28, explodes 3679/98, built cyl 0).
+   As the external advice warned. Next n57: ShapeFix_Shape small/connected/degenerated modes
+   (STL2STEP_N54_SHAPEFIX_SMALL, binary 1187644f33b5 which also counts collapsed = same vertex TShape
+   at both ends), arm a without and arm b with N50_TRIMROT.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
