@@ -934,6 +934,12 @@ BL. **n77 per-face volume census is INVALID (probe bug), but its areas refute th
    analytic plane faces / 3-edge facet faces, against the mesh triangles' signed volume about the same O grouped by region
    (built cylinder / built plane / exploded-or-island) -- the class whose face and mesh volumes differ holds the shortfall.
 
+BM. **n78b REFUTES tessellation sagitta as the source of part 9's volume shortfall (binary 766d3a8823d9, n71 flags +
+   DIAG_REVERT + N78_SAGVOL).** Over all 98 cylinder regions, sum of (triangle area x radial deviation of the centroid below R),
+   signed by outwardNormal: bosses 71 (+141.2126 mm3), holes 27 (32.6471 mm3, i.e. -32.6), predictedSigned +108.5654,
+   predictedAbs 173.8597. Observed shell - mesh = -1669.6123. Wrong sign and ~15x too small: the cylinder faces do not
+   explain the missing volume. n79 (fixed-origin signed volume per face class vs per mesh-region class) locates it.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
