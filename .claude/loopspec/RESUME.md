@@ -230,6 +230,16 @@ T. **Part 11's bad faces fail the same way part 9 finally does: unreconciled str
    A straight edge on a PLANE should be trivially same-parameter unless its 3D line is not in
    the plane; plane-distance probe (N34_PLANEEDGE) running.
 
+U. **Tori cannot reach the STEP at all: the engine has no torus primitive.** Measured on part 11
+   (n5f11, STL2STEP_N5F_AXCOH=1): 728 bands at R~4 mm, every axis with z=0 and in-plane axis
+   angles spread evenly over 0-180 deg -- slices of R~4 tubes swept around Z (fillet tori), only
+   23 of them axis-aligned. rejectTorusSlicesN5F (refit_grow.cpp:1375) groups cylinders by radius
+   ALONE (2% rel), so all of them fall in one group (N5F_TORUS drop n=739 R=3.8212 L3/L1=0.0000)
+   and are dropped wholesale, facets handed back. That is the ~770 bands that "vanish before
+   n18". Even if kept, refit_build.cpp:5208 rejects SurfType::Torus as TorusNYI (as are Cone and
+   Sphere), and refit_fillet.cpp:1213 emits TorusNYI. The goal "every torus in the output" needs
+   a torus fit + face build; no gate or tolerance change can deliver it.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
