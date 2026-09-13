@@ -775,6 +775,16 @@ AX. **n62: judging collapsed edges against their own vertex tolerance CLOSES par
    Closure is solved by collapsed-edge removal; VALIDITY of the closed shell is the next blocker. This run
    still contains the 28 wire-broken faces (no N61); n63 (N61 + closure set) shows the shell without them.
 
+AY. **n63: wire fix + closure set CLOSES part 9 on every pass; validity is the last blocker (binary
+   e140272e6e17, N61 + N13_SEW_FREE + N48 + N52 + N60 + N62_VTX_TOL).**
+     DIAG_FBF type=1 = 1. Per recover pass: sew freeE 654 / 542 / 514 / 346 -> 0 with N60 removing 61 / 55 / 55 /
+     36 collapsed edges, N13_SEW closed=1 accepted=1 (face count unchanged); last pass N27_FIXFACE closed=1
+     valid=0 and a final sew freeE=8->18. Explodes: 98 cylinders, 0 planes; RESULT smoothRevertedTrue=1,
+     smoothBuiltCylinders 0.
+   The closed shell is accepted as closed (N13_SEW_STRICT unset) but fails validity downstream, and the cascade
+   then removes the cylinders one by one. Next n65: N64_VALID_DIAG + N13_SEW_WHY on the same flags -- BRepCheck
+   face/edge status tally per surface type on the closed shell.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
