@@ -1012,6 +1012,17 @@ BT. **n86: STL2STEP_N85_NO_RECTTRIM (rot-trim on the untrimmed rotated cylinder)
    STEP 0 cylinders (valid faceted). N85 is aimed at the write/re-read trim failure of fact BR, which only matters once a
    STEP with cylinders is written; the in-memory blocker is the U0 round limit (n87 running with N87_U0_ANYTYPE).
 
+BU. **n87: STL2STEP_N87_U0_ANYTYPE stops the ladder from blanketing -- part 9 keeps 96 cylinders -- but the kept shape is wrong
+   (binary 433a984bb1e0, n84 flags + N87).** N67_U0 planes 84 -> 9 -> 3; explodes 96 planes / 2 cylinders; DIAG_REVERT
+   decision=KEEP builtCyl 96 builtPl 28121, t1-t3 = 1; N82 advisory: shellVol 207794.07 vs mesh 97838.63 (2.1x), rtv 1.08e168.
+   Write: "check INVALID", STEP 96 CYLINDRICAL_SURFACE, verify volume garbage. FreeCAD re-read: 1 Solid isValid False, 28,221
+   faces (96 Cylinder), INVALID 8 cylinder faces (11286.8 mm2 total; 837.6, 449.9, 694.7, 430.6, 3912.5, 1141.4, 3819.0 ...)
+   and 24 plane faces (2657.4 mm2, including -374.2 and -0.73 negative areas). All cylinder mesh regions total 180 mm2, so these
+   faces have lost their trim and span large parts of the full cylinder -- already in memory (volume doubled), while in-memory
+   BRepCheck still passes. The cylinder trim is the core shape defect even with N50. n88 tests N85_NO_RECTTRIM on top; fallback
+   n89 (STL2STEP_N89_AREA_GUARD): reject a partial cylinder face whose area exceeds 3x its mesh region (shape consistency, not
+   volume) so the region becomes facets instead of a wrong surface.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
