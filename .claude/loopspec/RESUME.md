@@ -1446,3 +1446,9 @@ Every valid build from the stepped path is FreeCAD-verified; the stepped path no
 
 ## EP — axis retry in recon.sh solves p20: 26 parts solved (2026-09-13)
 recon.sh on p20 with auto2d retried under AXIS=0/1/2: A (auto axis X) -71.9%, A0 -71.9%, A1 build failed, A2 (Z) +0.062% with 14 cylinders and FreeCAD valid. p20 is SOLVED, bringing the total to 26 of 39 (valid solid, |dV| <= 0.65%). Also started: sem/autorev_cut.py, which cuts flats (planar clusters of cut-surface triangles inside the turned envelope) and cross holes (fitted cylinders) out of the turned envelope. Running on p26.
+
+## EQ — turned parts: cutting the detected flats roughly halves the error; holes and slots still missing (2026-09-13)
+autorev_cut.py (flat clusters need >= 10 triangles and >= 1% of the cut area):
+- p26: 542 cut-surface triangles, 2 flats (both normal +Z, at -9.65 with 116 triangles and at 12.7 with 150), 0 hole candidates. Valid, dV +4.689% (envelope alone +14.793%), faces {9 plane, 4 cyl, 2 cone}, STEP valid.
+- p38: 2 flats (+Z at 76.2 with 14 triangles and at 152.4 with 146), 0 holes. Valid, +4.739% (envelope +7.932%), {8 plane, 7 cyl, 9 cone}, STEP valid.
+Both flats of p26 carry the SAME normal direction, so one of them is a pocket/slot floor, not an outer flat. The half-space box cut is right for an outer flat only. DeepSeek lists a through hole and a blind hole (p26) and a keyway (p38), none detected: the hole detector looks for one common axis direction across all remaining triangles, which breaks with several features. Not solved (|dV| > 1%). Needed: a feature classifier that separates outer flats, slots/pockets and cylindrical holes per connected cluster, with the correct cut side per cluster.
