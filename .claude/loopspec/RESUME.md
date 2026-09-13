@@ -573,6 +573,15 @@ AK. **After the kept sew, part 9's shell has NO real gap: every remaining free e
    them with ShapeFix_Wireframe::FixSmallEdges, re-test closure, remap faces through the fix context;
    the existing validity rule still applies.
 
+AL. **n50: fixing the trimmed-surface rotation check (STL2STEP_N50_TRIMROT) makes 20 of the 28
+   failing partial cylinders build -- failed cylinder face builds 28 -> 8 (binary ad543757e772).**
+     arm a (N50 only): FBF type=1 8; N25 failed=70 regionsHit=131; J6 freeEdges 725 (recover 0) ->
+       256 (recover 1); N13_TARGETED freeE=725 regions=344; final explodes 3679 / 98; built cyl 0.
+     arm b (N50 + N13_SEW_FREE + N48_SEW_PARTIAL): FBF 8; sew 725->84 kept, N13_TARGETED freeE=84
+       regions=38; recover 1 sew 613->65 kept; still open -> blanket -> 3679 / 98; built cyl 0.
+   More faces built means more free edges before sewing (541 -> 725), so closure is still the blocker.
+   Next: n53 = N50 + sew partial + N52_DROP_ZEROLEN (+ J6_DIAG residual census).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
