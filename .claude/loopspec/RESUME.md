@@ -279,6 +279,19 @@ X. **Part 11's 938 arc fragments dropped by n18 are NOT pieces of cylinders -- d
    curved surface (sphere/torus/freeform), which is out of today's scope. Cylinder work on part 11
    is therefore the shell-validity problem (W), not band merging.
 
+Y. **DeepSeek V4.1 Flash (medium), part 9, STL2STEP_PCURVE_PROJ: pcurve projection ships 0
+   cylinders (off 0 / on 0).** Measured in wt-ds/FINDINGS-PCURVE.md sec. 4-6 (logs scratchpad/n30/):
+   projection is active (2237 DIAG_PCBIND_PROJ), cuts BadOrientationOfSubshape rids 15 -> 2 and
+   UnorientableShape rows 1508 -> 824, but none of the 98 bad cylinder faces becomes valid. The
+   3D edges are straight mesh chords that leave the fitted cylinder: edge tol 0.001628 mm, pcurve
+   image vs 3D edge p50 0.0596, p90 1.46, max 3.62 mm; InvalidCurveOnSurface on 3280 edges. Cause
+   chain: intersectSurfaces returns no analytic curve (warnings "smooth: IntAna cyl|cyl / plane|cyl
+   empty/same -- keeping mesh polyline"), so the edge falls back to the mesh polyline. Hypothesis
+   under test: these are TANGENT contacts (fillets meet their neighbours G1), where IntAna is
+   ill-conditioned and returns empty when fit noise puts the surfaces a hair apart. Note on n37:
+   FixSameParameter works by raising edge tolerance to the measured deviation; fine for part 11's
+   0.1 mm in-plane edges, NOT acceptable for part 9's 3.6 mm chords -- report resulting tolerances.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
