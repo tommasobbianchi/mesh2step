@@ -341,6 +341,23 @@ AB. **How far refused pairs miss the existing constructions (N40_GAP, binary 434
      part 9: 52 rows = 26 pairs, 46 regions, 20 groups (16 are pairs), radius spread 6-39%, axes
        ~5 deg apart: not one cylinder in pieces either.
 
+AC. **The refused cylinder boundary chains are tiny, and their mesh vertices already lie on
+   BOTH fitted surfaces (N41_CHAIN, binary e37c21e9e6da).**
+     part 11: cyl|cyl 270 -- every one a 2-vertex chain (a single mesh edge); max vertex distance
+       to both fitted surfaces <=0.01 mm for 260, <=0.05 for 10. plane|cyl 27 -- 17 are 2-vertex,
+       9 planar circle-like with unequal chords, 1 straight; all <=0.2 mm.
+     part 9: cyl|cyl 111 -- 55 planar circle-like (3-5 verts, unequal chords), 50 two-vertex,
+       5 straight, 1 planar non-circle; 102 of 111 have every vertex <=0.05 mm from both surfaces.
+       plane|cyl 9 -- 8 two-vertex, 1 planar circle; <=0.01 mm for 6, <=0.2 for 3.
+   None of them matches the user's "long run of equal chords turning by a constant angle" (chains
+   are 2-5 vertices). Consequence: the vertices are ON the true edge; what leaves the surface
+   (fact Y: up to 3.6 mm) is the straight chord drawn between them. Planned fix: when the
+   analytic intersection is refused but every chain vertex lies on both surfaces within tolerance,
+   build the edge from the chain -- a generator line along the axis for a 2-vertex chain parallel
+   to it, else a curve through points lifted onto both surfaces -- instead of the mesh polyline.
+   Rule 8: third attempt on this issue (n37 FixSameParameter, DeepSeek PCURVE_PROJ, Kimi
+   J6_KEEP_OPEN all failed) -> second opinion requested from Kimi before writing it.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
