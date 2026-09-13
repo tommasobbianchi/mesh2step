@@ -1048,6 +1048,16 @@ BX. **n91: every cylinder face is correct AT BUILD on part 9 -- the oversized fa
    face loses its trim. n92 compares final-shell cylinder areas with build areas; fallback built as STL2STEP_N93_RESHAPE_SKIP_CYL
    (N60 removes collapsed edges only from non-cylindrical faces).
 
+BY. **n92: cylinder faces are still correct on the FINAL accepted shell inside buildFaces (binary dc0b3f3feca9, n87 flags + N91 +
+   N92_FINALAREA).** At build 97 faces, on the final shell (entry of the closed-and-valid branch) 96 faces; total face area 163.56
+   vs mesh 177.89; faces that grew >3x between build and final shell: 0; faces >3x at build: 0. So sewing, N27 ShapeFix_Face and
+   N60 collapsed-edge removal do NOT inflate face areas. Yet stl2step.cpp's t4 probe volume on the returned faces is 207794 mm3 and
+   the STEP re-read shows 430-5816 mm2 cylinder faces. The defect is therefore in how the faces are represented, not in their
+   in-memory area: prime suspect the cylinder SEAM. cylSurfaceForRegion rotates X to uMin, so every partial patch starts exactly at
+   u = 0 and pcurves can carry negative u; a STEP reader rebuilds boundaries into [0, 2pi) and a wire on the seam can be read as the
+   complementary face. External advice: keep the patch away from the periodic seam. Candidate test: rotate X to (theta_mid - pi) so
+   U stays in [pi - span/2, pi + span/2].
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
