@@ -447,6 +447,14 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
    So most of the opening is duplicated, unshared edges plus degenerate zero-length edges -- a
    SHARING problem, not missing geometry. STL2STEP_N13_SEW_FREE (sewing arm) is not in the base flag
    set; part 9 with it on: n47 running.
+   Prior measurement (live run.sh v1.8.0 notes): N13_SEW_FREE at N27_SEW_TOL_MM=0.1 on mechparts/9
+   "541 free edges; sewing reports closed=0 accepted=0" -- so it was measured and not shipped.
+   Why a sew that pairs the 242 exact duplicates still does nothing (refit_build.cpp, n13Sew block):
+   acceptance is all-or-nothing -- `ok = !ns.IsNull() && nf == built.size() && IsClosed(ns) &&
+   (nsValid || !strict)`. A sew that REDUCES free edges but leaves any open is discarded, and the
+   targeted/blanket cascade then runs on the unsewn shell. n47 (DIAG_FBF on) prints
+   "N13_SEW freeE=<before>-><after>" to measure how much the sew closes before it is thrown away.
+
 
    The 28 DIAG_FBF cylinders: 27 have a single Outer loop of 4-10 chains, 1 has Outer+Inner.
    Existing switch STL2STEP_N26_NO_BLANKET holds the blanket and (n26b) keeps the built faces as an
