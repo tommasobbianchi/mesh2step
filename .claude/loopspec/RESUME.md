@@ -600,6 +600,20 @@ AM. **External OCCT advice (user's friend, 2026-09-13) -- recommendations, check
      The engine already intersects first and falls back to chords on refusal (facts Z, AF).
    - For complex UV loops: BOPAlgo_BuilderFace / BRepTopAdaptor_FClass2d orientation checks.
 
+AN. **Broken wire joints separate failing partial cylinders from built ones (n51, binary
+   4f9f65922432, base flags + N51_WIREJOIN, part 9).** A joint is broken when the last vertex of edge i
+   and the first vertex of edge i+1 of the outer wire are not the same TShape.
+     28 failing (DIAG_FBF) faces: 16 have broken joints, 12 none. 36 broken joints, all Line>Line;
+       gaps >=0.1 mm 29, <0.1 mm 6, 0 (same point, different TShape) 1.
+     70 built faces: 1 has broken joints (2 joints: gap <0.1 and 0).
+   So for 16 of the 28 the wire edges from adjacent chains end at different points (mostly >=0.1 mm
+   apart), which is what stalls BRepTools_WireExplorer (fact AJ-stall) and matches the external advice
+   that consecutive edges must share one TopoDS_Vertex. The other 12 failing faces have a connected
+   wire (N50 trimmed-rotation fix already rescues 20 of 28). n55 prints, per broken joint, the two
+   chains, whether each edge is collapsed (analytic) or polyline, region pairs, terminal mesh vertices.
+   n54 (STL2STEP_N54_SHAPEFIX_SMALL, ShapeFix_Shape variant of the zero-length drop) built:
+   binary bd73a7cdd582, not yet run.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
