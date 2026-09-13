@@ -800,6 +800,18 @@ AZ. **The closed part-9 shell is invalid because of PLANE faces, not cylinders -
    become facets, cylinders stay) -- the external advice's per-region fallback; (2) find why those plane
    faces are unorientable (likely the same wire-assembly class as the cylinders, fact AW).
 
+BA. **Why the closed-but-invalid cascade kills cylinders when planes are the culprits (code,
+   refit_build.cpp).** Site B (closed && !shValid) collects culprits correctly (collectFaceCulprits: regions whose
+   own face is invalid; collectShellCulprits: owners of bad faces/wires/edges), then cascadeLadderPlan:
+     U0 = selectU0Explode(): face-invalid CYLINDERS first, PLUS every cylinder touching >= 2 invalid non-hub
+       planes ("join-suspect"); invalid non-hub planes only if that cylinder list is empty; planes touching a
+       seamed closed360 hole are unexplodable; at most 2 U0 rounds.
+     U1 = cylinderOneHop() of every culprit (the cylinder neighbours).
+     U2 = u2BlanketRids(): every non-closed360 analytic region.
+   With ~70 invalid planes on part 9 nearly every cylinder is a join-suspect, so the cylinders go first.
+   wouldSaturate() counts only cylinders (50% cap). Test n67 (STL2STEP_N67_PLANE_CULPRITS_FIRST): U0 returns the
+   invalid non-hub planes first without join-suspect recruitment, and plane-only U0 sets get up to 12 rounds.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
