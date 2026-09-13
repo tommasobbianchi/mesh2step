@@ -1086,3 +1086,6 @@ believing a corpus A/B, and order any census by the property under study, never 
 
 ## BZ — n94: skipping collapsed-edge reshape on cylinder faces changes nothing (2026-09-13)
 N93_RESHAPE_SKIP_CYL=1 on the best config gives the same result: KEEP, 96 cylinders, shellVol 207794 (2.1x the mesh), and on FreeCAD re-read 8 invalid cylinder faces plus 24 invalid planes, with identical areas. Refuted. Next: n95 (N16_ORIENT_T4, still running), then n96 (binary 8ded569fd67e, STL2STEP_N96_SEAM_AWAY: frame X rotated to theta_mid-pi so patches avoid u=0), built but not run.
+
+## CA — n95: orientation-aware volume identical (2026-09-13)
+STL2STEP_N16_ORIENT_T4 is reached (stl2step.cpp:1009 selects orientedShapeVolume, which runs ShapeFix_Shell::FixFaceOrientation and an inside-out check). shellVol is still 207794.07, the same to the digit. Inverted faces are refuted as the cause of the 2.1x volume (caveat: the function returns early when the probe is not a TopAbs_SHELL). The remaining lead is the seam hypothesis; n96 (SEAM_AWAY) is running.
