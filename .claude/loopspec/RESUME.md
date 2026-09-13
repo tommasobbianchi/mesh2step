@@ -1233,3 +1233,10 @@ Contrast with the micro path: 96 fake "cylinders" (180 mm2 total, random radii),
 
 ## DK — part 9 model fidelity: mesh->model within 0.0078 mm; model->mesh residual only at tooth-corner fillet blends (2026-09-13)
 sem/dist9.py measures distance to model faces, not to the solid. Mesh -> model over 2000 vertices + 1000 centroids: mean 0.0018, p95 0.0063, p99 0.0073, max 0.0078 mm (tessellation level). Model -> mesh over 3000 tessellation nodes: mean 0.0129, p95 0.0091, p99 0.300, max 0.468. sem/worst9.py puts every node above 0.05 mm (135 of 3000) at z<0.6 or z>19.4, r 55.6-57.1, at angles +/-8 deg around each tooth top corner, i.e. the vertex blends where the R2 top/bottom fillets meet a sharp vertical tooth corner. OCCT's corner blend differs from the source CAD's by up to 0.47 mm there. Cosmetic and local, no missing feature. The R3.25 arcs at z = 1/19 are probably slices through the same blends. Next: survey all 40 mechparts for extrusion-type (2.5D) geometry, to see how far the slice-and-feature path generalises.
+
+## DL — corpus survey: 24 of the 39 mechparts are extrusions (identical cross-sections at 30/50/70%) (2026-09-13)
+sem/survey.py. Per axis: relative variation of the section perimeter at 30/50/70% height, plus the axis-aligned share of triangle area.
+- Perimeter variation <= 0.007 along one axis (Z for all but part 20, which is X) for 24 parts: 7, 9, 10, 11, 12, 13, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32, 33, 35, 36, 37.
+- Genuinely 3D or non-prismatic (variation 0.05-0.49): 1, 2, 3, 4, 5, 6, 8, 14, 17, 26, 27, 34, 38, 39.
+- The axis-aligned-area score mislabels filleted extrusions (part 9 scores 0.836), so the section-invariance test is the classifier.
+So the slice-and-feature path directly covers most of the user's corpus: extrude the mid-section profile, then add end-face edge treatments measured from near-face slices. Next: sem/auto2d.py, a fully automatic version (mid-slice loops -> exact lines/arcs -> OCC wires/face -> prism -> per-loop fillet/chamfer from area deficit vs z -> validate -> STEP), checked first against the hand-built part 9 model, then run on the 24 extrusion parts.
