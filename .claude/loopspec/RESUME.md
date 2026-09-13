@@ -1466,3 +1466,8 @@ autorev_cut2 (envelope - flats - feature-map HOLE cylinders; the axial bore is s
 - p26: hole R 4.826 along Z (span 22.35) cut. Valid, dV +4.322% (flats only: +4.689%), faces {13 plane, 5 cyl, 2 cone}, mesh->model p95 0.238, STEP valid.
 - p38: holes R 76.2 (4 half-patches along X, not merged: harmless repeated cuts) + R 76.2 along Z. Valid, +2.604% (flats only: +4.739%), {13 plane, 12 cyl, 9 cone}, STEP valid.
 Remaining p26 excess: a SLOT. Its two side walls (+/-Y planes at 6.35, 2 triangles each but 456 mm2) were dropped by the ">= 10 triangles" flat filter; the two +Z planes at -9.65 and 12.7 are the slot floor and the top flat. Next: flats and walls from the feature map with an area-share filter; pairs of parallel planes whose normals face each other = slot walls, cut as a box between them from the floor to the envelope.
+
+## ET — slot recognition (paired facing planes): p38 +0.759%, p26 over-cut to -1.955% (2026-09-13)
+autorev_cut3 (feature-map planes by area share; pairs of antiparallel planes facing each other = slot walls; box cut between the walls):
+- p38: slot width 50.8 (walls normal +/-Y), holes R 76.2. Valid, dV +0.759% (holes only: +2.604%), faces {18 plane, 13 cyl, 11 cone}, STEP valid. Under the 1% bar; FreeCAD check pending.
+- p26: slot width 12.7, hole R 4.826. Valid but dV -1.955% (holes only: +4.322%), faces {17 plane, 5 cyl, 2 cone}. The slot box spans +/-2R across the whole diameter instead of stopping at the slot FLOOR (the +Z plane at -9.65 between the walls). Fix: find the unpaired plane perpendicular to the walls lying between them (the floor) and limit the box to the material side of that floor.
