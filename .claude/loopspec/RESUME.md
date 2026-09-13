@@ -902,6 +902,11 @@ BI. **n73: part 9 now passes closure AND BRepCheck with 97 cylinders; it reverts
    Raising the budget is forbidden (tolerance widened to pass a gate). A 1.7% shortfall on a closed valid shell is either
    real missing volume or faces counted with the wrong sign; existing switch STL2STEP_N16_ORIENT_T4 measures with
    orientation. n75 reruns with it and keeps the STEP to check its independently re-read volume and cylinder count.
+   Code (stl2step.cpp:281 roundTripVolume): wraps the probe shell in a solid, writes it with STEPControl_Writer, reads it
+   back and returns fabs(shapeVolume(back)). A returned volume of 2.7e173 means the volume integration of the RE-READ shape
+   diverged -- a numerically broken face after transfer (absurd surface/pcurve bounds or tolerances), not a small error.
+   The same face could also be what pulls the in-memory volume 1.7% low. If N16 does not resolve t4, the next probe is a
+   per-face signed volume/area census on the probe shell to find the anomalous faces.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
