@@ -1,0 +1,2394 @@
+diff --git a/src/refit_build.cpp b/src/refit_build.cpp
+index 6d66a31..53b1709 100644
+--- a/src/refit_build.cpp
++++ b/src/refit_build.cpp
+@@ -28,6 +28,8 @@
+ #include <utility>
+ #include <vector>
+ 
++#include <BRepBuilderAPI_Sewing.hxx>
++#include <ShapeFix_Shell.hxx>
+ #include <BRep_Builder.hxx>
+ #include <BRep_Tool.hxx>
+ #include <BRepGProp.hxx>
+@@ -43,6 +45,7 @@
+ #include <BRepCheck_ListOfStatus.hxx>
+ #include <BRepCheck_Result.hxx>
+ #include <BRepCheck_Status.hxx>
++#include <BRepCheck_ListOfStatus.hxx>
+ #include <BRepLib.hxx>
+ #include <BRepTools.hxx>
+ #include <BRepTools_WireExplorer.hxx>
+@@ -360,6 +363,13 @@ double meshTolCap(const MeshView& mv, const Region* r) {
+         // leaves all 83 outputs BYTE-IDENTICAL. The term was inert everywhere it fired,
+         // while licensing OCCT to identify points up to 15.83 mm apart.
+         if (r->chordSagitta > c) { c = r->chordSagitta; sagittaBound = true; }
++        // diagnostic only: restore the 0.2929*R floor that 0efdb79 deleted, to test whether
++        // P85's corrected radii depend on it for sewing.
++        static const bool p85Floor = std::getenv("STL2STEP_P83_RADIUS_FLOOR") != nullptr;
++        if (p85Floor && r->radius > 0.0) {
++            const double radiusTerm = r->radius * (1.0 - std::cos(kPi / 4.0));
++            if (radiusTerm > c) { c = radiusTerm; sagittaBound = true; }
++        }
+     }
+     const double cap = c * 1.001 + Precision::Confusion();
+     // n5/P44: how often the MEASURED sagitta is the binding term (it replaced the
+@@ -2069,9 +2079,65 @@ void dumpFaceTopo(int rid, const TopoDS_Face& f, const char* tag, const char* ph
+     }
+ }
+ 
++// n5f P100: the shoelace area of a face's outer wire in the face's OWN UV
++// parameterisation -- the quantity BRepCheck's OrientationOfWires judges. A
++// sampled 3D area (wireSignedAreaInPlane) is a proxy for it and can disagree
++// on a sliver. Returns 0.0 when any pcurve is missing.
++double n5fUvSignedArea(const TopoDS_Face& f, int& nEdgesOut, int& nMissingPc) {
++    nEdgesOut = 0;
++    nMissingPc = 0;
++    TopExp_Explorer we(f, TopAbs_WIRE);
++    if (!we.More()) return 0.0;
++    const TopoDS_Wire w = TopoDS::Wire(we.Current());
++    double acc = 0.0;
++    for (BRepTools_WireExplorer ex(w, f); ex.More(); ex.Next()) {
++        const TopoDS_Edge e = ex.Current();
++        ++nEdgesOut;
++        double a = 0.0, b = 0.0;
++        Handle(Geom2d_Curve) pc = BRep_Tool::CurveOnSurface(e, f, a, b);
++        if (pc.IsNull()) { ++nMissingPc; continue; }
++        const bool rev = (e.Orientation() == TopAbs_REVERSED);
++        const int kN = 8;
++        gp_Pnt2d prev;
++        for (int i = 0; i <= kN; ++i) {
++            const double t = rev ? b + (a - b) * (double)i / kN
++                                 : a + (b - a) * (double)i / kN;
++            const gp_Pnt2d q = pc->Value(t);
++            if (i > 0) acc += prev.X() * q.Y() - q.X() * prev.Y();
++            prev = q;
++        }
++    }
++    return 0.5 * acc;
++}
++
+ void dumpShellCheck(const TopoDS_Shell& sh, const std::vector<TopoDS_Face>& built,
+                     const std::vector<int>& builtRid, const RegionSet& rs) {
+     if (!collapseDiagEnabled() || sh.IsNull()) return;
++    // n5f P100 census: EVERY planar face, valid or not, so the invalid ones have
++    // controls to be separated from. Emitted before the invalid-only dump below.
++    if (std::getenv("STL2STEP_N5F_UV") != nullptr) {
++        for (size_t i = 0; i < built.size(); i++) {
++            const TopoDS_Face& f = built[i];
++            if (f.IsNull()) continue;
++            const int rid = (i < builtRid.size()) ? builtRid[i] : -1;
++            const Region* rr = regionById(rs, rid);
++            if (!rr || rr->type != SurfType::Plane) continue;
++            int nE = 0, nMiss = 0;
++            double uv = 0.0;
++            bool ok = true;
++            try { uv = n5fUvSignedArea(f, nE, nMiss); }
++            catch (const Standard_Failure&) { ok = false; }
++            double meshArea = 0.0;
++            BRepCheck_Analyzer fan2(f, Standard_True);
++            std::fprintf(stderr,
++                         "N5F_UV rid=%d nTri=%d ori=%s valid=%d uvArea=%.6g "
++                         "nE=%d missPc=%d outN=%d probeOk=%d meshArea=%.6g\n",
++                         rid, (int)rr->tris.size(),
++                         f.Orientation() == TopAbs_FORWARD ? "F" : "R",
++                         fan2.IsValid() ? 1 : 0, uv, nE, nMiss,
++                         rr->outwardNormal ? 1 : 0, ok ? 1 : 0, meshArea);
++        }
++    }
+     try {
+         BRepCheck_Analyzer an(sh, Standard_True);
+         std::fprintf(stderr, "DIAG_SHELL valid=%d closed=%d nF=%zu", an.IsValid() ? 1 : 0,
+@@ -2091,6 +2157,27 @@ void dumpShellCheck(const TopoDS_Shell& sh, const std::vector<TopoDS_Face>& buil
+                     if (it.Value() != BRepCheck_NoError) faceBad = true;
+             }
+             if (!faceBad) continue;
++            // n5e P2-LEVEL PINCH PROBE. Stage D was measured clean (328 regions
++            // on L09_valve_body, zero loops revisiting a mesh vertex), so if a
++            // pinch exists it is made HERE, by distinct mesh vertices collapsing
++            // onto one TVertex within sewTol. In a closed manifold wire every
++            // vertex is shared by exactly 2 edges; a pinch is shared by 4+.
++            {
++                int wIdx = 0, pinchW = 0, maxShare = 0;
++                for (TopExp_Explorer we(f, TopAbs_WIRE); we.More(); we.Next(), ++wIdx) {
++                    TopTools_IndexedDataMapOfShapeListOfShape ve;
++                    TopExp::MapShapesAndAncestors(we.Current(), TopAbs_VERTEX,
++                                                  TopAbs_EDGE, ve);
++                    for (int k = 1; k <= ve.Extent(); ++k) {
++                        const int share = ve(k).Extent();
++                        if (share > maxShare) maxShare = share;
++                        if (share > 2) ++pinchW;
++                    }
++                }
++                std::fprintf(stderr,
++                             "N5E_FACEPINCH rid=%d wires=%d pinchVerts=%d maxShare=%d\n",
++                             rid, wIdx, pinchW, maxShare);
++            }
+             const Region* rr = regionById(rs, rid);
+             const char* ty = "facet";
+             double R = 0.0;
+@@ -2109,6 +2196,49 @@ void dumpShellCheck(const TopoDS_Shell& sh, const std::vector<TopoDS_Face>& buil
+             dumpBRepStatuses(fr);
+             dumpBRepStatuses(fan.Result(f));
+             std::fprintf(stderr, "\n");
++            // n28 (env-gated): for an invalid NON-REGION facet (island / fill, rid<0),
++            // dump its edges (count, 3D curve type) and the rids of the faces sharing
++            // each edge, to see why the facet is UnorientableShape when no edge is bad.
++            if (rid < 0 && std::getenv("STL2STEP_N28_ISLEDIAG")) {
++                TopTools_IndexedDataMapOfShapeListOfShape e2f;
++                TopExp::MapShapesAndAncestors(sh, TopAbs_EDGE, TopAbs_FACE, e2f);
++                TopTools_IndexedMapOfShape fm2;
++                TopExp::MapShapes(sh, TopAbs_FACE, fm2);
++                std::vector<int> frid((size_t)fm2.Extent() + 1, -1);
++                for (size_t i = 0; i < built.size(); i++) {
++                    int idx = fm2.FindIndex(built[i]);
++                    if (idx > 0 && i < builtRid.size()) frid[(size_t)idx] = builtRid[i];
++                }
++                int nE = 0;
++                for (TopExp_Explorer ex(f, TopAbs_EDGE); ex.More(); ex.Next()) {
++                    const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
++                    Standard_Real f0 = 0, l0 = 0;
++                    Handle(Geom_Curve) c3 = BRep_Tool::Curve(e, f0, l0);
++                    const char* ct = "none";
++                    if (!c3.IsNull()) {
++                        const Handle(Standard_Type)& tt = c3->DynamicType();
++                        if (tt == STANDARD_TYPE(Geom_Line)) ct = "line";
++                        else if (tt == STANDARD_TYPE(Geom_Circle)) ct = "circ";
++                        else if (tt == STANDARD_TYPE(Geom_Ellipse)) ct = "elips";
++                        else if (tt == STANDARD_TYPE(Geom_TrimmedCurve)) ct = "trim";
++                        else ct = "other";
++                    }
++                    int ei = e2f.FindIndex(e);
++                    int na = ei > 0 ? e2f(ei).Extent() : -1;
++                    std::fprintf(stderr, "  N28_ISLE edge=%d curve=%s nAnc=%d nbrs=[", nE, ct, na);
++                    if (ei > 0) {
++                        bool first = true;
++                        for (TopTools_ListOfShape::Iterator it(e2f(ei)); it.More(); it.Next()) {
++                            int oi = fm2.FindIndex(it.Value());
++                            if (oi <= 0) continue;
++                            std::fprintf(stderr, "%s%d", first ? "" : ",", frid[(size_t)oi]);
++                            first = false;
++                        }
++                    }
++                    std::fprintf(stderr, "]\n");
++                    nE++;
++                }
++            }
+         }
+         TopTools_IndexedDataMapOfShapeListOfShape anc;
+         TopExp::MapShapesAndAncestors(sh, TopAbs_EDGE, TopAbs_FACE, anc);
+@@ -2910,17 +3040,125 @@ bool buildPlanarFace(const Region& r, const RegionSet& rs, const MeshView& mv,
+             } catch (const Standard_Failure&) {
+             }
+         }
++        if (!faceIsValid(outF)) {
++            // n5f P103 (env-gated): the retry above passes Inside=Standard_True,
++            // which makes MakeFace re-orient the wire itself -- so handing it a
++            // reversed wire is a no-op and that fallback can never change the
++            // outcome. With Inside=false the reversal stands. Measured on 96
++            // defective faces dumped from L09_valve_body: 89 become valid this
++            // way, and ShapeFix_Face with FixOrientationMode fixes none of them.
++            static const bool p103RevWire =
++                std::getenv("STL2STEP_P103_REV_WIRE") != nullptr;
++            if (p103RevWire) {
++                if (std::getenv("STL2STEP_N5F_UV") != nullptr)
++                    std::fprintf(stderr, "N5F_P103_ENTER rid=%d inners=%zu\n", r.id,
++                                 inners.size());
++                try {
++                    // Reverse the wire AS IT SITS IN outF, not `ow`: the first
++                    // MakeFace ran with Inside=true and may already have
++                    // re-oriented it, in which case ow.Reversed() rebuilds the
++                    // same face. Measured: reversing `ow` fixed 0 of 543.
++                    TopoDS_Wire owF = ow;
++                    for (TopExp_Explorer wx(outF, TopAbs_WIRE); wx.More(); wx.Next()) {
++                        owF = TopoDS::Wire(wx.Current());
++                        break;
++                    }
++                    BRepBuilderAPI_MakeFace mfN(asPlane(r), TopoDS::Wire(owF.Reversed()),
++                                                Standard_False);
++                    if (mfN.IsDone()) {
++                        for (const Loop* ip : inners) {
++                            TopoDS_Wire iw;
++                            if (!buildLoopWire(iw, *ip, rs, mv, geom, collapsed, meshE,
++                                               edgeOk))
++                                break;
++                            mfN.Add(iw);
++                        }
++                        if (mfN.IsDone()) {
++                            TopoDS_Face fN = mfN.Face();
++                            const bool okN = faceIsValid(fN);
++                            if (std::getenv("STL2STEP_N5F_UV") != nullptr)
++                                std::fprintf(stderr,
++                                             "N5F_P103 rid=%d done=1 valid=%d\n", r.id,
++                                             okN ? 1 : 0);
++                            if (okN) outF = fN;
++                        } else if (std::getenv("STL2STEP_N5F_UV") != nullptr) {
++                            std::fprintf(stderr, "N5F_P103 rid=%d done=0 valid=0\n", r.id);
++                        }
++                    }
++                } catch (const Standard_Failure&) {
++                }
++            }
++        }
+         // Prefer Region::outwardNormal, but keep the BRepCheck-valid orientation
+         // if forcing the flag would leave Unorientable/BadOrientation (s09).
+         {
+             TopoDS_Face want = outF, other = outF;
+             setFaceOutward(want, r.outwardNormal);
+             setFaceOutward(other, !r.outwardNormal);
+-            if (faceIsValid(want)) outF = want;
+-            else if (faceIsValid(other)) outF = other;
++            const bool wOk = faceIsValid(want), oOk = faceIsValid(other);
++            if (wOk) outF = want;
++            else if (oOk) outF = other;
+             else outF = want;
++            // n5f P101: which branch each planar face took, and whether the
++            // choice still holds after ensureFaceValid. `other` means the face
++            // was flipped AGAINST the region's own outwardNormal because the
++            // flag-respecting orientation would not validate.
++            // n5f: dump the defective faces to BREP so the analyzer can be
++            // interrogated interactively instead of through another rebuild.
++            if (!wOk && !oOk) {
++                const char* dir = std::getenv("STL2STEP_N5F_DUMP");
++                if (dir) {
++                    static std::atomic<int> seq{0};
++                    char path[512];
++                    std::snprintf(path, sizeof path, "%s/badface_%03d_rid%d.brep", dir,
++                                  seq.fetch_add(1), r.id);
++                    try { BRepTools::Write(outF, path); }
++                    catch (const Standard_Failure&) {}
++                }
++            }
++            // n5f P102: walk the chosen face's wire head-to-tail and report every
++            // place the chain breaks. A reversed edge leaves every vertex shared
++            // by exactly 2 edges, so the n5e multiplicity census could not see it.
++            if (std::getenv("STL2STEP_N5F_UV") != nullptr) {
++                for (TopExp_Explorer we(outF, TopAbs_WIRE); we.More(); we.Next()) {
++                    const TopoDS_Wire w = TopoDS::Wire(we.Current());
++                    int idx = 0, breaks = 0, nE = 0;
++                    double maxGap = 0.0;
++                    TopoDS_Vertex prevLast;
++                    for (BRepTools_WireExplorer ex(w, outF); ex.More(); ex.Next(), ++idx) {
++                        const TopoDS_Edge e = ex.Current();
++                        ++nE;
++                        TopoDS_Vertex vf, vl;
++                        TopExp::Vertices(e, vf, vl, Standard_True);
++                        if (idx > 0 && !prevLast.IsNull() && !vf.IsNull() &&
++                            prevLast.TShape().get() != vf.TShape().get()) {
++                            ++breaks;
++                            const double g = BRep_Tool::Pnt(prevLast)
++                                                 .Distance(BRep_Tool::Pnt(vf));
++                            if (g > maxGap) maxGap = g;
++                        }
++                        prevLast = vl;
++                    }
++                    std::fprintf(stderr,
++                                 "N5F_CHAIN rid=%d nE=%d breaks=%d maxGap=%.6g "
++                                 "wantOk=%d otherOk=%d\n",
++                                 r.id, nE, breaks, maxGap, wOk ? 1 : 0, oOk ? 1 : 0);
++                }
++            }
++            if (std::getenv("STL2STEP_N5F_UV") != nullptr) {
++                std::fprintf(stderr,
++                             "N5F_PICK rid=%d nTri=%d outN=%d wantOk=%d otherOk=%d "
++                             "branch=%s\n",
++                             r.id, (int)r.tris.size(), r.outwardNormal ? 1 : 0,
++                             wOk ? 1 : 0, oOk ? 1 : 0,
++                             wOk ? "want" : (oOk ? "other" : "neither"));
++            }
+         }
+         ensureFaceValid(outF, meshTolCap(mv, &r));
++        if (std::getenv("STL2STEP_N5F_UV") != nullptr)
++            std::fprintf(stderr, "N5F_AFTER rid=%d ori=%s valid=%d\n", r.id,
++                         outF.Orientation() == TopAbs_FORWARD ? "F" : "R",
++                         faceIsValid(outF) ? 1 : 0);
+         return !outF.IsNull();
+     } catch (const Standard_Failure&) {
+         return false;
+@@ -3845,6 +4083,73 @@ void collectFaceCulprits(const std::vector<TopoDS_Face>& built, const std::vecto
+     }
+ }
+ 
++// n14, ported from upstream stl2step 6b52ba9 refit_build.cpp:12793
++// (D-130-9(b) cascade containment). A face that is NOT an analytic region -- an
++// island facet or an E' fill triangle, builtRid < 0 -- has no region to explode,
++// so collectFaceCulprits and collectShellCulprits both skip it and the culprit
++// set comes back EMPTY. An invalid shell with an empty culprit set falls through
++// U0 and U1 in one decide and lands on the U2 blanket, which explodes every
++// non-closed360 analytic region on the component. The reference's own
++// measurement: on the plate one unorientable facet took out 9 partial cylinders
++// (the R10 cross bore, R30 x2, R17 x2, R5 x4) that had each built VALID. Our
++// own n13 trace measured the same class corpus-wide: of 160 exploded regions,
++// 110 never failed a build.
++// The exploded set for such a face is its own NEIGHBOURHOOD -- the regions whose
++// built faces share an edge with it -- and nothing else. The 50 % saturation
++// test is NOT changed: it still runs, on this set.
++void collectNonRegionNeighbourhood(const TopoDS_Shape& sh, const std::vector<TopoDS_Face>& built,
++                                   const std::vector<int>& builtRid,
++                                   const std::vector<char>& exploded,
++                                   std::vector<CascadeHit>& hits) {
++    if (sh.IsNull()) return;
++    try {
++        BRepCheck_Analyzer an(sh, Standard_True);
++        TopTools_IndexedMapOfShape faceMap;
++        TopExp::MapShapes(sh, TopAbs_FACE, faceMap);
++        std::vector<int> faceRid((size_t)faceMap.Extent() + 1, -1);
++        for (size_t i = 0; i < built.size(); i++) {
++            const int idx = faceMap.FindIndex(built[i]);
++            if (idx <= 0 || i >= builtRid.size()) continue;
++            faceRid[(size_t)idx] = builtRid[i];
++        }
++        TopTools_IndexedDataMapOfShapeListOfShape eanc;
++        TopExp::MapShapesAndAncestors(sh, TopAbs_EDGE, TopAbs_FACE, eanc);
++        for (int i = 1; i <= faceMap.Extent(); i++) {
++            if (faceRid[(size_t)i] >= 0) continue;  // an analytic region: normal path
++            const TopoDS_Face fs = TopoDS::Face(faceMap(i));
++            bool bad = brepStatusBad(an.Result(fs));
++            if (!bad) {
++                BRepCheck_Analyzer fa(fs, Standard_True);
++                bad = !fa.IsValid();
++            }
++            if (!bad) continue;
++            std::vector<int> nbr;
++            for (TopExp_Explorer ex(fs, TopAbs_EDGE); ex.More(); ex.Next()) {
++                const int ei = eanc.FindIndex(ex.Current());
++                if (ei <= 0) continue;
++                for (TopTools_ListOfShape::Iterator it(eanc(ei)); it.More(); it.Next()) {
++                    const int oi = faceMap.FindIndex(it.Value());
++                    if (oi <= 0 || oi == i) continue;
++                    const int orid = faceRid[(size_t)oi];
++                    if (orid < 0 || regionExploded(exploded, orid)) continue;
++                    if (std::find(nbr.begin(), nbr.end(), orid) == nbr.end()) nbr.push_back(orid);
++                }
++            }
++            std::sort(nbr.begin(), nbr.end());
++            nbr.erase(std::unique(nbr.begin(), nbr.end()), nbr.end());
++            if (collapseDiagEnabled()) {
++                std::fprintf(stderr, "DIAG_CASCADE nonregion face=%d nNbr=%zu nbrs=[", i,
++                             nbr.size());
++                for (size_t j = 0; j < nbr.size(); j++)
++                    std::fprintf(stderr, "%s%d", j ? "," : "", nbr[j]);
++                std::fprintf(stderr, "]\n");
++            }
++            for (int id : nbr) addCascadeHit(hits, id, "nonregion", true);
++        }
++    } catch (const Standard_Failure&) {
++    }
++}
++
+ void collectShellCulprits(const TopoDS_Shape& sh, const std::vector<TopoDS_Face>& built,
+                           const std::vector<int>& builtRid, const RegionSet& rs,
+                           const std::vector<char>& exploded, std::vector<CascadeHit>& hits) {
+@@ -4075,6 +4380,37 @@ bool wouldSaturate(const RegionSet& rs, const std::vector<char>& exploded,
+     return would > cap;
+ }
+ 
++// n26: the blanket explode is the single largest destroyer of analytic geometry on real
++// mechanical parts, and the numbers say the escalation is wildly out of proportion to the
++// fault. Measured on mechparts/9 (46,104 tri, 88% curved):
++//
++//     N25_CHAINFAIL chains=11498 failed=69 regionsHit=129 recoverPass=0
++//     DIAG_EXPLODE x3777      cylRegions=98  smoothBuiltCylinders=0  shipped=0
++//
++// 69 of 11,498 chains fail -- 0.6%. The targeted arm explodes the 129 regions that own
++// them, the shell still does not close, and recoverPass 1 and 2 then call explodeAll(),
++// levelling all 3,777 analytic regions, 98 correctly built cylinders among them, to chase
++// 69 bad chains. Chain construction is 99.4% successful; the RESPONSE is the defect.
++//
++// So refuse the blanket when it would take out more than half the analytic cylinders --
++// the same 50% standard wouldSaturate() already applies to the U0/U1 cascade rungs, which
++// the J6 recovery loop never adopted. The build then keeps the faces it has; the shell may
++// stay open, and an open shell carrying 98 cylinders is a better answer than a closed one
++// carrying none. Env-gated; off => the original unconditional blanket.
++bool n26BlanketWouldWipe(const RegionSet& rs, const std::vector<char>& exploded) {
++    static const bool on = std::getenv("STL2STEP_N26_NO_BLANKET") != nullptr;
++    if (!on) return false;
++    std::vector<int> all;
++    for (const Region& r : rs.regions)
++        if (!regionExploded(exploded, r.id)) all.push_back(r.id);
++    if (all.empty()) return false;
++    const bool wipe = wouldSaturate(rs, exploded, all);
++    if (wipe && std::getenv("STL2STEP_N26_DIAG"))
++        std::fprintf(stderr, "N26_BLANKET_HELD candidates=%zu cyls=%d alreadyExploded=%d\n",
++                     all.size(), countAnalyticCylinders(rs), countExplodedCylinders(rs, exploded));
++    return wipe;
++}
++
+ bool touchesClosed360Cyl(const RegionSet& rs, int rid) {
+     for (const BoundaryChain& ch : rs.chains) {
+         if (!chainTouches(ch, rid)) continue;
+@@ -4246,6 +4582,40 @@ CascadePlan cascadeLadderPlan(CascadeState& st, const std::vector<CascadeHit>& c
+     st.u2Done = true;
+     plan.rung = CascadeRung::U2;
+     plan.explode = u2BlanketRids(rs, exploded);
++    // n24: wouldSaturate() is the 50% brake, and it guards U0 and U1 -- but U2 is the
++    // terminal rung and was never subject to it. RULE 1.5 says "escalate to U2 when the
++    // exploded set would exceed 50%", so the response to "exploding half the cylinders
++    // is too destructive" was to explode ALL of them. The brake was wired backwards: it
++    // protected the small demolitions and waved through the total one.
++    //
++    // Measured on mechparts/9 (88% curved, 46,104 tri): 98 cylinder regions recognised,
++    // 98 planned, the U2 blanket fires, 3,777 explodes, 0 cylindrical faces built, and
++    // the component is adopted anyway (usedRefit=true cyls=0). Chain collapse shows the
++    // same wipeout: mix goes 3788 -> 3917 -> 4425 -> 11498 of 11498, ok 5910 -> 0.
++    //
++    // When the blanket itself would saturate, prefer the host volume probe -- the path
++    // this function already takes when the blanket is empty -- over demolishing every
++    // analytic region. The shell may stay invalid; that is the host's decision to make
++    // on the evidence, not something to pre-empt by discarding the geometry.
++    // Env-gated; off => the original unconditional blanket.
++    static const bool n24 = std::getenv("STL2STEP_N24_U2_BRAKE") != nullptr;
++    if (std::getenv("STL2STEP_N24_DIAG"))
++        std::fprintf(stderr,
++                     "N24_U2_REACHED blanket=%zu cyls=%d exploded=%d sat=%d\n",
++                     plan.explode.size(), countAnalyticCylinders(rs),
++                     countExplodedCylinders(rs, exploded),
++                     plan.explode.empty() ? -1
++                         : (wouldSaturate(rs, exploded, plan.explode) ? 1 : 0));
++    if (n24 && !plan.explode.empty() && wouldSaturate(rs, exploded, plan.explode)) {
++        if (std::getenv("STL2STEP_N24_DIAG"))
++            std::fprintf(stderr,
++                         "N24_U2_BRAKE held blanket=%zu cyls=%d alreadyExploded=%d\n",
++                         plan.explode.size(), countAnalyticCylinders(rs),
++                         countExplodedCylinders(rs, exploded));
++        plan.explode.clear();
++        plan.hostR2 = true;
++        return plan;
++    }
+     if (plan.explode.empty()) plan.hostR2 = true;
+     return plan;
+ }
+@@ -4563,8 +4933,11 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                 // off the fitted R on live N>=12 prisms; that desyncs the 3d
+                 // circle from the cylindrical surface and BRepCheck-fails the
+                 // seamed face. Project onto the axis and use Region::radius.
++                AnalyticCurve preF1 = curve;   // P84 diagnostic: the curve BEFORE F1 snaps it
++                bool f1Applied = false;
+                 if (curve.kind == AnalyticCurve::Circ) {
+                     if (cylR) {
++                        f1Applied = true;
+                         double v = gp_Vec(cylR->ax.Location(), curve.circ.Location())
+                                        .Dot(cylR->ax.Direction());
+                         if (plnR && planePerpCylinder(*plnR, *cylR))
+@@ -4635,7 +5008,30 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                                         eMaj = curve.elips.MajorRadius();
+                                         eMin = curve.elips.MinorRadius();
+                                     }
+-                                    std::fprintf(stderr, "DIAG_VETO A=%d B=%d kind=%d resid=%.6f budget=%.6f nV=%zu maj=%.4f min=%.4f\n",
++                                    double preResid = 0.0;
++                                for (int lv : ch.meshVerts) {
++                                    const double d = curveResidual(preF1, pntOf(mv, lv));
++                                    preResid = std::isfinite(d) ? std::max(preResid, d) : 1e300;
++                                }
++                                std::fprintf(stderr,
++                                    "DIAG_P84 f1=%d preKind=%d preResid=%.8f postResid=%.8f "
++                                    "preR=%.8f postR=%.8f dCentre=%.8f cylR=%.8f\n",
++                                    (int)f1Applied, (int)preF1.kind, preResid, residChain,
++                                    preF1.kind == AnalyticCurve::Circ ? preF1.circ.Radius() : -1.0,
++                                    curve.kind == AnalyticCurve::Circ ? curve.circ.Radius() : -1.0,
++                                    (preF1.kind == AnalyticCurve::Circ &&
++                                     curve.kind == AnalyticCurve::Circ)
++                                        ? preF1.circ.Location().Distance(curve.circ.Location())
++                                        : -1.0,
++                                    cylR ? cylR->radius : -1.0);
++                                if (cylR)
++                                    std::fprintf(stderr,
++                                        "DIAG_P84R lawBand=%d nSides=%d maxVertexDev=%.8f "
++                                        "chordSagitta=%.8f closed360=%d nTris=%zu\n",
++                                        (int)cylR->lawBand, cylR->nSides, cylR->maxVertexDev,
++                                        cylR->chordSagitta, (int)cylR->closed360,
++                                        cylR->tris.size());
++                                std::fprintf(stderr, "DIAG_VETO A=%d B=%d kind=%d resid=%.6f budget=%.6f nV=%zu maj=%.4f min=%.4f\n",
+                                                  (int)A->type, (int)B->type, (int)curve.kind,
+                                                  residChain, budget, ch.meshVerts.size(), eMaj, eMin);
+                                 }
+@@ -4809,8 +5205,17 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                     if (lp.role == LoopRole::CapHigh) capH = &lp;
+                 }
+                 std::vector<TopoDS_Face> halves;
+-                if (tryTwoHalves(r, mv, verts, capL, capH, rs, geom, collapsed, sewTol, halves) &&
+-                    cylinderPostFitOk(r, mv, rs)) {
++                // n23 diag: a closed-360 cylinder that fails BOTH Seamed360 and
++                // TwoHalves leaves no cylindrical face at all, and today the only trace
++                // is a warn() string. Measured on mechparts/2: 5 planned cylinders, 0
++                // built, ten "seamed360: cap wire does not pass seam vertex" warnings
++                // and usedRefit=true -- so the component is ADOPTED with every cylinder
++                // missing. Name the losing sub-step instead of inferring it.
++                const bool n23 = std::getenv("STL2STEP_N23_DIAG") != nullptr;
++                const bool twoOk =
++                    tryTwoHalves(r, mv, verts, capL, capH, rs, geom, collapsed, sewTol, halves);
++                const bool postOk = twoOk && cylinderPostFitOk(r, mv, rs);
++                if (twoOk && postOk) {
+                     bool allOk = true;
+                     for (auto& hf : halves)
+                         if (!ensureFaceValid(hf, meshTolCap(mv, &r))) allOk = false;
+@@ -4819,6 +5224,17 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                         for (auto& f : halves) acc.push_back(f);
+                         return (DIAG_EXIT(__LINE__), true);
+                     }
++                    if (n23)
++                        std::fprintf(stderr,
++                                     "N23_CLOSED360 lost R=%.4f nTri=%zu step=ensureFaceValid "
++                                     "halves=%zu tolCap=%.6f\n",
++                                     r.radius, r.tris.size(), halves.size(),
++                                     meshTolCap(mv, &r));
++                } else if (n23) {
++                    std::fprintf(stderr,
++                                 "N23_CLOSED360 lost R=%.4f nTri=%zu step=%s\n",
++                                 r.radius, r.tris.size(),
++                                 !twoOk ? "tryTwoHalves" : "cylinderPostFitOk");
+                 }
+                 return (DIAG_EXIT(__LINE__), false);
+             }
+@@ -4845,6 +5261,12 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+             exploded[(size_t)id] = 1;
+             Region* rr = regionByIdMut(rs, id);
+             if (rr) {
++                if (std::getenv("STL2STEP_DIAG_FBF"))
++                    std::fprintf(stderr,
++                        "DIAG_EXPLODE rid=%d type=%d R=%.6f nTris=%zu maxVertexDev=%.6f "
++                        "closed360=%d nSides=%d\n",
++                        rr->id, (int)rr->type, rr->radius, rr->tris.size(),
++                        rr->maxVertexDev, (int)rr->closed360, rr->nSides);
+                 rr->builtAs = BuiltAs::ExplodedToFacets;
+                 rr->reject = Reject::FaceBuildFailed;
+             }
+@@ -4901,6 +5323,25 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                 if (regionExploded(exploded, r.id)) { DIAG_SKIP(__LINE__); continue; }
+                 std::vector<TopoDS_Face> acc;
+                 if (!buildOneRegion(r, acc)) {
++                    if (std::getenv("STL2STEP_DIAG_FBF")) {
++                        std::string roles;
++                        for (const Loop& lp : r.loops) {
++                            roles += (lp.role == LoopRole::CapLow  ? "CapLow/"
++                                    : lp.role == LoopRole::CapHigh ? "CapHigh/"
++                                    : lp.role == LoopRole::Outer   ? "Outer/"
++                                                                   : "Inner/");
++                            roles += std::to_string(lp.chainIdx.size()) + " ";
++                        }
++                        std::fprintf(stderr,
++                            "DIAG_FBF round=%d rid=%d type=%d closed360=%d nSides=%d "
++                            "R=%.6f nTris=%zu maxVertexDev=%.6f rms=%.6f chordSag=%.6f origin=%d lawBand=%d "
++                        "spanU=%.4f nTriMesh=%zu outward=%d loops=[%s]\n",
++                            rounds, r.id, (int)r.type, (int)r.closed360, r.nSides,
++                            r.radius, r.tris.size(), r.maxVertexDev, r.rmsVertexDev,
++                        r.chordSagitta, (int)r.origin, (int)r.lawBand,
++                        r.uMax - r.uMin, mv.nTri,
++                            (int)r.outwardNormal, roles.c_str());
++                    }
+                     anyFail = true;
+                     failedIds.push_back(r.id);
+                     r.reject = Reject::FaceBuildFailed;
+@@ -4937,6 +5378,25 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                     if (regionExploded(exploded, r.id)) { DIAG_SKIP(__LINE__); continue; }
+                     std::vector<TopoDS_Face> acc;
+                     if (!buildOneRegion(r, acc)) {
++                        if (std::getenv("STL2STEP_DIAG_FBF")) {
++                            std::string roles;
++                            for (const Loop& lp : r.loops) {
++                                roles += (lp.role == LoopRole::CapLow  ? "CapLow/"
++                                        : lp.role == LoopRole::CapHigh ? "CapHigh/"
++                                        : lp.role == LoopRole::Outer   ? "Outer/"
++                                                                       : "Inner/");
++                                roles += std::to_string(lp.chainIdx.size()) + " ";
++                            }
++                            std::fprintf(stderr,
++                                "DIAG_FBF round=%d rid=%d type=%d closed360=%d nSides=%d "
++                                "R=%.6f nTris=%zu maxVertexDev=%.6f rms=%.6f chordSag=%.6f origin=%d lawBand=%d "
++                        "spanU=%.4f nTriMesh=%zu outward=%d loops=[%s]\n",
++                                rounds, r.id, (int)r.type, (int)r.closed360, r.nSides,
++                                r.radius, r.tris.size(), r.maxVertexDev, r.rmsVertexDev,
++                        r.chordSagitta, (int)r.origin, (int)r.lawBand,
++                        r.uMax - r.uMin, mv.nTri,
++                                (int)r.outwardNormal, roles.c_str());
++                        }
+                         anyFail = true;
+                         failedIds.push_back(r.id);
+                         r.reject = Reject::FaceBuildFailed;
+@@ -5280,6 +5740,243 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+ 
+         // J6
+         bool shClosed = BRep_Tool::IsClosed(sh);
++        // P93-B (env-gated): a ZERO-LENGTH edge cannot open a shell. IsClosed counts any
++        // edge with fewer than two faces, degenerate ones included, so an analytic rebuild
++        // that leaves a collapsed pole edge is reported open while being geometrically
++        // watertight -- and the whole component, cylinders and all, is then discarded.
++        if (!shClosed) {
++            static const bool p93CloseDegen =
++                std::getenv("STL2STEP_P93_CLOSE_DEGEN") != nullptr;
++            if (p93CloseDegen) {
++                TopTools_IndexedDataMapOfShapeListOfShape a2;
++                TopExp::MapShapesAndAncestors(sh, TopAbs_EDGE, TopAbs_FACE, a2);
++                int realFree = 0;
++                for (int i = 1; i <= a2.Extent(); i++) {
++                    if (a2(i).Extent() >= 2) continue;
++                    const TopoDS_Edge& fe = TopoDS::Edge(a2.FindKey(i));
++                    TopoDS_Vertex va, vb;
++                    TopExp::Vertices(fe, va, vb, Standard_True);
++                    if (va.IsNull() || vb.IsNull()) { realFree++; continue; }
++                    if (BRep_Tool::Pnt(va).Distance(BRep_Tool::Pnt(vb)) >
++                        Precision::Confusion())
++                        realFree++;
++                }
++                if (realFree == 0) shClosed = true;
++            }
++        }
++        // P111 (env-gated): the shell is often reported open not because a face is
++        // MISSING but because one edge is DUPLICATED -- two TShapes over the same
++        // segment, one per neighbouring face, which therefore never pair. Measured on
++        // L09_clamp: of 4 free edges, 2 are the same 15.62 mm segment owned by rid8 and
++        // rid11 and 2 are degenerate at its endpoint. Exploding either owner cannot pair
++        // a duplicate (see the refuted n13 targeted explode), so merge them instead.
++        // Tolerance is tight on purpose: only already-coincident edges may merge, and the
++        // face count must survive unchanged or the result is discarded.
++        if (!shClosed) {
++            static const bool n13Sew = std::getenv("STL2STEP_N13_SEW_FREE") != nullptr;
++            if (n13Sew) {
++                try {
++                    // n27 (env-gated): the 1e-5 mm default tolerance can never merge
++                    // the post-snap duplicates that leave real-mesh shells open --
++                    // analytic edge TShapes are rebuilt onto mesh vertices whose
++                    // snap distance is the region fit residual (0.05-0.07 mm on
++                    // mechparts/9), so the two copies of one segment sit ~1e-2 mm
++                    // apart and sewing at 1e-5 mm merges nothing (measured:
++                    // N13_SEW faces=26533->26533 closed=0 on mechparts/9).
++                    static const double n27SewTolMm = [] {
++                        const char* v = std::getenv("STL2STEP_N27_SEW_TOL_MM");
++                        const double d = (v && v[0]) ? std::atof(v) : -1.0;
++                        return d > 0.0 ? d : -1.0;
++                    }();
++                    const double sewTolIn = n27SewTolMm > 0.0
++                                                ? n27SewTolMm
++                                                : Precision::Confusion() * 100.0;
++                    BRepBuilderAPI_Sewing sew(sewTolIn, Standard_True,
++                                              Standard_True, Standard_True, Standard_False);
++                    sew.Load(sh);
++                    sew.Perform();
++                    const TopoDS_Shape r = sew.SewedShape();
++                    TopoDS_Shell ns;
++                    if (!r.IsNull() && r.ShapeType() == TopAbs_SHELL) ns = TopoDS::Shell(r);
++                    int nf = 0;
++                    if (!ns.IsNull())
++                        for (TopExp_Explorer ex(ns, TopAbs_FACE); ex.More(); ex.Next()) nf++;
++                    // Closure alone is not enough: measured on the fine corpus, a
++                    // closed-but-invalid sewn shell cost 2 valid solids (74 -> 72).
++                    bool nsValid = shellIsValid(ns);
++                    // Diagnostic only: which BRepCheck statuses does the sewn shell
++                    // carry? The +1.01 on the normal corpus came entirely from shells
++                    // this predicate rejects, so the statuses decide whether that gain
++                    // is real geometry or a validity artefact.
++                    if (!ns.IsNull() && !nsValid && std::getenv("STL2STEP_N13_SEW_WHY")) {
++                        try {
++                            BRepCheck_Analyzer an2(ns, Standard_True);
++                            TopTools_IndexedMapOfShape fm2;
++                            TopExp::MapShapes(ns, TopAbs_FACE, fm2);
++                            for (int i = 1; i <= fm2.Extent(); i++) {
++                                Handle(BRepCheck_Result) rr = an2.Result(fm2(i));
++                                if (rr.IsNull()) continue;
++                                for (BRepCheck_ListIteratorOfListOfStatus it(rr->Status());
++                                     it.More(); it.Next())
++                                    if (it.Value() != BRepCheck_NoError)
++                                        std::fprintf(stderr, "N13_SEW_WHY face=%d status=%d\n", i,
++                                                     (int)it.Value());
++                            }
++                        } catch (const Standard_Failure&) {
++                        }
++                    }
++                    // P112: the sewn shell's only complaint is UnorientableShape -- the
++                    // merge leaves the two former owners of the duplicated edge with
++                    // inconsistent face orientations. Re-assert orientation before
++                    // judging validity. ShapeFix_Shell only REVERSES faces, so every
++                    // TShape survives and built[] can be remapped by IsSame.
++                    static const bool n13Orient =
++                        std::getenv("STL2STEP_N13_SEW_ORIENT") != nullptr;
++                    if (n13Orient && !ns.IsNull() && !nsValid) {
++                        try {
++                            ShapeFix_Shell sfs(ns);
++                            sfs.Perform();
++                            const TopoDS_Shell fs = sfs.Shell();
++                            int nf2 = 0;
++                            if (!fs.IsNull())
++                                for (TopExp_Explorer ex(fs, TopAbs_FACE); ex.More(); ex.Next()) nf2++;
++                            if (!fs.IsNull() && nf2 == nf && BRep_Tool::IsClosed(fs) &&
++                                shellIsValid(fs)) {
++                                ns = fs;
++                                nsValid = true;
++                                if (std::getenv("STL2STEP_DIAG_FBF"))
++                                    std::fprintf(stderr, "N13_SEW_ORIENT fixed faces=%d\n", nf2);
++                            }
++                        } catch (const Standard_Failure&) {
++                        }
++                    }
++                    // n27 (env-gated): on real parts the sewn shell's residual
++                    // complaint is a handful of UnorientableShape faces (measured
++                    // N13_SEW_WHY on mechparts/11: 11 of 32387, ALL status 27).
++                    // ShapeFix_Shell only reverses faces and cannot repair wire
++                    // imbrication; finishPartial already uses ShapeFix_Face for the
++                    // same class on partial cylinders. Fix each invalid face, keep
++                    // the fix only when it comes back as exactly one face, the face
++                    // count survives and the shell stays closed + valid. The old->
++                    // new map keeps the built[] remap below consistent for faces
++                    // whose TShape ShapeFix replaced.
++                    static const bool n27FixFace =
++                        std::getenv("STL2STEP_N27_SEW_FIXFACE") != nullptr;
++                    TopTools_IndexedDataMapOfShapeListOfShape n27FaceMap;
++                    if (n27FixFace && !ns.IsNull() && !nsValid) {
++                        try {
++                            BRep_Builder bf;
++                            TopoDS_Shell fixed;
++                            bf.MakeShell(fixed);
++                            bool changed = false;
++                            int nfFixed = 0;
++                            for (TopExp_Explorer ex(ns, TopAbs_FACE); ex.More(); ex.Next()) {
++                                const TopoDS_Face f = TopoDS::Face(ex.Current());
++                                TopoDS_Face use = f;
++                                try {
++                                    BRepCheck_Analyzer an(f, Standard_True);
++                                    if (!an.IsValid()) {
++                                        ShapeFix_Face sff(f);
++                                        sff.FixOrientationMode() = 1;
++                                        sff.FixAddNaturalBoundMode() = 0;
++                                        sff.FixWireMode() = 1;
++                                        sff.Perform();
++                                        const TopoDS_Shape res = sff.Result();
++                                        int cnt = 0;
++                                        TopoDS_Face only;
++                                        for (TopExp_Explorer fx(res, TopAbs_FACE); fx.More();
++                                             fx.Next()) {
++                                            cnt++;
++                                            only = TopoDS::Face(fx.Current());
++                                        }
++                                        if (cnt == 1 && !only.IsNull()) {
++                                            use = only;
++                                            changed = true;
++                                        }
++                                    }
++                                } catch (const Standard_Failure&) {
++                                }
++                                TopTools_ListOfShape pair;
++                                pair.Append(use);
++                                n27FaceMap.Add(f, pair);
++                                bf.Add(fixed, use);
++                                nfFixed++;
++                            }
++                            if (changed && nfFixed == nf && BRep_Tool::IsClosed(fixed) &&
++                                shellIsValid(fixed)) {
++                                ns = fixed;
++                                nsValid = true;
++                                if (std::getenv("STL2STEP_DIAG_FBF"))
++                                    std::fprintf(stderr, "N27_FIXFACE fixed=%d\n", nfFixed);
++                            } else {
++                                if (std::getenv("STL2STEP_DIAG_FBF"))
++                                    std::fprintf(stderr,
++                                                 "N27_FIXFACE reject changed=%d nfFixed=%d "
++                                                 "nf=%d closed=%d valid=%d\n",
++                                                 changed ? 1 : 0, nfFixed, nf,
++                                                 fixed.IsNull() ? -1
++                                                                : (int)BRep_Tool::IsClosed(fixed),
++                                                 fixed.IsNull() ? -1 : (int)shellIsValid(fixed));
++                                n27FaceMap.Clear();
++                            }
++                        } catch (const Standard_Failure& e) {
++                            if (std::getenv("STL2STEP_DIAG_FBF"))
++                                std::fprintf(stderr, "N27_FIXFACE exception: %s\n",
++                                             e.GetMessageString() ? e.GetMessageString() : "?");
++                            n27FaceMap.Clear();
++                        }
++                    }
++                    const bool strict = std::getenv("STL2STEP_N13_SEW_STRICT") != nullptr;
++                    const bool ok = !ns.IsNull() && (size_t)nf == built.size() &&
++                                    BRep_Tool::IsClosed(ns) && (nsValid || !strict);
++                    if (std::getenv("STL2STEP_DIAG_FBF")) {
++                        // n27: free-edge census before/after, so a merge that merely
++                        // reduces (not closes) the gap is visible too.
++                        auto freeEdgesOf = [](const TopoDS_Shape& s) {
++                            int n = 0;
++                            if (s.IsNull()) return -1;
++                            TopTools_IndexedDataMapOfShapeListOfShape m;
++                            TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, m);
++                            for (int i = 1; i <= m.Extent(); i++)
++                                if (m(i).Extent() < 2) n++;
++                            return n;
++                        };
++                        std::fprintf(stderr,
++                                     "N13_SEW faces=%zu->%d freeE=%d->%d closed=%d "
++                                     "accepted=%d tol=%.4f\n",
++                                     built.size(), nf, freeEdgesOf(sh),
++                                     ns.IsNull() ? -1 : freeEdgesOf(ns),
++                                     ns.IsNull() ? -1 : (int)BRep_Tool::IsClosed(ns),
++                                     ok ? 1 : 0, sewTolIn);
++                    }
++                    if (ok) {
++                        // Remap the face handles; builtRid is positional, so the order
++                        // must be preserved -- remap in place, never rebuild from the
++                        // shell's own face order.
++                        TopTools_IndexedMapOfShape nsFaces;
++                        TopExp::MapShapes(ns, TopAbs_FACE, nsFaces);
++                        for (size_t i = 0; i < built.size(); i++) {
++                            TopoDS_Shape m = sew.ModifiedSubShape(built[i]);
++                            if (m.IsNull() || m.ShapeType() != TopAbs_FACE) continue;
++                            // n27: a face ShapeFix replaced has a new TShape that
++                            // sewing never saw -- substitute via the old->new map.
++                            if (n27FaceMap.Extent() > 0 && n27FaceMap.Contains(m)) {
++                                const TopTools_ListOfShape& nl = n27FaceMap.FindFromKey(m);
++                                if (nl.Extent() == 1) m = nl.First();
++                            }
++                            // Take the face AS IT SITS IN THE SHELL, so an orientation
++                            // flip applied by ShapeFix_Shell is carried into built[].
++                            for (int k = 1; k <= nsFaces.Extent(); k++)
++                                if (nsFaces(k).IsSame(m)) { m = nsFaces(k); break; }
++                            built[i] = TopoDS::Face(m);
++                        }
++                        sh = ns;
++                        shClosed = true;
++                    }
++                } catch (const Standard_Failure&) {
++                }
++            }
++        }
+         sh.Closed(shClosed ? Standard_True : Standard_False);
+         if (wasClosed && !shClosed) {
+             int freeE = 0;
+@@ -5298,10 +5995,28 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+             // Skip large multi-hole parts (Body11, 15300 tris): mixed
+             // uncollapse + abort-recover zeroes the 127-cyl floor. The
+             // 8-file J6 set is all < 8000 tris.
+-            if (freeE > 0 && mv.nTri < 10000 && freeE < j6PrevFreeE &&
++            // n28: that 10,000 cap is a constant fitted to ONE model. Its own comment
++            // says the J6 set is all < 8000 tris and that Body11 (15,300) regressed. The
++            // user's real machined parts are 20k-166k triangles, so NONE of them is ever
++            // healed -- and the correlation across his 40 parts is exact: every part that
++            // ships cylinders today is under 10,000 triangles (15=1784, 8=1832, 26=2174,
++            // 2=2212, 34=3062, 13=3096) and every part above it ships zero, including
++            // mechparts/9 (46,104 tri, 98 cylinder regions recognised, 0 built) and
++            // mechparts/11 (46,674 tri, 56 recognised, 0 built).
++            // Overridable so the cap can be tested rather than assumed; default 10000
++            // keeps the shipped behaviour byte-identical.
++            static const size_t j6MaxTri = [] {
++                const char* e = std::getenv("STL2STEP_N28_HEAL_MAXTRI");
++                if (e == nullptr) return (size_t)10000;
++                const long v = std::atol(e);
++                return v > 0 ? (size_t)v : (size_t)10000;
++            }();
++            if (freeE > 0 && mv.nTri < j6MaxTri && freeE < j6PrevFreeE &&
+                 j6UncollapsePass < kJ6MaxPasses) {
+                 const double matchTol =
+                     std::max(std::max(0.5, sewTol * 20.0), derivedEpsPlane(mv) * 4.0);
++                static const bool p93SkipDegen =
++                    std::getenv("STL2STEP_P93_SKIP_DEGEN") != nullptr;
+                 std::vector<int> heal;
+                 auto addHeal = [&](int ci) {
+                     if (ci < 0 || (size_t)ci >= collapseBanned.size()) { DIAG_EXIT(__LINE__); return; }
+@@ -5314,7 +6029,13 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                     TopoDS_Vertex va, vb;
+                     TopExp::Vertices(e, va, vb, Standard_True);
+                     gp_Pnt pa = BRep_Tool::Pnt(va), pb = BRep_Tool::Pnt(vb);
+-                    addHeal(matchCollapsedChainToSegment(mv, rs, collapsed, pa, pb, matchTol));
++                    // P93-A: a ZERO-LENGTH free edge is not an unpaired analytic chain. Asking
++                    // matchCollapsedChainToSegment for the chain whose terminals match a degenerate
++                    // point-pair makes both ends match the same point, so any chain ending within
++                    // matchTol answers -- and the heal then uncollapses sound chains into mesh
++                    // polylines. Measured on L07_spool: freeE 4 (all len=0) -> 133 after the heal.
++                    if (!p93SkipDegen || pa.Distance(pb) > Precision::Confusion())
++                        addHeal(matchCollapsedChainToSegment(mv, rs, collapsed, pa, pb, matchTol));
+                 }
+                 if (!heal.empty()) {
+                     for (int ci : heal) {
+@@ -5346,7 +6067,12 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+             // Revert-class (Body9/12/18/20): after the heal, do not explode
+             // recover — that dirties vertex TShapes and worsens R2 volΔ.
+             // Body11 never enters this branch (nTri >= 10000 skips the heal).
+-            if (j6UncollapsePass > 0) {
++            // P92 (env-gated): let the post-heal case fall through to the same
++            // explode-recover path the pre-heal case uses, instead of discarding the
++            // whole component with every cylinder already built and accepted.
++            static const bool p92J6Recover =
++                std::getenv("STL2STEP_P92_J6_RECOVER") != nullptr;
++            if (j6UncollapsePass > 0 && !p92J6Recover) {
+                 warn("BUILDFACES-EXIT:j6-uncollapse");
+                 DIAG_EXIT_T(__LINE__, "j6-uncollapse");
+                 restoreShared();
+@@ -5377,19 +6103,96 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                             edgeFailIds.end())
+                             edgeFailIds.push_back(id);
+                     };
++                    size_t nChainFail = 0;
+                     for (size_t ci = 0; ci < rs.chains.size(); ci++) {
+                         if (!chainEdgeFail[ci]) { DIAG_SKIP(__LINE__); continue; }
++                        ++nChainFail;
+                         addId(rs.chains[ci].regA);
+                         addId(rs.chains[ci].regB);
+                     }
+                     std::sort(edgeFailIds.begin(), edgeFailIds.end());
++                    // n25 measurement: how many CHAINS actually failed their edge build,
++                    // and how many REGIONS that costs. The explode count alone cannot say
++                    // whether the defect is upstream (chains failing) or in the response
++                    // (exploding both regions of every failed chain). DIAG_PARTIAL_EDGE is
++                    // a per-edge trace of the diagnostic walk, not a failure count -- it
++                    // was misread as one, hence this.
++                    if (std::getenv("STL2STEP_N25_DIAG"))
++                        std::fprintf(stderr,
++                                     "N25_CHAINFAIL chains=%zu failed=%zu regionsHit=%zu "
++                                     "recoverPass=%d\n",
++                                     rs.chains.size(), nChainFail, edgeFailIds.size(),
++                                     recoverPass);
+                     for (int id : edgeFailIds) {
+                         explodeRegion(id);
+                         did = true;
+                     }
+                 }
++                // n13/P110 (env-gated): the blanket arms below sacrifice every
++                // cylinder in the component, and the cascade's casualties are the
++                // single largest source of lost cylinders in the corpus (110 of 160
++                // exploded regions never failed a build). J6 already knows WHICH
++                // edges are free -- explode only the regions that own them.
++                //
++                // n27: this arm used to be `if (!did && n13Targeted)`, and the
++                // chainEdgeFail arm above sets did=true whenever ANY plane|plane /
++                // plane|cyl intersection missed -- so on real parts (mechparts/9:
++                // 128 missed intersections) the targeted path never ran and the
++                // blanket fired instead. Decoupled: the targeted arm now runs on
++                // its own env gate and the blanket only fires when neither arm
++                // made a move.
++                static const bool n13Targeted =
++                    std::getenv("STL2STEP_N13_TARGETED_EXPLODE") != nullptr;
++                if (n13Targeted) {
++                    TopTools_IndexedMapOfShape faceMap;
++                    TopExp::MapShapes(sh, TopAbs_FACE, faceMap);
++                    std::vector<int> faceRid((size_t)faceMap.Extent() + 1, -1);
++                    for (size_t i = 0; i < built.size(); i++) {
++                        int idx = faceMap.FindIndex(built[i]);
++                        if (idx > 0 && i < builtRid.size()) faceRid[(size_t)idx] = builtRid[i];
++                    }
++                    std::vector<int> freeIds;
++                    for (int i = 1; i <= anc.Extent(); i++) {
++                        if (anc(i).Extent() != 1) continue;
++                        int fi = faceMap.FindIndex(TopoDS::Face(anc(i).First()));
++                        if (fi <= 0) continue;
++                        const int rid = faceRid[(size_t)fi];
++                        if (rid < 0 || regionExploded(exploded, rid)) continue;
++                        if (std::find(freeIds.begin(), freeIds.end(), rid) == freeIds.end())
++                            freeIds.push_back(rid);
++                    }
++                    std::sort(freeIds.begin(), freeIds.end());
++                    if (std::getenv("STL2STEP_DIAG_FBF"))
++                        std::fprintf(stderr, "N13_TARGETED freeE=%d regions=%zu\n", freeE,
++                                     freeIds.size());
++                    for (int id : freeIds) {
++                        // n27: a free edge on a face that borders an already-exploded or
++                        // partial (non-360) cylinder is the CYLINDER's fault, not this
++                        // face's. The edge went free because the neighbour cylinder's
++                        // analytic face was removed (exploded), or because it is a junk
++                        // partial the blanket else-branch below explodes anyway. Exploding
++                        // this face cannot re-pair that boundary -- it only cascades
++                        // (L07 collar: 6 victim planes -> 152 free edges -> the recover-1
++                        // blanket wipes the surviving R16 cylinder -> 0 cylinders). Skip
++                        // the victim and let the cylinder carry the explode.
++                        bool victim = false;
++                        for (const BoundaryChain& ch : rs.chains) {
++                            int nb = otherReg(ch, id);
++                            if (nb < 0) continue;
++                            const Region* nr = regionById(rs, nb);
++                            if (!nr || nr->type != SurfType::Cylinder) continue;
++                            if (regionExploded(exploded, nb) || !nr->closed360) {
++                                victim = true;
++                                break;
++                            }
++                        }
++                        if (victim) continue;
++                        explodeRegion(id);
++                        did = true;
++                    }
++                }
+                 if (!did) {
+-                    if (!keepCyl)
++                    if (!keepCyl && !n26BlanketWouldWipe(rs, exploded))
+                         did = explodeAll();
+                     else {
+                         // Keep Seamed360 holes; drop junk partials (S03 cone
+@@ -5408,10 +6211,31 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+                     recoverPass++;
+                     goto try_rebuild;
+                 }
+-            } else if (recoverPass < 2 && explodeAll()) {
++            } else if (recoverPass < 2 && !n26BlanketWouldWipe(rs, exploded) && explodeAll()) {
+                 recoverPass++;
+                 goto try_rebuild;
+             }
++            // n26b: the brake above is necessary but not sufficient, and the measurement
++            // says so. mechparts/9 with STL2STEP_N26_NO_BLANKET: the blanket is held
++            // (N26_BLANKET_HELD=1), explodes fall 3777 -> 157 -- and shipped cylinders
++            // stay 0, because refusing to explode leaves did=false, which lands here and
++            // discards the entire build. The component then reverts to facets and the 98
++            // cylinders are lost exactly as before.
++            //
++            // So when the brake held, keep the faces that were built instead of throwing
++            // them away. The shell is not closed; that is reported honestly downstream
++            // (openShells / freeEdges / watertight=false in RESULT) and the writer already
++            // emits an open shell. A non-watertight STEP carrying its cylinders is more
++            // use to a CAD user than a watertight bag of triangles.
++            if (!built.empty() && n26BlanketWouldWipe(rs, exploded)) {
++                if (std::getenv("STL2STEP_N26_DIAG"))
++                    std::fprintf(stderr, "N26_KEEP_BUILT faces=%zu (shell left open)\n",
++                                 built.size());
++                warn("BUILDFACES-EXIT:kept-built-open-shell");
++                fitAnalyticTolerances(sh);
++                out = std::move(built);
++                return (DIAG_EXIT(__LINE__), true);
++            }
+             warn("BUILDFACES-EXIT:heal-discard");
+             DIAG_EXIT_T(__LINE__, "heal-discard");
+             restoreShared();
+@@ -5437,6 +6261,10 @@ bool buildFaces(const MeshView& mv, RegionSet& rs, const std::vector<TopoDS_Vert
+             std::vector<CascadeHit> culprits;
+             collectFaceCulprits(built, builtRid, exploded, culprits);
+             collectShellCulprits(sh, built, builtRid, rs, exploded, culprits);
++            static const bool n14NonRegion =
++                std::getenv("STL2STEP_N14_NONREGION") != nullptr;
++            if (n14NonRegion)
++                collectNonRegionNeighbourhood(sh, built, builtRid, exploded, culprits);
+             diagCascadeCulprits(culprits);
+             // RULE 1.4: empty culprit set + invalid shell ⇒ escalate, never ship.
+             CascadePlan plan = cascadeLadderPlan(cascadeSt, culprits, rs, exploded, false);
+diff --git a/src/refit_chains.cpp b/src/refit_chains.cpp
+index 0bce653..dbcad4d 100644
+--- a/src/refit_chains.cpp
++++ b/src/refit_chains.cpp
+@@ -8,6 +8,8 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdint>
++#include <cstdio>
++#include <cstdlib>
+ #include <limits>
+ #include <utility>
+ #include <vector>
+@@ -297,6 +299,59 @@ bool loopUsesChain(const Loop& lp, int ci) {
+     return false;
+ }
+ 
++// n5e PINCH DIAGNOSTIC (env-gated, read-only).
++//
++// The 13 ladder-exhausted models lose 75 resolvable cylinder faces, and the
++// COLLAPSE_DIAG face dump says every one of their 342 invalid faces is PLANAR
++// (UnorientableShape 2907, BadOrientationOfSubshape 676, SelfIntersectingWire 98)
++// while not one cylindrical face is invalid. P41 identified the mechanism as a
++// PINCH: one mesh vertex visited TWICE by a single region's outer walk -- a "U"
++// whose two arms meet at a point -- which is a non-manifold wire and exactly what
++// those three statuses report.
++//
++// This walks each loop's vertex sequence and reports vertices visited more than
++// once. It changes nothing; it exists to turn "P41 predicts 18" into a count.
++void n5ePinchDiag(const Region& reg, const std::vector<Loop>& loops,
++                  const std::vector<BoundaryChain>& chains) {
++    static const bool on = std::getenv("STL2STEP_N5E_PINCH_DIAG") != nullptr;
++    if (!on) return;
++    // Reachability: a zero pinch count means nothing until this proves the walk
++    // ran and over how much. (memory: "a zero is only a measurement once its
++    // counter is proven reachable".)
++    std::fprintf(stderr, "N5E_SEEN reg=%d type=%d loops=%zu\n", reg.id,
++                 (int)reg.type, loops.size());
++    for (size_t li = 0; li < loops.size(); ++li) {
++        const Loop& lp = loops[li];
++        std::vector<int> seq;
++        for (size_t k = 0; k < lp.chainIdx.size(); ++k) {
++            const BoundaryChain& c = chains[lp.chainIdx[k]];
++            const bool rev = k < lp.reversed.size() && lp.reversed[k];
++            if (c.meshVerts.empty()) continue;
++            // drop the shared joint so a vertex is counted once per VISIT
++            const size_t n = c.meshVerts.size();
++            for (size_t i = 0; i + (c.closedLoop ? 0u : 1u) < n; ++i)
++                seq.push_back(c.meshVerts[rev ? n - 1 - i : i]);
++        }
++        if (seq.size() < 3) continue;
++        std::vector<int> sorted = seq;
++        std::sort(sorted.begin(), sorted.end());
++        int dup = 0, worst = -1, worstN = 0;
++        for (size_t i = 0; i < sorted.size();) {
++            size_t j = i;
++            while (j < sorted.size() && sorted[j] == sorted[i]) ++j;
++            const int mult = (int)(j - i);
++            if (mult > 1) { ++dup; if (mult > worstN) { worstN = mult; worst = sorted[i]; } }
++            i = j;
++        }
++        if (dup > 0)
++            std::fprintf(stderr,
++                         "N5E_PINCH reg=%d type=%d loop=%zu role=%d len=%zu "
++                         "pinchVerts=%d worstVert=%d visits=%d\n",
++                         reg.id, (int)reg.type, li, (int)lp.role, seq.size(),
++                         dup, worst, worstN);
++    }
++}
++
+ }  // namespace
+ 
+ bool buildTopologyD(const MeshView& mv, const SegmentParams& p, const DerivedTols& tol,
+@@ -906,6 +961,8 @@ bool buildTopologyD(const MeshView& mv, const SegmentParams& p, const DerivedTol
+             if (hits != 1) return false;
+         }
+ 
++        n5ePinchDiag(reg, loops, out.chains);
++
+         if (!classifyAndPush(reg, loops)) return false;
+ 
+         if (reg.closed360) {
+diff --git a/src/refit_grow.cpp b/src/refit_grow.cpp
+index 5696fa6..2333950 100644
+--- a/src/refit_grow.cpp
++++ b/src/refit_grow.cpp
+@@ -1,9 +1,12 @@
+ // P1 grow lane — charts A1, provisional A2, cylinder claim B1, plane commit A3.
+ // B1 gate structure: DECISION-p1-growx (D1.3-A1..A6, D2.3-A1).
+ 
++#include <atomic>
+ #include "refit_internal.hpp"
+ 
+ #include <algorithm>
++#include <set>
++#include <unordered_map>
+ #include <array>
+ #include <cmath>
+ #include <cstdint>
+@@ -834,6 +837,18 @@ CommitEval evaluateCommit(const MeshView& mv, const DerivedTols& tol,
+     if (!lawBand && coarseFusionBand(mv) && ev.d2.nSides >= 3 && !ev.d2.spanReject) {
+         refineCylinderRadius(mv, tris, axis, ev.center, ev.radius, ev.d2.nSides, ev.d2.span,
+                              rHint);
++        // P90: keep the sec-lift only while it IMPROVES the fit. G2 below widens its own
++        // tolerance by lift*1.15, so a lift that moves the radius AWAY from the vertices
++        // buys the region an acceptance proportional to how badly it fits -- measured on
++        // NEG_SOT-23W_Handsoldering_fine rid=0, where a +17% lift took the residual from
++        // 0.031 to 0.286 and g2Tol from 0.023 to 0.320. Same shape as the archChain block
++        // below, which already restores oldR when its result fails G2.
++        static const bool p90LiftMustImprove =
++            std::getenv("STL2STEP_P90_LIFT_MUST_IMPROVE") != nullptr;
++        if (p90LiftMustImprove && ev.radius > rBeforeRefine
++            && maxVertexResidual(mv, tris, axis, ev.center, ev.radius)
++                   > maxVertexResidual(mv, tris, axis, ev.center, rBeforeRefine))
++            ev.radius = rBeforeRefine;
+         ev.d2 = computeD2(mv, tris, axis, ev.center, ev.radius, tol);
+     }
+     if (!lawBand && coarseFusionBand(mv) && tris.size() >= 3 && ev.radius >= 15.0) {
+@@ -949,6 +964,21 @@ CommitEval evaluateCommit(const MeshView& mv, const DerivedTols& tol,
+             g2Tol = std::max(g2Tol, lift * 1.15 + chordSagitta(ev.radius, nEstSides));
+         if (tris.size() <= 8)
+             g2Tol = std::max(g2Tol, epsCylRing(tol, ev.radius));
++        if (std::getenv("STL2STEP_DIAG_G2"))
++            std::fprintf(stderr,
++                "DIAG_G2 coarse=1 R=%.6f rBefore=%.6f lift=%.6f nSides=%d nTris=%zu "
++                "eps=%.6f sag=%.6f g2Tol=%.6f maxVertRes=%.6f resAtFit=%.6f "
++                "tolAtFit=%.6f passAtFit=%d archApplied=%d\n",
++                ev.radius, rBeforeRefine, lift, ev.d2.nSides, tris.size(),
++                tol.epsCylAccept(ev.radius), chordSagitta(ev.radius, nEstSides), g2Tol,
++                maxVertexResidual(mv, tris, axis, ev.center, ev.radius),
++                maxVertexResidual(mv, tris, axis, ev.center, rBeforeRefine),
++                std::max(tol.epsCylAccept(rBeforeRefine),
++                         chordSagitta(rBeforeRefine, nEstSides)),
++                (int)(maxVertexResidual(mv, tris, axis, ev.center, rBeforeRefine)
++                      <= std::max(tol.epsCylAccept(rBeforeRefine),
++                                  chordSagitta(rBeforeRefine, nEstSides))),
++                (int)archChainApplied);
+         if (!archChainApplied
+             && maxVertexResidual(mv, tris, axis, ev.center, ev.radius) > g2Tol) {
+             ev.failGate = Gate::G2;
+@@ -1007,6 +1037,27 @@ void fillCylinderRegion(const MeshView& mv, const CommitEval& ev, const gp_Dir&
+     reg.nSides = ev.d2.nSides;
+     reg.chordSagitta = chordSagitta(ev.radius, ev.d2.nSides);
+     reg.outwardNormal = computeOutwardCylinder(mv, tris, axis, ev.d2.ax.Location());
++    // n5f P104: on a true cylinder every facet normal is perpendicular to the
++    // axis. On a slice of a torus the normal tilts along it. Area-weighted RMS
++    // and max of |n_t . axis| separate the two if the patch carries the signal.
++    if (std::getenv("STL2STEP_N5F_AXCOH") != nullptr) {
++        double sw = 0.0, s2w = 0.0, mx = 0.0;
++        for (int lt : tris) {
++            const double a = triAreaLocal(mv, lt);
++            const double d = std::fabs(triNormalLocal(mv, lt).Dot(axis));
++            sw += a;
++            s2w += a * d * d;
++            if (d > mx) mx = d;
++        }
++        std::fprintf(stderr,
++                     "N5F_AXCOH R=%.4f nTri=%zu area=%.4f rms=%.5f max=%.5f "
++                     "ax=%.5f,%.5f,%.5f\n",
++                     ev.radius, tris.size(), sw, (sw > 0.0) ? std::sqrt(s2w / sw) : 0.0, mx,
++                     axis.X(), axis.Y(), axis.Z());
++    }
++    if (std::getenv("STL2STEP_DIAG_EBERLY") && ev.radius < 1.0)
++        std::fprintf(stderr, "DIAG_FILLCYL nTris=%zu R=%.8f nSides=%d closed360=%d\n",
++                     tris.size(), ev.radius, ev.d2.nSides, (int)ev.d2.closed360);
+     reg.dVolPredicted = dVolCylinderSector(areaReg, ev.radius, ev.d2.nSides, reg.outwardNormal);
+     reg.maxVertexDev = maxVertexResidual(mv, tris, axis, ev.center, ev.radius);
+     double sumSq = 0.0;
+@@ -1311,6 +1362,142 @@ void fillLawBandRegion(const MeshView& mv, const DerivedTols& tol, const LawBand
+ 
+ }  // namespace
+ 
++// n5f P105: a torus sliced into cylinder patches. The engine has no torus
++// primitive, so a rounded rim is committed as many equal-radius cylinders whose
++// axes fan around a great circle -- 86 of them on L09_actuator_mount alone, all
++// fabricated. No per-patch test can see it (P104: their normal-vs-axis RMS is
++// 0.00000, the same as a real cylinder), so the discriminator is the relation
++// BETWEEN siblings: group by radius, take the orientation tensor sum(n n^T) of
++// the group's axes, and read its eigenvalues L1 >= L2 >= L3.
++//   bolt circle (real):  axes parallel    -> L2/L1 ~ L3/L1 ~ 0
++//   torus slices:        axes on a circle -> L3/L1 ~ 0, L2/L1 large
++// Env-gated; off => bit-identical.
++bool rejectTorusSlicesN5F(const MeshView& mv, SegmentWork& work) {
++    static const bool on = std::getenv("STL2STEP_N5F_TORUS") != nullptr;
++    if (!on) return true;
++    const double kRadRel = 0.02;   // radius grouping
++    const size_t kMinGrp = 6;      // a torus needs a run, not a pair
++    const double kFlat = 0.05;     // L3/L1: axes coplanar
++    const double kSpread = 0.30;   // L2/L1: and spread within that plane
++    const double kIso = 0.15;      // P109 L3/L1: axes spread in 3D, not in a plane
++    const double kSliver = 0.15;   // P109 median member area / largest member area
++
++    std::vector<size_t> cyl;
++    for (size_t i = 0; i < work.accepted.size(); ++i)
++        if (work.accepted[i].type == SurfType::Cylinder && work.accepted[i].radius > 0.0)
++            cyl.push_back(i);
++    std::sort(cyl.begin(), cyl.end(), [&](size_t a, size_t b) {
++        return work.accepted[a].radius < work.accepted[b].radius;
++    });
++
++    std::vector<char> drop(work.accepted.size(), 0);
++    size_t b = 0;
++    while (b < cyl.size()) {
++        size_t e = b + 1;
++        while (e < cyl.size() &&
++               std::fabs(work.accepted[cyl[e]].radius - work.accepted[cyl[e - 1]].radius) <=
++                   kRadRel * work.accepted[cyl[e - 1]].radius)
++            ++e;
++        const size_t n = e - b;
++        if (n >= kMinGrp) {
++            std::array<std::array<double, 3>, 3> m{};
++            for (size_t k = b; k < e; ++k) {
++                const gp_Dir d = work.accepted[cyl[k]].ax.Direction();
++                const double v[3] = {d.X(), d.Y(), d.Z()};
++                for (int i = 0; i < 3; ++i)
++                    for (int j = 0; j < 3; ++j) m[i][j] += v[i] * v[j];
++            }
++            std::array<double, 3> ev{};
++            std::array<std::array<double, 3>, 3> evec{};
++            if (jacobiEigenSymmetric3(m, ev, evec) && ev[2] > 0.0) {
++                const double l2 = ev[1] / ev[2], l3 = ev[0] / ev[2];
++                if (l3 < kFlat && l2 > kSpread) {
++                    for (size_t k = b; k < e; ++k) drop[cyl[k]] = 1;
++                    if (std::getenv("STL2STEP_N5F_AXCOH") != nullptr)
++                        std::fprintf(stderr,
++                                     "N5F_TORUS drop n=%zu R=%.4f L2/L1=%.4f L3/L1=%.4f\n",
++                                     n, work.accepted[cyl[b]].radius, l2, l3);
++                }
++
++                // n12 P109 (env-gated): the same disease with a NON-PLANAR spine.
++                // A rolling fillet or blend has no primitive here either, so it ships
++                // as equal-radius cylinder patches -- but its axes follow the edge it
++                // runs along, so they are ISOTROPIC, not coplanar, and the n5f test
++                // above cannot see them. Measured on L09_valve_body: 123 cylinder
++                // faces on 121 distinct axis-lines, all at R=2.0, where the source
++                // CAD has 18 faces at that radius and 24 non-analytic ones.
++                // L3/L1 = 0.2045 (n5f needs < 0.05), 51 distinct axis directions,
++                // median face area 1.40 mm2 against a largest of 113.1 -- ten faces
++                // carry the real bores, the rest are slivers off the blend. Adopting
++                // that component costs -4.68 CADScore on its own, the worst in the
++                // corpus, which is why the refit volume gate rejects it.
++                //
++                // Signature: a big equal-radius group, axes spread in 3D, and a
++                // median member far smaller than the largest. Checked against every
++                // radius group of >=6 the live engine ships (7 groups over 103
++                // models, 5 of them matching truth): fires on none of them.
++                static const bool p109Blend =
++                    std::getenv("STL2STEP_N12_BLEND") != nullptr;
++                if (p109Blend && l3 > kIso) {
++                    double amax = 0;
++                    std::vector<double> ar;
++                    ar.reserve(n);
++                    for (size_t k = b; k < e; ++k) {
++                        double a = 0;
++                        for (int t : work.accepted[cyl[k]].tris) {
++                            const int* tv = mv.tris[mv.compTris[t]];
++                            const gp_XYZ& p0 = mv.pts[tv[0]];
++                            const gp_XYZ& p1 = mv.pts[tv[1]];
++                            const gp_XYZ& p2 = mv.pts[tv[2]];
++                            a += 0.5 * (p1 - p0).Crossed(p2 - p0).Modulus();
++                        }
++                        ar.push_back(a);
++                        amax = std::max(amax, a);
++                    }
++                    std::vector<double> srt = ar;
++                    std::sort(srt.begin(), srt.end());
++                    const double med = srt[srt.size() / 2];
++                    if (amax > 0.0 && med / amax < kSliver) {
++                        // Drop the whole group. Culling per member instead -- keeping
++                        // the 14 largest of valve_body's 123 -- was tried and MEASURED:
++                        // the component reverts again, so those 14 are blend patches
++                        // too, not bores. Wholesale is both simpler and the only one
++                        // that lets the component adopt.
++                        size_t nd = n;
++                        for (size_t k = b; k < e; ++k) drop[cyl[k]] = 1;
++                        if (std::getenv("STL2STEP_N5F_AXCOH") != nullptr)
++                            std::fprintf(stderr,
++                                         "N12_BLEND group n=%zu R=%.4f L3/L1=%.4f "
++                                         "med/max=%.4f dropped=%zu kept=%zu\n",
++                                         n, work.accepted[cyl[b]].radius, l3,
++                                         med / amax, nd, n - nd);
++                    }
++                }
++            }
++        }
++        b = e;
++    }
++
++    std::vector<Region> keep;
++    keep.reserve(work.accepted.size());
++    for (size_t i = 0; i < work.accepted.size(); ++i) {
++        if (!drop[i]) {
++            keep.push_back(work.accepted[i]);
++            continue;
++        }
++        // Hand the facets back so a later stage, not a hole, covers them.
++        for (int t : work.accepted[i].tris)
++            for (Provisional& pv : work.provisionals)
++                if (std::find(pv.tris.begin(), pv.tris.end(), t) != pv.tris.end()) {
++                    pv.claim = ProvClaim::Unclaimed;
++                    break;
++                }
++    }
++    work.accepted.swap(keep);
++    return true;
++}
++
++
+ bool chartsA1(const MeshView& mv, const SegmentParams&, const DerivedTols& tol,
+               SegmentWork& work) {
+     work.triChart.assign(mv.nTri, -1);
+@@ -1473,6 +1660,433 @@ bool growProvisionalA2(const MeshView& mv, const SegmentParams&, const DerivedTo
+     return true;
+ }
+ 
++// n15 ARC-FIRST CLAIM. The seed path asks a pair of facet bands to fold by enough
++// to pin an axis; on 8 corpus models nothing is ever claimed at any seed floor
++// (measured: STL2STEP_P94_THETA_CYL_LO down to 0.5 deg changes 0/0 to 0/0), while
++// the arcs on those same meshes give the truth radii exactly. So take the axis from
++// the BOUNDARY instead of from the surface.
++//
++// Tommaso's three conditions, which are the reference's equal-step law applied to a
++// polyline: a run of boundary segments is an arc iff it is (1) coplanar,
++// (2) equal-chord, (3) equal-turn. The radius then follows by inversion,
++// R = w / (2 sin(t/2)) -- no circle fit, and far better conditioned on a short arc.
++// The run's plane normal IS the cylinder axis.
++//
++// This stage only proposes an axis. evaluateCommit still decides, so every B1 gate
++// applies unchanged, and the stage runs ONLY on provisionals nothing else claimed.
++namespace {
++
++struct ArcRun {
++    gp_Dir axis;
++    gp_XYZ ctr;           // arc centre: with the axis this is the axis LINE
++    double radius = 0;
++    double turn = 0;      // total turn, radians -- the arc's angular coverage
++    int npts = 0;
++};
++
++double cvOf(const std::vector<double>& xs) {
++    if (xs.size() < 2) return 0.0;
++    double m = 0.0;
++    for (double x : xs) m += x;
++    m /= (double)xs.size();
++    if (std::fabs(m) < 1e-12) return 1e9;
++    double v = 0.0;
++    for (double x : xs) v += (x - m) * (x - m);
++    return std::sqrt(v / (double)xs.size()) / std::fabs(m);
++}
++
++// Sharp-edge chains over the WHOLE component. Per-provisional boundaries do not
++// work: at a fine tessellation a bore wall is split into many 2-triangle
++// provisionals, so no single provisional owns a rim arc -- which is the same
++// reason the seed path fails on these models.
++void sharpChains(const MeshView& mv, const DerivedTols& tol,
++                 std::vector<std::vector<int>>& chainsOut) {
++    std::vector<int> t0(mv.nEdge, -1), t1(mv.nEdge, -1);
++    for (size_t lt = 0; lt < mv.nTri; lt++)
++        for (int k = 0; k < 3; k++) {
++            const int e = mv.triEdges[lt][k];
++            if (e < 0 || (size_t)e >= mv.nEdge) continue;
++            if (t0[e] < 0) t0[e] = (int)lt; else if (t1[e] < 0) t1[e] = (int)lt;
++        }
++    const double lim = std::cos(tol.thetaSharp);
++    std::vector<std::vector<int>> adj(mv.nVtx);
++    std::vector<char> isSharp(mv.nEdge, 0);
++    for (size_t e = 0; e < mv.nEdge; e++) {
++        if (t0[e] < 0) continue;
++        bool sharp = (t1[e] < 0);
++        if (!sharp) {
++            const gp_Dir a = triNormalLocal(mv, t0[e]), b = triNormalLocal(mv, t1[e]);
++            sharp = (a.Dot(b) < lim);
++        }
++        if (!sharp) continue;
++        isSharp[e] = 1;
++        const std::pair<int, int>& v = mv.compEdges[e];
++        adj[v.first].push_back(v.second);
++        adj[v.second].push_back(v.first);
++    }
++    std::set<std::pair<int, int>> used;
++    auto key = [](int a, int b) { return std::make_pair(std::min(a, b), std::max(a, b)); };
++    auto walk = [&](int a, int b) {
++        std::vector<int> ch{a, b};
++        used.insert(key(a, b));
++        while (true) {
++            const int cur = ch.back(), prev = ch[ch.size() - 2];
++            if ((size_t)cur >= adj.size() || adj[cur].size() != 2) break;
++            const int nxt = (adj[cur][0] == prev) ? adj[cur][1] : adj[cur][0];
++            if (used.count(key(cur, nxt))) break;
++            used.insert(key(cur, nxt));
++            ch.push_back(nxt);
++            if (nxt == ch.front()) break;
++        }
++        if (ch.size() >= 5) chainsOut.push_back(ch);
++    };
++    for (size_t e = 0; e < mv.nEdge; e++) {       // junctions and ends first
++        if (!isSharp[e]) continue;
++        const std::pair<int, int>& v = mv.compEdges[e];
++        for (int pass = 0; pass < 2; pass++) {
++            const int a = pass ? v.second : v.first, b = pass ? v.first : v.second;
++            if ((size_t)a < adj.size() && adj[a].size() != 2 && !used.count(key(a, b)))
++                walk(a, b);
++        }
++    }
++    for (size_t e = 0; e < mv.nEdge; e++) {       // then the closed rings
++        if (!isSharp[e]) continue;
++        const std::pair<int, int>& v = mv.compEdges[e];
++        if (!used.count(key(v.first, v.second))) walk(v.first, v.second);
++    }
++}
++
++// The three conditions on one chain. Returns the longest qualifying run.
++bool bestArcRun(const MeshView& mv, const std::vector<int>& ch, const DerivedTols& tol,
++                ArcRun& out) {
++    const size_t n = ch.size();
++    if (n < 5) return false;
++    std::vector<gp_XYZ> P(n);
++    for (size_t i = 0; i < n; i++) P[i] = mv.pts[mv.compVtx[ch[i]]];
++    std::vector<gp_XYZ> seg(n - 1);
++    std::vector<double> w(n - 1);
++    for (size_t i = 0; i + 1 < n; i++) {
++        seg[i] = P[i + 1] - P[i];
++        w[i] = seg[i].Modulus();
++    }
++    std::vector<double> t(n >= 3 ? n - 2 : 0);
++    std::vector<gp_XYZ> nm(t.size());
++    for (size_t i = 0; i + 1 < seg.size(); i++) {
++        const double a = w[i], b = w[i + 1];
++        if (a < 1e-12 || b < 1e-12) { t[i] = 0.0; nm[i] = gp_XYZ(0, 0, 0); continue; }
++        double c = seg[i].Dot(seg[i + 1]) / (a * b);
++        c = std::max(-1.0, std::min(1.0, c));
++        t[i] = std::acos(c);
++        const gp_XYZ x = seg[i].Crossed(seg[i + 1]);
++        const double xm = x.Modulus();
++        nm[i] = (xm > 1e-18) ? gp_XYZ(x / xm) : gp_XYZ(0, 0, 0);
++    }
++    const double kTurnMin = 2.0 * M_PI / 180.0;   // below this the run is straight
++    const double kCvW = 0.02, kCvT = 0.05, kCoplanar = 0.02;
++    bool found = false;
++    size_t i = 0;
++    while (i < t.size()) {
++        if (t[i] < kTurnMin) { i++; continue; }
++        size_t j = i;
++        while (j + 1 < t.size()) {
++            if (t[j + 1] < kTurnMin) break;
++            std::vector<double> ws(w.begin() + i, w.begin() + std::min(w.size(), j + 3));
++            std::vector<double> ts(t.begin() + i, t.begin() + (j + 2));
++            if (cvOf(ws) > kCvW || cvOf(ts) > kCvT) break;
++            gp_XYZ acc(0, 0, 0);
++            for (size_t k = i; k <= j + 1; k++) acc += nm[k];
++            const double am = acc.Modulus();
++            if (am < 1e-12) break;
++            const gp_XYZ u = acc / am;
++            bool flat = true;
++            for (size_t k = i; k <= j + 1; k++)
++                if (nm[k].Modulus() > 0.5 && std::fabs(nm[k].Dot(u)) < 1.0 - kCoplanar)
++                    flat = false;
++            if (!flat) break;
++            j++;
++        }
++        const size_t npts = j - i + 3;
++        if (npts >= 5) {
++            double mw = 0.0, mt = 0.0;
++            size_t cw = 0, ct = 0;
++            for (size_t k = i; k < std::min(w.size(), j + 2); k++) { mw += w[k]; cw++; }
++            for (size_t k = i; k <= j; k++) { mt += t[k]; ct++; }
++            if (cw && ct) {
++                mw /= (double)cw;
++                mt /= (double)ct;
++                gp_XYZ acc(0, 0, 0);
++                for (size_t k = i; k <= j; k++) acc += nm[k];
++                const double am = acc.Modulus();
++                if (mt > kTurnMin && am > 1e-12) {
++                    const double r = mw / (2.0 * std::sin(mt / 2.0));
++                    const double turn = mt * (double)(npts - 1);
++                    // Centre: every vertex sits at r*cos(t/2) from the centre along
++                    // the inward bisector of its two chords. Average over the run.
++                    gp_XYZ cacc(0, 0, 0);
++                    int ccnt = 0;
++                    for (size_t k = i + 1; k + 1 < i + npts && k + 1 < n; k++) {
++                        gp_XYZ a = P[k - 1] - P[k], b = P[k + 1] - P[k];
++                        const double am2 = a.Modulus(), bm2 = b.Modulus();
++                        if (am2 < 1e-12 || bm2 < 1e-12) continue;
++                        gp_XYZ bis = a / am2 + b / bm2;
++                        const double bm = bis.Modulus();
++                        if (bm < 1e-12) continue;
++                        cacc += P[k] + (bis / bm) * (r * std::cos(mt / 2.0));
++                        ccnt++;
++                    }
++                    if (ccnt && r > std::max(tol.epsMesh, 1e-4) && turn > out.turn) {
++                        out.axis = gp_Dir(acc / am);
++                        out.ctr = cacc / (double)ccnt;
++                        out.radius = r;
++                        out.turn = turn;
++                        out.npts = (int)npts;
++                        found = true;
++                    }
++                }
++            }
++        }
++        i = j + 1;
++    }
++    return found;
++}
++
++}  // namespace
++
++bool claimArcBandsN15(const MeshView& mv, const SegmentParams&, const DerivedTols& tol,
++                      SegmentWork& work) {
++    static const bool on = std::getenv("STL2STEP_N15_ARCS") != nullptr;
++    if (!on) return true;
++    // Risk discipline: act only where the component has NO analytic cylinder at all.
++    // Those are the measured detection-gap models. A component that already claimed
++    // cylinders has a RETENTION problem, which this stage does not address and must
++    // not perturb.
++    const bool diag = std::getenv("STL2STEP_N15_DIAG") != nullptr;
++    {
++        size_t nc = 0;
++        for (const Region& r : work.accepted)
++            if (r.type == SurfType::Cylinder) nc++;
++        if (diag)
++            std::fprintf(stderr, "N15_ARC entry accepted=%zu cylinders=%zu provs=%zu\n",
++                         work.accepted.size(), nc, work.provisionals.size());
++        if (nc) return true;
++    }
++    std::vector<std::vector<int>> chs;
++    sharpChains(mv, tol, chs);
++    std::vector<ArcRun> cands;
++    for (const std::vector<int>& ch : chs) {
++        ArcRun a;
++        if (bestArcRun(mv, ch, tol, a)) cands.push_back(a);
++    }
++    if (diag)
++        std::fprintf(stderr, "N15_ARC chains=%zu arcs=%zu\n", chs.size(), cands.size());
++    if (cands.empty()) return true;
++    // widest arc first: the best-pinned axis gets first claim on the triangles
++    std::sort(cands.begin(), cands.end(),
++              [](const ArcRun& a, const ArcRun& b) { return a.turn > b.turn; });
++
++    for (const ArcRun& a : cands) {
++        const gp_XYZ ad(a.axis.X(), a.axis.Y(), a.axis.Z());
++        const double band = std::max({epsCylRing(tol, a.radius), tol.epsMesh, 1e-4});
++        // A provisional joins only if ALL of its triangles lie on the cylinder: the
++        // claim model is whole-provisional (B1's invariant), and a partial absorb
++        // would leave A3 committing a plane over the same triangles.
++        std::vector<int> members, tris;
++        for (size_t pi = 0; pi < work.provisionals.size(); pi++) {
++            const Provisional& prov = work.provisionals[pi];
++            if (prov.claim != ProvClaim::Unclaimed || prov.tris.empty()) continue;
++            bool all = true;
++            for (int lt : prov.tris) {
++                for (int k = 0; k < 3 && all; k++) {
++                    const gp_XYZ q = localTriVert(mv, lt, k) - a.ctr;
++                    const double rr = ad.Crossed(q).Modulus();
++                    if (std::fabs(rr - a.radius) > band) all = false;
++                }
++                if (!all) break;
++            }
++            if (!all) continue;
++            members.push_back((int)pi);
++            tris.insert(tris.end(), prov.tris.begin(), prov.tris.end());
++        }
++        if (tris.size() < 2) continue;
++        std::sort(tris.begin(), tris.end());
++        // EDGE-CONNECTEDNESS. The radius test is geometric and will happily gather
++        // two bores that share a radius on opposite sides of the part, or a ring of
++        // facets that is not one surface. A region must be one edge-connected patch:
++        // measured on Mesh2step_test01, a disconnected R=16.686 claim built, closed
++        // and passed BRepCheck, then left its 210 triangles as an ISLAND -- the shell
++        // came out 3261.7 mm3 short against a 31.5 budget and t4 reverted the whole
++        // component, losing all four cylinders. Keep the largest connected patch only.
++        {
++            std::unordered_map<int, std::vector<int>> byEdge;
++            for (int lt : tris)
++                for (int k = 0; k < 3; k++) byEdge[mv.triEdges[lt][k]].push_back(lt);
++            std::unordered_map<int, int> comp;
++            int nComp = 0;
++            for (int seed : tris) {
++                if (comp.count(seed)) continue;
++                const int cid = nComp++;
++                std::vector<int> stack{seed};
++                comp[seed] = cid;
++                while (!stack.empty()) {
++                    const int cur = stack.back();
++                    stack.pop_back();
++                    for (int k = 0; k < 3; k++) {
++                        auto it = byEdge.find(mv.triEdges[cur][k]);
++                        if (it == byEdge.end()) continue;
++                        for (int nb : it->second)
++                            if (!comp.count(nb)) { comp[nb] = cid; stack.push_back(nb); }
++                    }
++                }
++            }
++            if (nComp > 1) {
++                std::vector<int> sz((size_t)nComp, 0);
++                for (const auto& kv : comp) sz[(size_t)kv.second]++;
++                const int keep =
++                    (int)(std::max_element(sz.begin(), sz.end()) - sz.begin());
++                std::vector<int> kt;
++                for (int lt : tris)
++                    if (comp[lt] == keep) kt.push_back(lt);
++                // members must stay whole-provisional: drop any provisional not
++                // entirely inside the kept patch.
++                std::vector<int> km;
++                const std::set<int> ks(kt.begin(), kt.end());
++                for (int m : members) {
++                    bool all = true;
++                    for (int lt : work.provisionals[(size_t)m].tris)
++                        if (!ks.count(lt)) { all = false; break; }
++                    if (all) km.push_back(m);
++                }
++                if (diag)
++                    std::fprintf(stderr,
++                                 "N15_ARC split R=%.5f comps=%d tris %zu->%zu provs %zu->%zu\n",
++                                 a.radius, nComp, tris.size(), kt.size(), members.size(),
++                                 km.size());
++                tris.swap(kt);
++                members.swap(km);
++                if (tris.size() < 2 || members.empty()) continue;
++            }
++        }
++        CommitEval ev = evaluateCommit(mv, tol, tris, a.axis, a.radius);
++        if (diag)
++            std::fprintf(stderr,
++                         "N15_ARC cand R=%.5f turn=%.1fdeg npts=%d provs=%zu tris=%zu "
++                         "evR=%.5f gate=%s\n",
++                         a.radius, a.turn * 180.0 / M_PI, a.npts, members.size(),
++                         tris.size(), ev.radius,
++                         ev.failGate == Gate::PASS ? "PASS" : "fail");
++        if (ev.failGate != Gate::PASS) continue;
++        Region reg;
++        fillCylinderRegion(mv, ev, a.axis, tris, reg);
++        work.accepted.push_back(reg);
++        for (int m : members) {
++            work.provisionals[m].claim = ProvClaim::ConsumedCylinder;
++            work.provisionals[m].tris.clear();
++            work.provisionals[m].area = 0.0;
++        }
++    }
++    return true;
++}
++
++// n18 ARC-COVERAGE GATE. Restated from ScanRuler's cylinder gates (AGPL: mechanism
++// and constant only, no code): a patch spanning less than ~30 degrees of arc is
++// barely curved over that span, so its radius and axis position are guesses. Its
++// stated reason for defining coverage as 360 - (widest angular gap), rather than by
++// counting occupied bins, is that the former does not shrink just because the mesh
++// is coarse -- which is why this does NOT punish a coarsely tessellated bore.
++//
++// A region already carries its span as [uMin, uMax], so the measurement is free.
++// Target: L10_cross_slide ships 11 cylinders against a truth of 4 faces at R=2.0,
++// seven of them at R=7.2539 -- one curved wall sliced into narrow strips. Env-gated;
++// off => no-op. closed360 regions are exempt by definition (they span 2*pi).
++// n21 TESSELLATION-QUALITY GATE. n18 asks how much arc a patch covers; nothing asked
++// how well that arc is drawn. A cylinder region carries its MEASURED chord sagitta, and
++// refit_build.cpp:365 turns that sagitta into the region's edge tolerance -- honestly,
++// because the mesh really is that coarse. The damage is that the tolerance is then
++// shared with the region's neighbours.
++//
++// Measured on mechparts/15: rid=13 is a 2-triangle, 4-sided patch at R=10, i.e. a 90 deg
++// arc drawn with two facets. Its sagitta is 10*(1-cos45) = 2.928932 mm, so OCCT is
++// licensed to identify points 2.93 mm apart on a part whose real bores are R~8 mm. The
++// faces go invalid (culprit rid=13 src=face faceValid=0), the U0 cascade explodes it and
++// its neighbours, and rid=9/10/11/12 -- four 144-sided bands fitting the mesh to
++// 0.0002 mm -- are destroyed with it. 11 cylinder regions recognised, 1 face shipped.
++//
++// sagitta/R is 0.293 for that culprit and ~3e-5 for a real 144-sided bore.
++//
++// HONEST LIMIT, measured: the ratio does NOT separate harmful patches from harmless
++// ones. L10_nut_housing_normal drops five R=2.0 patches and mechparts/15 six R=10.0
++// patches, and every one is 2 triangles at ratio=0.2929 -- the same 90 deg arc in two
++// facets. This gate is therefore "reject 2-triangle quarter-cylinders", and it is a
++// TRADE: mechparts/15 goes 1 -> 5 cylinders, L10_nut_housing_normal 9 -> 5 matched.
++// It nets positive because the first case is commoner: normal 73.67 -> 74.74
++// (precision 91.93 -> 94.97, built 347 -> 338), fine 50.13 -> 50.51, and closed valid
++// solids rise 200->202 and 74->76.
++//
++// A contagion test -- drop the coarse patch only when an edge-adjacent accepted
++// cylinder is >=10x finer -- was implemented and REFUTED: it fires on neither model,
++// so the coarse patches are not edge-adjacent to the fine bands and the damage travels
++// by some other path. Do not retry that form without first finding the real coupling.
++// A patch this coarse is already being exploded into facets today; refusing it up front
++// costs nothing and stops it taking its neighbours with it.
++// Env-gated; off => no-op.
++bool rejectCoarseArcN21(const MeshView& mv, SegmentWork& work) {
++    const char* e = std::getenv("STL2STEP_N21_SAGRATIO");
++    if (e == nullptr) return true;
++    double maxRatio = std::atof(e);
++    if (!(maxRatio > 0.0)) maxRatio = 0.05;
++    const bool diag = std::getenv("STL2STEP_N21_DIAG") != nullptr;
++    std::vector<Region> keep;
++    keep.reserve(work.accepted.size());
++    size_t dropped = 0;
++    for (Region& r : work.accepted) {
++        if (r.type != SurfType::Cylinder || !(r.radius > 0.0) || !(r.chordSagitta > 0.0)) {
++            keep.push_back(r);
++            continue;
++        }
++        const double ratio = r.chordSagitta / r.radius;
++        if (ratio <= maxRatio) { keep.push_back(r); continue; }
++        if (diag)
++            std::fprintf(stderr,
++                         "N21_COARSE drop R=%.4f sag=%.6f ratio=%.4f nTri=%zu\n",
++                         r.radius, r.chordSagitta, ratio, r.tris.size());
++        r.reject = Reject::ChordConsistency;
++        work.rejected.push_back(r);
++        dropped++;
++    }
++    if (diag)
++        std::fprintf(stderr, "N21_COARSE kept=%zu dropped=%zu maxRatio=%.4f\n",
++                     keep.size(), dropped, maxRatio);
++    work.accepted.swap(keep);
++    return true;
++}
++
++bool rejectLowCoverageN18(const MeshView&, SegmentWork& work) {
++    const char* e = std::getenv("STL2STEP_N18_ARCCOV");
++    if (e == nullptr) return true;
++    double minDeg = std::atof(e);
++    if (!(minDeg > 0.0)) minDeg = 29.0;
++    const bool diag = std::getenv("STL2STEP_N18_DIAG") != nullptr;
++    std::vector<Region> keep;
++    keep.reserve(work.accepted.size());
++    size_t dropped = 0;
++    for (Region& r : work.accepted) {
++        if (r.type != SurfType::Cylinder || r.closed360) { keep.push_back(r); continue; }
++        const double covDeg = std::fabs(r.uMax - r.uMin) * 180.0 / M_PI;
++        if (covDeg >= minDeg) { keep.push_back(r); continue; }
++        if (diag)
++            std::fprintf(stderr, "N18_ARCCOV drop R=%.4f cov=%.2fdeg nTri=%zu\n",
++                         r.radius, covDeg, r.tris.size());
++        r.reject = Reject::Span;
++        work.rejected.push_back(r);
++        dropped++;
++    }
++    if (diag)
++        std::fprintf(stderr, "N18_ARCCOV kept=%zu dropped=%zu minDeg=%.1f\n",
++                     keep.size(), dropped, minDeg);
++    work.accepted.swap(keep);
++    return true;
++}
++
+ bool claimCylindersB1(const MeshView& mv, const SegmentParams&, const DerivedTols& tol,
+                       SegmentWork& work) {
+     if (lawbandDiagOn())
+@@ -2159,6 +2773,14 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+     std::sort(triples.begin(), triples.end());
+     triples.erase(std::unique(triples.begin(), triples.end()), triples.end());
+ 
++    if (lawbandDiagOn()) {
++        size_t degSum = 0, degMax = 0;
++        for (const auto& n : adj) { degSum += n.size(); degMax = std::max(degMax, n.size()); }
++        std::fprintf(stderr, "DIAG_LAWSEEDS nTri=%zu nStrips=%d triples=%zu degMax=%zu degAvg=%.2f\n",
++                     mv.nTri, nS, triples.size(), degMax,
++                     nS ? double(degSum) / nS : 0.0);
++    }
++
+     struct Grown {
+         LawBand band;
+         bool ok = false;
+@@ -2166,11 +2788,19 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+     };
+     std::vector<Grown> grown(triples.size());
+ 
++    std::atomic<long long> nAccCalls{0}, nAccTris{0}, nSeedOk{0}, nGrowSteps{0};
++    std::atomic<long long> maxMembers{0};
++    const bool lawDiag = lawbandDiagOn();
++    auto countedAccept = [&](const std::vector<int>& tris, LawBand& out) {
++        if (lawDiag) { nAccCalls++; nAccTris += (long long)tris.size(); }
++        return lawChainAccept(mv, tris, tol, out);
++    };
+     lawParallelFor(triples.size(), [&](size_t ti) {
+         const auto trip = triples[ti];
+         std::vector<int> members = {trip[0], trip[1], trip[2]};
+         LawBand seedB;
+-        if (!lawChainAccept(mv, unionStripTris(members), tol, seedB)) return;
++        if (!countedAccept(unionStripTris(members), seedB)) return;
++        if (lawDiag) nSeedOk++;
+ 
+         std::vector<char> in(static_cast<size_t>(nS), 0);
+         in[static_cast<size_t>(trip[0])] = 1;
+@@ -2195,7 +2825,8 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+                 std::vector<int> trial = members;
+                 trial.push_back(nb);
+                 LawBand tb;
+-                if (!lawChainAccept(mv, unionStripTris(trial), tol, tb)) continue;
++                if (lawDiag) nGrowSteps++;
++                if (!countedAccept(unionStripTris(trial), tb)) continue;
+                 members.push_back(nb);
+                 in[static_cast<size_t>(nb)] = 1;
+                 seedB = std::move(tb);
+@@ -2205,7 +2836,17 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+         }
+         grown[ti].band = std::move(seedB);
+         grown[ti].ok = true;
++        if (lawDiag) {
++            long long m = (long long)members.size(), cur = maxMembers.load();
++            while (m > cur && !maxMembers.compare_exchange_weak(cur, m)) {}
++        }
+     });
++    if (lawDiag)
++        std::fprintf(stderr,
++                     "DIAG_LAWCOST seedsOk=%lld acceptCalls=%lld triVisits=%lld "
++                     "growTrials=%lld maxMembers=%lld\n",
++                     nSeedOk.load(), nAccCalls.load(), nAccTris.load(),
++                     nGrowSteps.load(), maxMembers.load());
+ 
+     // A2 provisionals that already isolate a band (or a chimera to split).
+     for (const Provisional& p : work.provisionals) {
+@@ -2454,8 +3095,21 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+         }
+     }
+ 
++    // n22: the calibration below is a CROSS-CHECK that every band obeys one global
++    // tessellation law -- the claim loop reads each band's own b.R and b.N and never
++    // touches `li`. Its quorum was read off cadbench, where a part offers many chains
++    // ("handle-lock has 14"); a real machined part offers few. Measured on
++    // mechparts/8: 432 seeds accept, 61,344 lawChainAccept calls and 9,041,271
++    // triangle visits are computed, then DISCARDED because nD=3 < 5 and the interval
++    // came out empty -- the model ships 173 planes and 2 cylinders with nothing
++    // rejected and nothing exploded.
++    //
++    // With the gate set, skip the wholesale decline and claim the bands on their own
++    // individual evidence. This trades the global-consistency guarantee for per-band
++    // acceptance, so it is measured, not assumed. Env-gated; off => no-op.
++    static const bool n22 = std::getenv("STL2STEP_N22_NOQUORUM") != nullptr;
+     const TessLawInterval li = lawCalibrate(accepted);
+-    if (li.empty) {
++    if (li.empty && !n22) {
+         if (lawbandDiagOn()) {
+             std::fprintf(stderr, "DIAG_LAWDECLINE reason=empty_cal nCand=%zu\n",
+                          accepted.size());
+@@ -2468,7 +3122,7 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+     // A single-preset lock needs several d-limited chains (handle-lock has
+     // 14). Fewer than 5 is a foreign/partial component (Body11's in-band
+     // leftover accepted nD=2) — decline (RULE 4.2e.3).
+-    if (li.nDLimited < 5) {
++    if (li.nDLimited < 5 && !n22) {
+         if (lawbandDiagOn()) {
+             std::fprintf(stderr,
+                          "DIAG_LAWDECLINE reason=few_dlimited nD=%d nCand=%zu\n",
+@@ -2476,7 +3130,7 @@ bool claimLawBandsL(const MeshView& mv, const SegmentParams&, const DerivedTols&
+         }
+         return true;
+     }
+-    if (li.dHi > li.dLo) {
++    if (li.dHi > li.dLo && !n22) {
+         const double mid = 0.5 * (li.dLo + li.dHi);
+         if (mid > 0.0 && (li.dHi - li.dLo) / mid >= 0.05) {
+             if (lawbandDiagOn()) {
+diff --git a/src/refit_internal.hpp b/src/refit_internal.hpp
+index 086085d..0f5e01d 100644
+--- a/src/refit_internal.hpp
++++ b/src/refit_internal.hpp
+@@ -139,6 +139,24 @@ bool growProvisionalA2(const MeshView& mv, const SegmentParams& p, const Derived
+ bool claimCylindersB1(const MeshView& mv, const SegmentParams& p, const DerivedTols& tol,
+                       SegmentWork& work);
+ 
++// n15: axis from boundary arcs (coplanar + equal-chord + equal-turn), radius by
++// inversion. Env-gated; off => no-op. Acts only on components with no cylinder.
++bool claimArcBandsN15(const MeshView& mv, const SegmentParams& p, const DerivedTols& tol,
++                      SegmentWork& work);
++
++// n18: drop partial cylinders spanning less than STL2STEP_N18_ARCCOV degrees of
++// arc (default 29). Env-gated; off => no-op.
++bool rejectLowCoverageN18(const MeshView& mv, SegmentWork& work);
++
++// n21: drop cylinder regions whose measured chord sagitta exceeds
++// STL2STEP_N21_SAGRATIO * radius (default 0.05) -- a patch too coarsely tessellated to
++// carry a trustworthy edge tolerance. Env-gated; off => no-op.
++bool rejectCoarseArcN21(const MeshView& mv, SegmentWork& work);
++
++// n5f P105: drop equal-radius cylinder groups whose axes fan around a circle
++// (a torus the engine has no primitive for). Env-gated; off => no-op.
++bool rejectTorusSlicesN5F(const MeshView& mv, SegmentWork& work);
++
+ bool claimFilletsC1(const MeshView& mv, const SegmentParams& p, const DerivedTols& tol,
+                     SegmentWork& work);
+ 
+diff --git a/src/refit_lawband.cpp b/src/refit_lawband.cpp
+index beb9a40..9323f90 100644
+--- a/src/refit_lawband.cpp
++++ b/src/refit_lawband.cpp
+@@ -594,11 +594,22 @@ bool extractChain(const MeshView& mv, const std::vector<int>& ids, const Derived
+     const double tau = tauSurf(mv);
+     double maxRes = 0.0;
+     const unsigned nV = static_cast<unsigned>(verts.size());
++    // Each call here spans ~100 unique verts (avg union is ~108 tris), so the
++    // threaded path below spawns up to hardware_concurrency() threads to
++    // parallelise an O(nV) max-reduction of a few microseconds -- on real
++    // mechanical parts claimLawBandsL makes tens of thousands of these calls
++    // and the spawn+join dominates the stage (~1.1 ms/call measured on
++    // mechparts/15). The reduction is a pure max, so the serial loop is
++    // bit-identical to the pool. Env-gated; off => original behaviour.
++    static const bool serialResid = [] {
++        const char* e = std::getenv("STL2STEP_LAWBAND_SERIAL_RESID");
++        return e && e[0] != '\0' && e[0] != '0';
++    }();
+     unsigned nTh = std::thread::hardware_concurrency();
+     if (nTh == 0) nTh = 2;
+     if (nV < 48) nTh = 1;
+     nTh = std::min(nTh, nV);
+-    if (nTh <= 1) {
++    if (nTh <= 1 || serialResid) {
+         for (const gp_XYZ& p : verts)
+             maxRes = std::max(maxRes, std::abs(rhoOf(p, origin, axis) - out.R));
+     } else {
+diff --git a/src/refit_math.cpp b/src/refit_math.cpp
+index 7b286c4..78061d3 100644
+--- a/src/refit_math.cpp
++++ b/src/refit_math.cpp
+@@ -422,6 +422,18 @@ bool eberlyCenterRadius(const MeshView& mv, const std::vector<int>& tris,
+     if (!finite3(c.X(), c.Y(), c.Z()) || !(R > 0.0) || !std::isfinite(R)) return false;
+     center = gp_Pnt(c.X(), c.Y(), c.Z());
+     radius = R;
++    if (std::getenv("STL2STEP_DIAG_EBERLY") && R < 1.0) {
++        double lo = 1e300, hi = 0.0;
++        for (std::size_t i = 0; i < gids.size(); ++i) {
++            const gp_XYZ q = mv.pts[gids[i]];
++            const double dx = q.Dot(u) - cx, dy = q.Dot(v) - cy;
++            const double d = std::sqrt(dx * dx + dy * dy);
++            lo = std::min(lo, d); hi = std::max(hi, d);
++        }
++        std::fprintf(stderr,
++            "DIAG_EBERLY nTrisIn=%zu nIds=%zu nPts=%zu R=%.8f ptRadial[min=%.8f max=%.8f]\n",
++            tris.size(), ids.size(), gids.size(), R, lo, hi);
++    }
+     return true;
+ }
+ 
+@@ -635,7 +647,15 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+         gp_XYZ p;
+         double ang;
+         double rad;
++        gp_XYZ rvec;   // P85: p projected into the plane perpendicular to the axis
+     };
++    // P85: dAng below is an AZIMUTHAL angle, so every chord it divides must be the chord of
++    // the PROJECTED circle. A 3-D distance also carries the pair's axial offset, and
++    // chord/(2 sin(dAng/2)) then reports a radius larger than the real one -- on a two-ring
++    // cylinder every cross-ring pair is inflated. Measured on NEG_SOT-1334-1_fine:
++    // 0.15000 -> 0.15563 (+3.75%) out of a 0.01 mm ring separation.
++    static const bool p85PlanarChord =
++        std::getenv("STL2STEP_P85_PLANAR_CHORD") != nullptr;
+     std::vector<Vtx> ring;
+     {
+         std::vector<int> gids;
+@@ -654,7 +674,7 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+             const double rr = radial.Modulus();
+             if (!(rr > 0.0)) continue;
+             const double ang = std::atan2(radial.Dot(v), radial.Dot(u));
+-            ring.push_back({p, ang, rr});
++            ring.push_back({p, ang, rr, radial});
+         }
+     }
+     if (ring.size() < 3) return false;
+@@ -716,12 +736,13 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+                 if (!share) continue;
+                 const gp_XYZ p0 = mv.pts[gv0];
+                 const gp_XYZ p1 = mv.pts[gv1];
+-                const double chord = (p1 - p0).Modulus();
+-                if (!(chord > 0.0)) continue;
+                 const gp_XYZ d0 = p0 - c0;
+                 const gp_XYZ d1 = p1 - c0;
+                 const gp_XYZ r0 = d0 - aw * d0.Dot(aw);
+                 const gp_XYZ r1 = d1 - aw * d1.Dot(aw);
++                const double chord =
++                    p85PlanarChord ? (r1 - r0).Modulus() : (p1 - p0).Modulus();
++                if (!(chord > 0.0)) continue;
+                 const double rad0 = r0.Modulus();
+                 const double rad1 = r1.Modulus();
+                 if (!(rad0 > 0.0) || !(rad1 > 0.0)) continue;
+@@ -748,7 +769,9 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+             double dAng = ring[j].ang - ring[i].ang;
+             if (j == 0) dAng = (ring[0].ang + kTwoPi) - ring[nV - 1].ang;
+             if (dAng < 1e-6 || dAng >= kPi) continue;
+-            const double chord = (ring[j].p - ring[i].p).Modulus();
++            const double chord = p85PlanarChord
++                                     ? (ring[j].rvec - ring[i].rvec).Modulus()
++                                     : (ring[j].p - ring[i].p).Modulus();
+             if (!(chord > 0.0)) continue;
+             const double halfAng = 0.5 * dAng;
+             const double s = std::sin(halfAng);
+@@ -784,12 +807,13 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+                 if (internal) continue;
+                 const gp_XYZ p0 = mv.pts[gv0];
+                 const gp_XYZ p1 = mv.pts[gv1];
+-                const double chord = (p1 - p0).Modulus();
+-                if (!(chord > 0.0)) continue;
+                 const gp_XYZ d0 = p0 - c0;
+                 const gp_XYZ d1 = p1 - c0;
+                 const gp_XYZ r0 = d0 - aw * d0.Dot(aw);
+                 const gp_XYZ r1 = d1 - aw * d1.Dot(aw);
++                const double chord =
++                    p85PlanarChord ? (r1 - r0).Modulus() : (p1 - p0).Modulus();
++                if (!(chord > 0.0)) continue;
+                 if (!(r0.Modulus() > 0.0) || !(r1.Modulus() > 0.0)) continue;
+                 const double ang0 = std::atan2(r0.Dot(v), r0.Dot(u));
+                 const double ang1 = std::atan2(r1.Dot(v), r1.Dot(u));
+@@ -821,6 +845,14 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+         if (chordsLow) rPick = std::max(rPick, rHint);
+     }
+ 
++    if (std::getenv("STL2STEP_DIAG_LIFT") && radius < 10.0) {
++        std::fprintf(stderr,
++            "DIAG_LIFT Rin=%.8f nEff=%d nChord=%zu rChordMed=%.8f rInscribed=%.8f "
++            "rPick=%.8f rHint=%.8f spanRad=%.5f\n",
++            radius, nEff, chordRadii.size(),
++            chordRadii.empty() ? -1.0 : medianOfSorted(chordRadii),
++            rInscribed, rPick, rHint, spanRad);
++    }
+     if (rPick <= radius * 1.01) {
+         (void)spanRad;
+         (void)segAng;
+@@ -851,12 +883,13 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+                 const int gv1 = T[(k + 1) % 3];
+                 const gp_XYZ p0 = mv.pts[gv0];
+                 const gp_XYZ p1 = mv.pts[gv1];
+-                const double chord = (p1 - p0).Modulus();
+-                if (!(chord > 0.0)) continue;
+                 const gp_XYZ d0 = p0 - c0;
+                 const gp_XYZ d1 = p1 - c0;
+                 const gp_XYZ r0 = d0 - aw * d0.Dot(aw);
+                 const gp_XYZ r1 = d1 - aw * d1.Dot(aw);
++                const double chord =
++                    p85PlanarChord ? (r1 - r0).Modulus() : (p1 - p0).Modulus();
++                if (!(chord > 0.0)) continue;
+                 if (!(r0.Modulus() > 0.0) || !(r1.Modulus() > 0.0)) continue;
+                 const double ang0 = std::atan2(r0.Dot(v), r0.Dot(u));
+                 const double ang1 = std::atan2(r1.Dot(v), r1.Dot(u));
+@@ -883,12 +916,13 @@ bool refineCylinderRadius(const MeshView& mv, const std::vector<int>& tris,
+                     const int gv1 = T[(k + 1) % 3];
+                     const gp_XYZ p0 = mv.pts[gv0];
+                     const gp_XYZ p1 = mv.pts[gv1];
+-                    const double chord = (p1 - p0).Modulus();
+-                    if (!(chord > 0.0)) continue;
+                     const gp_XYZ d0 = p0 - c0;
+                     const gp_XYZ d1 = p1 - c0;
+                     const gp_XYZ r0 = d0 - aw * d0.Dot(aw);
+                     const gp_XYZ r1 = d1 - aw * d1.Dot(aw);
++                    const double chord =
++                        p85PlanarChord ? (r1 - r0).Modulus() : (p1 - p0).Modulus();
++                    if (!(chord > 0.0)) continue;
+                     if (!(r0.Modulus() > 0.0) || !(r1.Modulus() > 0.0)) continue;
+                     const double ang0 = std::atan2(r0.Dot(v), r0.Dot(u));
+                     const double ang1 = std::atan2(r1.Dot(v), r1.Dot(u));
+diff --git a/src/refit_segment.cpp b/src/refit_segment.cpp
+index a818214..b450561 100644
+--- a/src/refit_segment.cpp
++++ b/src/refit_segment.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdlib>
+ #include <string>
+ 
+ #include "refit.hpp"
+@@ -24,6 +25,15 @@ void adaptCoarseSegmentParams(const MeshView& mv, SegmentParams& p) {
+ 
+ DerivedTols deriveTols(const MeshView& mv, const SegmentParams& p) {
+     DerivedTols tol;
++    // P94 (env-gated experiment): the Phase B seed band's low floor is 5 deg, so a cylinder
++    // tessellated at more than 72 facets per full circle turns by less than 5 deg per facet
++    // and is never seeded. This override exists to MEASURE that; a fixed constant is not the
++    // fix -- the floor must be derived from the mesh's own planar noise.
++    double thetaCylLoDeg = p.thetaCylLoDeg;
++    if (const char* e = std::getenv("STL2STEP_P94_THETA_CYL_LO")) {
++        const double v = std::atof(e);
++        if (v > 0.0) thetaCylLoDeg = v;
++    }
+     tol.epsMesh = (p.epsMesh > 0.0)
+                       ? p.epsMesh
+                       : std::max({mv.weldTol, 1e-4 * mv.diag, 1e-3});
+@@ -31,7 +41,7 @@ DerivedTols deriveTols(const MeshView& mv, const SegmentParams& p) {
+                                       : std::max({tol.epsMesh, mv.sewTol, 0.02});
+     tol.thetaPlane = p.thetaPlaneDeg * kDegToRad;
+     tol.thetaSharp = p.thetaSharpDeg * kDegToRad;
+-    tol.thetaCylLo = p.thetaCylLoDeg * kDegToRad;
++    tol.thetaCylLo = thetaCylLoDeg * kDegToRad;
+     tol.thetaCylHi = p.thetaCylHiDeg * kDegToRad;
+     tol.thetaBin = p.thetaBinDeg * kDegToRad;
+     return tol;
+@@ -51,6 +61,10 @@ bool runStages(const MeshView& mv, const SegmentParams& p, const DerivedTols& to
+         if (!claimFilletsC1(mv, p, tol, work)) return false;
+     }
+ 
++    if (!claimArcBandsN15(mv, p, tol, work)) return false;
++    if (!rejectTorusSlicesN5F(mv, work)) return false;
++    if (!rejectLowCoverageN18(mv, work)) return false;
++    if (!rejectCoarseArcN21(mv, work)) return false;
+     if (!commitPlanesA3(mv, p, tol, work)) return false;
+     if (!buildTopologyD(mv, p, tol, work, out)) return false;
+ 
+diff --git a/src/stl2step.cpp b/src/stl2step.cpp
+index b79d0af..cd422e8 100644
+--- a/src/stl2step.cpp
++++ b/src/stl2step.cpp
+@@ -45,6 +45,7 @@
+ #include <vector>
+ 
+ #include <BRep_Builder.hxx>
++#include <BRepTools.hxx>
+ #include <BRep_Tool.hxx>
+ #include <BRepAdaptor_Surface.hxx>
+ #include <BRepBuilderAPI_MakeEdge.hxx>
+@@ -62,11 +63,11 @@
+ #include <Message_PrinterOStream.hxx>
+ #include <OSD.hxx>
+ #include <Poly_Triangle.hxx>
+-#include <Poly_Triangulation.hxx>
+ #include <Precision.hxx>
+ #include <RWStl.hxx>
+ #include <STEPControl_Reader.hxx>
+ #include <STEPControl_Writer.hxx>
++#include <unistd.h>
+ #include <ShapeFix_Shape.hxx>
+ #include <ShapeFix_Shell.hxx>
+ #include <TopExp.hxx>
+@@ -204,12 +205,107 @@ int countShapes(const TopoDS_Shape& s, TopAbs_ShapeEnum what,
+     return n;
+ }
+ 
++
+ double shapeVolume(const TopoDS_Shape& s) {
+     GProp_GProps props;
+     BRepGProp::VolumeProperties(s, props);
+     return props.Mass();
+ }
+ 
++// n16: the volume t4 SHOULD be measuring.
++//
++// `probe` is a raw BRep_Builder shell over the face list. BRepGProp integrates the
++// SIGNED contribution of each face using its stored orientation flag, so a shell
++// whose flags are internally mixed returns a number that is not the volume it
++// encloses -- while BRep_Tool::IsClosed (edge incidence only) and BRepCheck_Analyzer
++// both still pass. Measured on Mesh2step_test01: probe Gauss sum 132545.8, but the
++// same faces written to STEP and re-read enclose 135793.1, which is 0.011 % off the
++// mesh. t4 was rejecting a component for 3261.7 mm3 of bookkeeping, not geometry.
++//
++// Fix: orient the shell the way the shipping path already does (the same infinite-
++// point classifier `orientedSolid` uses), then take the magnitude. This is not a
++// widened tolerance -- the budget is untouched. It makes the gate measure the solid
++// that will actually be written.
++double orientedShapeVolume(const TopoDS_Shape& probe) {
++    double v = shapeVolume(probe);
++    if (probe.IsNull() || probe.ShapeType() != TopAbs_SHELL) return v;
++    try {
++        // A whole-shell Reversed() only NEGATES the Gauss sum, so taking its
++        // magnitude is a no-op -- measured. A mixed orientation field has to be
++        // repaired per face, which is what ShapeFix_Shell does.
++        TopoDS_Shape fixed = probe;
++        {
++            ShapeFix_Shell sfs(TopoDS::Shell(probe));
++            sfs.FixFaceOrientation(TopoDS::Shell(probe));
++            const TopoDS_Shell r = sfs.Shell();
++            if (!r.IsNull()) fixed = r;
++        }
++        BRep_Builder ob;
++        TopoDS_Solid so;
++        ob.MakeSolid(so);
++        ob.Add(so, TopoDS::Shell(fixed));
++        BRepClass3d_SolidClassifier cl(so);
++        cl.PerformInfinitePoint(Precision::Confusion());
++        if (cl.State() == TopAbs_IN) {
++            TopoDS_Solid so2;
++            ob.MakeSolid(so2);
++            ob.Add(so2, TopoDS::Shell(fixed.Reversed()));
++            so = so2;
++        }
++        const double ov = shapeVolume(so);
++        if (std::isfinite(ov)) v = std::fabs(ov);
++    } catch (const Standard_Failure&) {
++    }
++    return v;
++}
++
++// n17: the volume t4 can trust.
++//
++// Measured on Mesh2step_test01 with a standalone OCCT instrument: the analytic
++// shell handed to the writer has 150 faces, surface area 22367.2356 and encloses
++// 132865.8748 by EVERY in-memory method -- VolumeProperties, VolumePropertiesGK,
++// the tolerance-driven overload, after sewing, after ShapeFix_Solid/Shape/Shell,
++// after BRepLib::OrientClosedSolid, and after per-face reorientation by point
++// classification (150 faces tested, 0 flipped). The same shape serialised to STEP
++// and read back has the same 150 faces and the same area to the digit, and
++// encloses 135793.1276 -- which is 0.011 % off the mesh, where the in-memory
++// number is 2.2 % off. The delta is exactly twice a 1463.6 mm3 cavity, i.e. an
++// internal void counted with the wrong sign in memory.
++//
++// So t4's INPUT is unreliable, not its budget. Rather than widen the budget (which
++// would be tuning against a number that does not describe the part), ask the
++// authoritative measure when the cheap one fails: round-trip the probe through the
++// same writer/reader the customer's file goes through, and re-test with the SAME
++// budget. Only components the cheap test already rejected pay for this.
++double roundTripVolume(const TopoDS_Shape& probe, int tag) {
++    if (probe.IsNull()) return -1.0;
++    char path[256];
++    std::snprintf(path, sizeof(path), "/tmp/stl2step-n17-%d-%d.step", (int)getpid(), tag);
++    double v = -1.0;
++    try {
++        TopoDS_Shape toWrite = probe;
++        if (probe.ShapeType() == TopAbs_SHELL) {
++            BRep_Builder b;
++            TopoDS_Solid so;
++            b.MakeSolid(so);
++            b.Add(so, TopoDS::Shell(probe));
++            toWrite = so;
++        }
++        STEPControl_Writer w;
++        if (w.Transfer(toWrite, STEPControl_AsIs) != IFSelect_RetDone) { std::remove(path); return -1.0; }
++        if (w.Write(path) != IFSelect_RetDone) { std::remove(path); return -1.0; }
++        STEPControl_Reader r;
++        if (r.ReadFile(path) == IFSelect_RetDone) {
++            r.TransferRoots();
++            const TopoDS_Shape back = r.OneShape();
++            if (!back.IsNull()) v = std::fabs(shapeVolume(back));
++        }
++    } catch (const Standard_Failure&) {
++    }
++    std::remove(path);
++    return v;
++}
++
+ // Axis-aligned bounds of a shape, from its vertices. Used by the post-write
+ // guard to detect a writer that emitted geometry outside the source part.
+ void shapeBBox(const TopoDS_Shape& s, gp_XYZ& bmin, gp_XYZ& bmax) {
+@@ -689,6 +785,22 @@ Result Converter::run() {
+                     return out;
+                 };
+ 
++                // DIAGNOSTIC (env-gated): the reject histogram is otherwise only
++                // surfaced inside a revert cause, so a component that is ADOPTED but
++                // drops most of its cylinders -- SpeedTestStructure -- shows nothing.
++                if (std::getenv("STL2STEP_DIAG_REJECTS")) {
++                    int cylReg = 0, cylRej = 0;
++                    for (const auto& r : rs.regions)
++                        if (r.type == refit::SurfType::Cylinder) cylReg++;
++                    for (const auto& r : rs.rejected)
++                        if (r.type == refit::SurfType::Cylinder) cylRej++;
++                    std::fprintf(stderr,
++                        "DIAG_REJECTS comp=%d regions=%zu rejected=%zu cylRegions=%d "
++                        "cylRejected=%d hist[%s]\n",
++                        root, rs.regions.size(), rs.rejected.size(), cylReg, cylRej,
++                        rejectHistogram(rs).c_str());
++                }
++
+                 // n5: buildFaces labels its four silent exits. The marker is consumed
+                 // here, never warned, so RESULT parity holds; it surfaces only under
+                 // --diag-revert-cause as the revert cause.
+@@ -835,17 +947,55 @@ Result Converter::run() {
+                             dVolAbs += std::fabs(reg.dVolPredicted);
+                         const double meshVol = std::fabs(cs.vol);
+ 
+-                        const double budget = std::max(1e-4 * meshVol, 3.0 * dVolAbs);
++                        // n27 (env-gated): the 1e-4 relative floor assumes the mesh
++                        // volume is the truth, which holds for plane-dominant parts.
++                        // On curved real-CAD meshes the analytic rebuild deliberately
++                        // moves shared vertices onto fitted intersection curves
++                        // (snapVertexToCurve), and the resulting volume shift scales
++                        // with surface area x fit residual, not with 1e-4 x volume.
++                        // Measured on mechparts/22: closed+valid shell, all 3 planned
++                        // cylinders built, dV = 779 mm3 (0.086%) vs budget 90 -- the
++                        // fit residuals predicted only 24 mm3, so term B cannot see
++                        // snap-driven volume either. Without this the component
++                        // reverts to verbatim and ships zero cylinders.
++                        static const double n27T4Rel = [] {
++                            const char* v = std::getenv("STL2STEP_N27_T4_REL");
++                            const double d = (v && v[0]) ? std::atof(v) : -1.0;
++                            return (d > 0.0 && d < 0.5) ? d : -1.0;
++                        }();
++                        double budget = std::max(1e-4 * meshVol, 3.0 * dVolAbs);
++                        if (n27T4Rel > 0.0) budget = std::max(budget, n27T4Rel * meshVol);
+                         if (dr_on) {
+                             dr_dVolAbs = dVolAbs; dr_meshVol = meshVol; dr_budget = budget;
+                         }
+                         try {
+-                            const double shellVol = shapeVolume(probe);
++                            static const bool n16Orient =
++                                std::getenv("STL2STEP_N16_ORIENT_T4") != nullptr;
++                            const double shellVol =
++                                n16Orient ? orientedShapeVolume(probe) : shapeVolume(probe);
+                             if (dr_on) { dr_shellVol = shellVol; dr_dV = std::fabs(shellVol - meshVol); }
+                             if (std::fabs(shellVol - meshVol) > budget) {
+-                                ok = false;
+-                                revCause = "budget dV=" + std::to_string(std::fabs(shellVol - meshVol))
+-                                         + " budget=" + std::to_string(budget);
++                                // n17: the in-memory number is not the shipped volume.
++                                // Ask the authoritative one before condemning the
++                                // component. Same budget, better measurement.
++                                double rtv = -1.0;
++                                static const bool n17 =
++                                    std::getenv("STL2STEP_N17_ROUNDTRIP_T4") != nullptr;
++                                if (n17) rtv = roundTripVolume(probe, root);
++                                if (rtv > 0.0 && std::fabs(rtv - meshVol) <= budget) {
++                                    if (dr_on) dr_shellVol = rtv;
++                                    if (std::getenv("STL2STEP_N17_DIAG"))
++                                        std::fprintf(stderr,
++                                            "N17_ROUNDTRIP rescued root=%d inMemory=%.4f "
++                                            "roundTrip=%.4f mesh=%.4f budget=%.4f\n",
++                                            root, shellVol, rtv, meshVol, budget);
++                                } else {
++                                    ok = false;
++                                    revCause = "budget dV=" + std::to_string(std::fabs(shellVol - meshVol))
++                                             + " budget=" + std::to_string(budget);
++                                    if (rtv > 0.0)
++                                        revCause += " rtv=" + std::to_string(rtv);
++                                }
+                             }
+                             if (dr_on) {
+                                 dr_t4_volumeBudget = ok ? 1 : 0;
+@@ -1177,7 +1327,31 @@ Result Converter::run() {
+                 }
+             };
+             try {
++                // n19: the same n5h argument applies to the FIRST unify, which had no
++                // guard. Measured on L10_nut_housing_recon_fine: unify merges 1836 -> 1683
++                // faces and leaves 3 free edges, the shell stops being closed, the writer
++                // emits OPEN_SHELL with no MANIFOLD_SOLID_BREP, post-write verification
++                // counts 0 solids against the 1 we believed we wrote, and the output is
++                // DELETED -- the user gets no file at all. With the pass reverted the same
++                // model ships a valid watertight 1-solid at 0.000000% volume delta and
++                // 1836 faces. Fewer faces is a nicety; a file is not. Env-gated; off => no-op.
++                static const bool n19 = std::getenv("STL2STEP_N19_UNIFY_CLOSURE") != nullptr;
++                const int freeBeforeUnify = n19 ? countFreeEdges(shape) : -1;
++                const TopoDS_Shape shapePreUnify = shape;
++                const std::vector<TopoDS_Shape> partsPreUnify = parts;
++                const int facesPreUnify = facesAfter;
+                 unifyAll(unifyAngleDeg, "unify");
++                if (n19) {
++                    const int freeAfterUnify = countFreeEdges(shape);
++                    if (freeAfterUnify > freeBeforeUnify) {
++                        shape = shapePreUnify;
++                        parts = partsPreUnify;
++                        facesAfter = facesPreUnify;
++                        warn("unify opened the shell (free edges " +
++                             std::to_string(freeBeforeUnify) + " -> " +
++                             std::to_string(freeAfterUnify) + ") -- reverted");
++                    }
++                }
+                 // TrueForm-only: mesh-jitter-aware flat consolidation on faceted
+                 // islands (revert fallback and analytic+facet mixes). Verbatim
+                 // defaults stay at unifyAngleDeg (G0.1 byte-identity).
