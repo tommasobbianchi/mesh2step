@@ -1524,3 +1524,8 @@ autoblock2:
 - p1: base Z (+86.4%); 3 holes + 1 floor, 12 BOSS patches not handled. Valid, +15.2%. Not solved: bosses and the missing outer contour features need modelling.
 - p3: base Y (+68.6%); 2 holes + 6 floor cuts (duplicated pairs at 68.84/94.24). Valid but 4 SOLIDS, -31.3%. Not solved: floor footprints over-cut; bounding-box footprints are too coarse.
 Persistence: scripts, a README, the DeepSeek categories, recon/extrusion/featmap summaries and the p14 second opinion are committed to ~/projects/mesh2step/tools/feature_recon (commit 63f0266). The 28 solved STEPs are copied to tools/feature_recon/out/ (on disk, git-ignored by *.step). Shell scripts point at the repo path.
+
+## FC — p5 SOLVED as a multi-axis block (FreeCAD valid): 29 of 39 parts solved (2026-09-13)
+FreeCAD on sem/bblock/p5_v2.step: Solid valid True, 92 faces {Plane 84, Cylinder 8}, 0 invalid; dV -0.449%. Pipeline: silhouette base along Y minus 6 feature-map holes minus 2 floor cuts (autoblock2). Quality caveat: 84 planes for the curved silhouette (the outline is split into lines) and mesh->model max 4.70 mm (p95 0.44), so it is cruder than the extrusion builds, but it meets the acceptance bar.
+Solved (29): 5 7 8 9 10 11 12 13 15 17 18 19 20 21 23 24 25 26 28 29 30 31 32 33 34 35 36 37 38. STEP copied to tools/feature_recon/out/p5.step.
+Open (10): 2, 4 (stepped staircase, 1.7-1.9%); 1 (bosses + outer contour), 3 (floor over-cut) = multi-axis; 14, 39 (stepped STEP re-read invalid, junction slivers); 16, 27 (full round); 22 (tapered); 6 (damaged mesh).
