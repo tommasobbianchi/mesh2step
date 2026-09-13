@@ -308,6 +308,18 @@ Z. **Refused cylinder boundary intersections, by cause (STL2STEP_P2_DIAG, binary
    recover the edge from the chain's own geometry -- a run of equal chords in one plane turning by
    a constant angle, ending where a third segment joins -- instead of intersecting two fits.
 
+AA. **n37/n38: FixSameParameter at the validity gate ships no cylinders -- the gate is not
+   the blocker.** Binary a47b14d30b55, today's base flags, off/on STL2STEP_N37_FIXSAMEPARAM:
+   part 9 on: "N37_FIXSAMEPARAM shellAlreadyValid" -- the shell is VALID at the gate, yet
+   smoothCylinders=98, smoothBuiltCylinders=0, smoothAdoptedNoCyl=1, smoothMaxEdgeTolMM=3.623 --
+   the 98 cylinder faces are removed inside buildFaces (their boundary edges are mesh chords up
+   to 3.6 mm off the surface, fact Y) and the component adopts without cylinders. Part 11 on: no
+   N37 line (the gate is never reached), smoothPlanes=0 smoothCylinders=0,
+   smoothRevertedTrue=1 -- with this flag set (no N29_ARCH_MAXTRI / N22_NOQUORUM) part 11 reverts
+   before the shell exists. Both parts therefore come back to the same place: the analytic edge
+   at cylinder boundaries (fact Z). n37 stays unshipped; its first copy inside the sewing block
+   was unreachable without STL2STEP_N13_SEW_FREE and has been removed.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
