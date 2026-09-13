@@ -539,6 +539,9 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    changes the status. Wire walk: stalls in 80-95 attempts per kind and open wires in 20-83; 56-64
    attempts per kind have missing pcurves. So the rot-trim DownCast bug is one defect among several;
    the shared one is at wire level (stalls, open wires, missing pcurves), not the surface choice.
+   REFUTED as the discriminator: micro-edges. First-attempt wires, line edges: 28 failing faces --
+   shortest <0.001 mm 2, <0.01 1, <0.1 14, >=0.1 11, mean share of lines <0.1 mm 0.21; 70 valid faces
+   -- 3, 1, 52, 14, share 0.24. Valid faces carry micro-edges as often or more.
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
