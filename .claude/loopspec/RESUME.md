@@ -542,6 +542,12 @@ AJ. **The 28 all-failed partial cylinders carry pcurves in inconsistent u conven
    REFUTED as the discriminator: micro-edges. First-attempt wires, line edges: 28 failing faces --
    shortest <0.001 mm 2, <0.01 1, <0.1 14, >=0.1 11, mean share of lines <0.1 mm 0.21; 70 valid faces
    -- 3, 1, 52, 14, share 0.24. Valid faces carry micro-edges as often or more.
+   REFUTED as the discriminator: slanted chord sag (the fact-Y / DeepSeek causal story at FACE level).
+   Line pcurves with du>0.05 rad and dv>1 mm, worst sag R*(1-cos(du/2)), first attempt:
+     28 failing: no slanted chord 9, 1-2 chords 2, >2 chords 17; worst sag 0 (9), <1 mm (8), >=1 mm (11).
+     70 valid:   1-2 chords 7, >2 chords 63; worst sag <0.01 (2), <0.1 (1), <1 mm (23), >=1 mm (44).
+   Valid faces carry MORE and larger chord sag; 9 failing faces have none. Chord sag is not what makes
+   the 28 faces unorientable (it still matters for edge tolerance, fact Y).
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
