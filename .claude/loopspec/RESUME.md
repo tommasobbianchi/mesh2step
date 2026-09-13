@@ -455,6 +455,13 @@ AH. **n45: part 9 with STL2STEP_N26_NO_BLANKET ships 0 cylinders (binary 8e264cd
    n46: N46_PCYL_FAIL captured the wrong thing -- all 28 exitLine values are buildOneRegion's own
    returns (5507/5511/5518), so buildPartialCylinder does not set g_bfExitLine on its failure
    paths. Its real exit needs a local reason code (reading its return sites).
+   Resolved from existing COLLAPSE_DIAG logs (scratchpad/n30/off.log = DeepSeek baseline, and
+   scratchpad/n19/m9.log): all 28 DIAG_FBF cylinders print `DIAG_PARTIAL rid=<id> all-failed` -- every
+   tryAllSurfs attempt in buildPartialCylinder (forward wire, reversed wire, refreshed wire) fails.
+   Other DIAG_PARTIAL reasons there: valid 199-207, ensure-invalid 300, max 300 (both print-capped).
+   Consistent with fact Y: the faces are invalid because their boundary edges are slanted mesh chords
+   off the cylinder, so no wire orientation helps.
+
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
