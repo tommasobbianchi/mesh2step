@@ -1023,6 +1023,14 @@ BU. **n87: STL2STEP_N87_U0_ANYTYPE stops the ladder from blanketing -- part 9 ke
    n89 (STL2STEP_N89_AREA_GUARD): reject a partial cylinder face whose area exceeds 3x its mesh region (shape consistency, not
    volume) so the region becomes facets instead of a wrong surface.
 
+BV. **n88: adding STL2STEP_N85_NO_RECTTRIM to the n87 configuration changes NOTHING (binary 433a984bb1e0).** Bit-identical to n87:
+   shellVol 207794.0694, explodes 96 planes / 2 cylinders, KEEP builtCyl 96, write "check INVALID", STEP 96 cylinders; FreeCAD
+   re-read identical (8 invalid cylinder faces 11286.8 mm2 with the same areas 837.6 / 449.9 / 694.7 / 430.6 / 3912.5 / 1141.4 /
+   3819.0, 24 invalid planes 2657.4 mm2). So the oversized cylinder faces in the kept shell are NOT produced by the rot-trim
+   RectangularTrimmedSurface path (or that path yields the same face either way). They may come from another attempt
+   (untrim / rect-trim / rot-ax / seam-box) or from the closed360 builders (trySeamed360 / tryTwoHalves), which the n89 area
+   guard -- partial cylinders only -- would not cover. n90 (N89 area guard) is running and will show which.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
