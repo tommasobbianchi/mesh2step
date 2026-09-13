@@ -1352,3 +1352,6 @@ In all three, in-memory BRepCheck says invalid while the STEP re-read says valid
 
 ## EA — p16 full round, outer boundary only: dV +0.110%, max 0.062 mm (2026-09-13)
 autoround3 (SEGTOL 0.12). Outline at t = 0.25T offset outward by the analytic d = 1.3397 (outer loop only, 1 wire); holes taken unchanged from the mid slice; prism T = 20; fillet 0.495T on the 16 outer end edges only. Faces {2 plane, 9 cyl, 10 torus, 4 other}, dV +0.110%, mesh->model mean 0.026, p95 0.041, max 0.062. In-memory BRepCheck: False. OCCT STEP re-read: valid True. FreeCAD round trip is being checked to settle validity.
+
+## EB — p16 autoround3 file is a SHELL, not a solid (FreeCAD) (2026-09-13)
+FreeCAD on sem/bround/p16c.step: "shape type Shell valid True solids 0 faces 25 {Cylinder 9, Toroid 10, Plane 2, BSplineSurface 4}". The 0.495T fillet left no flat side band, so OCCT produced a shell (hence in-memory BRepCheck False) with 4 B-spline patches. "STEP re-read valid" alone is not enough; every build must also be checked for solid count. The measured flat band (autoround: 9.6-10.4, about 0.8 mm) means rho is about 9.6, not T/2. autoround4 takes rho from the measured band width (capped at 0.49T), fillets at that rho, and prints the re-read solid count. Running on p16.
