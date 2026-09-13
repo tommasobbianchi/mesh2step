@@ -820,6 +820,19 @@ BB. **n66: part 11 with the wire fix + closure set nearly closes but not quite (
      built 0, adoptedNoCyl 1.
    Part 11 does not reach the closed-but-invalid stage; its blocker is 5-9 real gaps. n68 lists them (J6_DIAG).
 
+BC. **n67: exploding invalid planes first (STL2STEP_N67_PLANE_CULPRITS_FIRST) drains the invalid faces from 86 to 4
+   but the last 4 planes are never selected, and the ladder then takes all 98 cylinders (binary 5295b17e91f2, n63
+   flags + N64 diag).**
+     recover 0: 86 bad (plane 27: 70, 32: 14, 23: 1, edge8 1; cylinder 27: 1) -> N67_U0 planes=80.
+     recover 1: 14 bad (plane 27: 13, cylinder 27: 1) -> N67_U0 planes=9.
+     recover 2: 6 bad (plane 27: 6) -> N67_U0 planes=2.
+     recover 3: 4 bad (plane 27: 4) -> no N67_U0 line: selectU0Explode had no explodable non-hub plane left.
+     Each pass the reshape still closes the shell (collapsed 61 / 40 / 39 / 39 removed, freeAfter 0).
+     Explodes: planes 91, cylinders 98; reverted; built cylinders 0.
+   The remaining 4 invalid planes are skipped by selectU0Explode (touchesClosed360Cyl -> "unexplodable", or hub);
+   with an empty plane set the ladder falls to the cylinder paths (join-suspect / U1 / U2). Next n69: log each
+   skipped culprit and its reason; STL2STEP_N69_ALLOW_SEAMED lets planes touching a seamed hole be exploded.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
