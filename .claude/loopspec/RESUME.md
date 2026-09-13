@@ -688,6 +688,17 @@ AQ. **The broken wire joints are ORDER/DIRECTION defects, not geometric offsets 
    the analytic curves. Next: N59 dumps, per failing face, loop position -> chain, reversed flag,
    chain terminals, and each wire edge's first/last mesh vertex.
 
+AR. **Loop stitching is consistent; the failing faces concentrate on the seam-straddle path.**
+   Code (refit_chains.cpp loop stitcher): the next chain must START, in its region-side direction
+   (reversed = chain.regB == region), exactly at the previous chain's end vertex, and a loop is kept
+   only if it returns to its start -- so Loop::chainIdx/reversed are consistent at mesh-vertex level.
+   Broken joints therefore arise in wire assembly. buildPartialCylinder's refreshOuterWire re-adds the
+   outer wire's edges through BRepBuilderAPI_MakeWire when seamStraddleU(r) || nOuterCh > 6, which can
+   reorder edges (and invalidates the N55 edge->chain mapping on those faces).
+   Measured (off.log, first DIAG_PARTIAL_RID per rid): 28 failing -- seam straddle 14, nOuterCh>6 14,
+   MakeWire-rebuild path 26; 70 built -- straddle 5, nOuterCh>6 23, rebuild path 28. Seam straddle is
+   the discriminator (14/28 vs 5/70), matching the external advice to keep the patch off the seam.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
