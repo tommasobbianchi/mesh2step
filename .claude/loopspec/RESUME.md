@@ -753,6 +753,18 @@ AV. **Removing collapsed edges through ShapeBuild_ReShape almost closes part 9 (
    its vertex's tolerance sphere (extent <= max(1e-4, BRep_Tool::Tolerance(vertex))) -- geometrically part of
    the vertex, no tolerance widened -- and log every collapsed edge still kept (type, extent, vertex tol).
 
+AW. **ROOT CAUSE of the 28 failing partial cylinders: the refreshOuterWire BRepBuilderAPI_MakeWire rebuild.
+   Skipping it (STL2STEP_N61_NO_MAKEWIRE) takes failed cylinder face builds 28 -> 1 on part 9 (binary
+   24ccab61b7a6, base flags + DIAG_FBF + N51_WIREJOIN).**
+     arm a (N61): DIAG_FBF type=1 = 1; faces with broken joints: 0 (failed 0 of 1, others 0 of 97).
+       J6 freeEdges 654 (recover 0) -> 139 (recover 1); explodes 3679/98; built cylinders 0 (no sewing flags).
+     arm b (N61 + N50): DIAG_FBF = 1; broken joints 0; freeEdges 659 -> 188; built 0.
+   Mechanism (fact AU): refreshOuterWire re-adds the outer wire's edges through MakeWire when
+   seamStraddleU(r) || nOuterCh > 6; MakeWire::Add merges vertices whose tolerance spheres overlap, so on the
+   broken faces every edge after the first chain collapsed onto one vertex -> broken joints -> stalled walk
+   -> UnorientableShape on every attempt. With the rebuild skipped, N50 no longer changes the count.
+   Closure is now the only blocker: next n63 = N61 + N13_SEW_FREE + N48 + N60 + N62 (+ J6_DIAG census).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
