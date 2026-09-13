@@ -1006,6 +1006,12 @@ BS. **n84: with N50_TRIMROT the last closed-but-invalid culprit on part 9 is ONE
    Next n87 (STL2STEP_N87_U0_ANYTYPE): allow up to 12 U0 rounds for any region type while the set does not saturate
    (wouldSaturate still guards) -- the per-region fallback of the external advice.
 
+BT. **n86: STL2STEP_N85_NO_RECTTRIM (rot-trim on the untrimmed rotated cylinder) changes nothing in memory on part 9 (binary
+   a79b0f517297, n84 flags + N85).** Identical to n84: N67_U0 planes 84 -> 9 -> 3, then one face-invalid cylinder,
+   N69_LADDER u0=1 u0Rounds=3 -> leaving U0, N24_U2_REACHED blanket=97 sat=1, explodes 96 planes / 98 cylinders, t1=0,
+   STEP 0 cylinders (valid faceted). N85 is aimed at the write/re-read trim failure of fact BR, which only matters once a
+   STEP with cylinders is written; the in-memory blocker is the U0 round limit (n87 running with N87_U0_ANYTYPE).
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
