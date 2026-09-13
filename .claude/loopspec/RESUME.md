@@ -1422,3 +1422,13 @@ auto25g, rest of batch:
 - p39: 5 levels, {104 plane, 128 cyl}, dV +0.116%, STEP re-read 12 invalid faces (auto25e: 34). FreeCAD: Solid valid False, 12 invalid planes.
 - p17: still valid (FreeCAD Solid valid True, 99 faces, 0 invalid). No regression.
 Loop snapping removes some sliver faces (p39 34 -> 12) but not all, and p14 got worse (25 -> 31), so it is not the complete mechanism.
+
+## EN — DeepSeek vision classification of all 39 parts; routed reconstruction started (2026-09-13)
+sem/dsv/all/results.txt (8-15 s per part, combined category + features prompt):
+- A: 2 4 7 9 10 11 12 13 17 18 19 20 21 22 23 24 25 28 29 31 32 33 35 36 37 39
+- B: 8 14 15 30 34
+- C: 5 26 38
+- D: 16 27
+- E: 1 3 6
+Matches my reading for turned (5, 26, 38), full round (16, 27) and multi-axis (1, 3, 6; 6 is really a damaged mesh). A/B is confused: 2 and 4 are stepped but labelled A; 15 is flat but labelled B. Feature counts in the combined prompt are unreliable (p9 teeth:12, although the dedicated counting question gave 10), so counts need dedicated single questions and dimensions come from slices.
+Routing in sem/recon.sh therefore always tries auto2d first (its section-invariance test is deterministic) and additionally runs the stepped path for A or B, autorev for C and autoround5 for D. A build is kept only if FreeCAD reads a single valid solid with 0 invalid faces; the best |dV| wins. Job recon-all is running.
