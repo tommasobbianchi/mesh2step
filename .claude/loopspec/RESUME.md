@@ -169,6 +169,24 @@ N. **Part 11's bad planes are invalid ON THEIR OWN -- compared pass by pass.** C
    after those faces had been exploded and rebuilt. Suspect: edge-on-face status (a curve
    borrowed from a neighbour not lying in the plane); probe N32_FACECTX running.
 
+O. **DeepSeek V4.1 Flash confirmed the straight-UV pcurve defect with citations and built a
+   gated fix (wt-ds, STL2STEP_PCURVE_PROJ, binary 09:39).** bindCylPCurves
+   (refit_build.cpp:2514, called from makeFaceBound :3300-3301) writes a straight Geom2d_Line
+   in (u,v) between the radially projected endpoints of every non-circle/ellipse edge
+   (:2590-2592). Only a chord parallel to the axis maps to a straight UV segment; slanted chords
+   diverge and the UV wire self-intersects (st=27/32). Evidence from m9.log: the 98 failing
+   faces = the 98 cylinder regions; 10,813 line edges, chord p50 1.62 mm, p90 15.9 mm, max
+   20.8 mm, 4,762 > 3 mm. Fix: GeomProjLib::Curve2d on the edge's real 3D curve, UpdateEdge +
+   Range, fallback to the straight line on null/throw; off => unchanged. Part-9 measurement
+   pending. Review notes: (1) SEAM RISK, narrowed after reading the code -- the old path's
+   unwrapU (refit_build.cpp:2530-2536) shifts u2 by +/-2*pi only when the region does NOT
+   straddle the seam (or the surface frame is rotated); for seam-straddling regions such as
+   rid=391 the old path does not unwrap either. So the projected path newly skips period
+   alignment only for non-straddling regions, where GeomProjLib::Curve2d returns the surface's
+   natural 0..2*pi period and may disagree with neighbours; on straddling regions neither path
+   aligns; (2) it labels the change "N30", colliding
+   with STL2STEP_N30_FILLET_SAGRATIO in wt-p84; (3) duplicate #include.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
