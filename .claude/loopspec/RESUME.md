@@ -723,6 +723,13 @@ AS. **n57: every post-sew zero-length free edge is COLLAPSED, and ShapeFix_Shape
    -- it is a zero-length loop in one face's wire, so its neighbours stay joined at that vertex -- then the
    same acceptance (freeAfter 0, same face count, validity). Arm a without N50, arm b with N50 + N58.
 
+AT. **n58: ShapeFix_Shape on the MIXED residual (+N50, +N13_SEW_ORIENT, STL2STEP_N58_REPAIR_ANY) does not
+   close part 9 either (binary ecc7a5a55871).** recover 0: free=84 zero=59 collapsed=58 -> faces 26363 ->
+   26370, freeAfter 56, not applied; recover 1: free=65 zero=47 collapsed=46 -> faces 27173 -> 27178,
+   freeAfter 47. No N13_SEW_ORIENT line (the orientation fix only runs on a sewn shell that closes). FBF 8,
+   explodes 3679/98, built cylinders 0. ShapeFix_Shape both splits faces and removes only about a third of
+   the free edges; the inverted rescued cylinder faces and in-face spurs (fact AP) are not repaired by it.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
