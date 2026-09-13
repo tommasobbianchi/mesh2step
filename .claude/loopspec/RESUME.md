@@ -390,6 +390,17 @@ AE. **Kimi second opinion on the edge fix (scratchpad/wt-kimi/FINDINGS-EDGE.md, 
      never the chord pcurve.
    - Smallest step: case (a) only behind STL2STEP_CHAIN_EDGE; proof smoothBuiltCylinders 0 -> >0 on
      part 9, with the caveat that part 9's 9 plane|cyl refusals may still explode regions.
+   Verified against the code (not trusting the review):
+   - TRUE: spCap = max(..., 25.0) in the SameParameter pass; bestCylCylConstructed does consider
+     meshAnchoredCylGenerator for both cylinders when axesNearParallel8.
+   - FALSE: "identicLine compares two per-side constructions". identicLine only exempts a Lin whose
+     two terminals coincide (ia == ib or distance <= Precision::Confusion) when MakeEdge returned
+     null; it never compares faces' lines. So the review's "likely killer" is not the mechanism.
+   - OPEN: bestCylCylConstructed gets acceptR >= 1 mm for cyl|cyl (intAnaAcceptResidual starts at
+     max(sewTol*50, 1.0)), and the chain vertices sit within 0.01 mm of both surfaces, yet all four
+     candidates were refused on part 11. N44_CYLCYL (running) prints chord direction vs both axes
+     and each candidate's residual against acceptR.
+
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
