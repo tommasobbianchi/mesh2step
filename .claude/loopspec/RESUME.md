@@ -1143,3 +1143,6 @@ Report: n19/kimi_sew.occt_source_report.txt (OCCT V7_8_0 upstream sources, file:
 (3) ShapeFix_Shell only flips whole faces and cannot split along an edge.
 (4) Suggested remedies: avoid welding those pairs (local tolerances), or delete the slivers before sewing.
 Verified in our code: acceptance at refit_build.cpp:6769 requires validity only under STL2STEP_N13_SEW_STRICT, and shellIsValid (:2647) is a plain BRepCheck_Analyzer on the shell. Kimi's other claim, that the 552 folds of round 1 are pre-existing in the built shell, holds for round 1 only: the final round's input has 1.
+
+## CQ — verified: BRepCheck catches a flipped face only in a solid context (2026-09-13)
+brepcheck_ctx.py (a box shell with one face reversed): BRepCheck_Analyzer(bare shell).IsValid() = True, BRepCheck_Analyzer(solid containing that shell).IsValid() = False (while the shell's own status list still reads NoError). Kimi's claim 2 holds. Consequence: the engine's shellIsValid (t3 and the sew acceptance) runs on a bare shell and cannot see orientation defects. Wrapping the probe shell in a TopoDS_Solid before BRepCheck is a cheap, correct detection gate. It is not a repair: on part 9 it would reject the shell and lose the cylinders, so it has to ship together with a gluing fix.
