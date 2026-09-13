@@ -499,6 +499,16 @@ AH. **n45: part 9 with STL2STEP_N26_NO_BLANKET ships 0 cylinders (binary 8e264cd
    off the cylinder, so no wire orientation helps.
 
 
+AI. **n48: keeping a partial sew (STL2STEP_N48_SEW_PARTIAL) cuts the collateral explodes but ships 0
+   cylinders on part 9 (binary c7d79f196bb9, base + N13_SEW_FREE + DIAG_FBF + N25_DIAG).**
+     recover 0: sew 541->54, kept; N13_TARGETED freeE=54 regions=20 (was freeE=541 regions=258).
+       Cumulative explodes after the targeted arm: planes 135 / cylinders 31 (was 259 / 39).
+     recover 1: rebuild brings free edges back to 473 (the rebuild discards the previous sew); sew
+       473->39, kept; still open -> final blanket -> 3679 / 98; smoothBuiltCylinders 0,
+       smoothAdoptedNoCyl 1.
+   The 28 DIAG_FBF cylinders are still exploded first (unchanged). What blocks closure is now 39
+   free edges that sewing at 0.1 mm cannot pair; n49 (J6_DIAG on the kept sew) lists them.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
