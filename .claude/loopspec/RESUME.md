@@ -1310,3 +1310,7 @@ Status: 23 of 39 parts solved by the extrusion path. Remaining (16): 1, 2, 3, 4,
 - E, tapered: 22 (countersink/taper). Method: extrusion + cone detection.
 - F, broken mesh: 6 (spiky triangles). Report, do not reconstruct.
 Starting with A.
+
+## DS — first attempts at the stepped and turned paths: numerically close but not recognition (2026-09-13)
+auto25 (batch25.summary): all 8 valid, STEP valid, dV within 0.5%, BUT the axis chooser picked X or Y (across the plate) for 2, 34, 4, 8 (X) and 14, 3, 17, 39 (Y). The result is 8-28 staircase levels, 53-931 planes, p95 distance 0.4-1.2 mm (p14/p17/p39 at large model scale: 49-55). That is voxel-like approximation, not features. Cause: along the plate normal, fillet/chamfer transition samples each count as a level. Rerunning forced to Z (batch25z).
+autorev v1 (batchrev.summary): p26 -62%, p5 +64%, p38 -60%. The bore used the min distance of ALL section points, so cross holes and flats read as a bore; p5's centre came from all points (biased). Fixed: bore = innermost loop that encloses the axis (with at least 2 enclosing loops), centre fitted on the outer loop only. autoround (p16, p27) is running.
