@@ -1031,6 +1031,14 @@ BV. **n88: adding STL2STEP_N85_NO_RECTTRIM to the n87 configuration changes NOTH
    (untrim / rect-trim / rot-ax / seam-box) or from the closed360 builders (trySeamed360 / tryTwoHalves), which the n89 area
    guard -- partial cylinders only -- would not cover. n90 (N89 area guard) is running and will show which.
 
+BW. **n90: the partial-cylinder area guard (STL2STEP_N89_AREA_GUARD, 3x mesh region) rejects NOTHING on part 9 and the result is
+   bit-identical to n87/n88 (binary 3479a90dc1bf).** "area guard rejections: 0"; shellVol 207794.0694; KEEP builtCyl 96; FreeCAD
+   re-read with the same 8 invalid cylinder faces (837.6 / 449.9 / 694.7 / 430.6 / 3912.5 / 1141.4 / 3819.0 mm2). So every partial
+   cylinder face is within 3x its mesh region WHEN buildPartialCylinder accepts it: the oversized faces either come from the
+   closed360 builders (trySeamed360 / tryTwoHalves; n91 logs every built cylinder face with builtAs) or are corrupted AFTER build --
+   sewing, or N60 collapsed-edge removal through ShapeBuild_ReShape, which could break a cylinder wire's pcurve continuity so the
+   face loses its trim. n92 measures cylinder face areas on the final accepted shell to compare with the at-build areas.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
