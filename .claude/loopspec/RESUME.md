@@ -370,6 +370,27 @@ AD. **Where the cylinders go (N25_DIAG, binary e37c21e9e6da).** First recover pa
    cylinder through that arm; most of the 98 are lost elsewhere (cascade/blanket arms, or MakeFace /
    BRepCheck on faces bounded by cyl|cyl polylines). The per-cylinder loss ledger is Kimi's Q1.
 
+AE. **Kimi second opinion on the edge fix (scratchpad/wt-kimi/FINDINGS-EDGE.md, read-only
+   review, citations into wt-p84/src/refit_build.cpp; claims to verify, not measurements).**
+   - Cylinders are removed by explode arms, not by BRepCheck: (1) chainEdgeFail consumer in
+     recoverPass 0 explodes BOTH regions of every failed chain; (2) open-shell blanket when keepCyl
+     is false; (3) per-build face gate failRidHits. Which arm kills each of part 9's 98 is not
+     decidable from code: run part 9 with STL2STEP_DIAG_FBF + STL2STEP_J6_DIAG (n43, running).
+   - The chord deviation (0.06/1.46/3.62 mm) is absorbed by the SameParameter pass with spCap
+     floored at 25 mm, so the shell "passes" with hidden slack. FixSameParameter and pcurve
+     re-projection failed because they act AFTER arm 1 already exploded the cylinder faces.
+   - For part 11's 2-vertex parallel chains the code already builds a chain-anchored generator
+     (meshAnchoredCylGenerator via bestCylCylConstructed) but it is likely killed by the dual-side
+     identicLine / constructedLinOnBothCylinders check, because each face constructs its own line
+     and the axes are offset by up to 10x tol. Fix must be ONE shared edge built from the chain,
+     not another per-side candidate. Gate on the chord being parallel to BOTH axes (part 9's
+     "parallel" pairs are 4.6-6.2 deg apart inside the 8 deg test).
+   - For 3-5 vertex chains: alternating-projection BSpline through the chain points; needs a BSpl
+     kind in AnalyticCurve and the BSpline routed to the projected-pcurve branch like the ellipse,
+     never the chord pcurve.
+   - Smallest step: case (a) only behind STL2STEP_CHAIN_EDGE; proof smoothBuiltCylinders 0 -> >0 on
+     part 9, with the caveat that part 9's 9 plane|cyl refusals may still explode regions.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
