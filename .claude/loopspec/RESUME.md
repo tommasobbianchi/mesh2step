@@ -126,6 +126,18 @@ F. **Part 9 after keep-open + purge is still invalid.** 51 bad faces across roun
    After the purge nowValid=0 with no per-face report; diagnostic run pending (shell codes +
    remaining bad faces).
 
+G. **Removing coarse fillet strips (N30_FILLET_SAGRATIO=0.1) on part 11: 41 strips dropped,
+   cylRegions 56 -> 15, explodes 232 -> 188, blanket U2 rungs 37 -> 12 -- still site-B discard
+   (line 6296), 0 cylinders.** Fillet strips inflated the cylinder count; they are not why the
+   shell is invalid.
+H. **Part 9 bad faces are ORIENTATION failures:** 41 x status 27 (BRepCheck_UnorientableShape),
+   10 x status 32 (BRepCheck_BadOrientationOfSubshape). After keep-open + purge, shell, faces and
+   wires all report no status, yet the analyzer is invalid -> fault is at edge/vertex level
+   (dump running). Keep-open's rounds exploded 30 cylinder regions + 39 planes on part 9.
+I. **DeepSeek V4.1 Flash relaunched** (job ocflash1, worktree wt-ds, 90-min timeout) on the
+   orientation defect: replace bindCylPCurves' straight UV lines with pcurves projected from the
+   3D edges, env-gated, measured on part 9. Findings -> wt-ds/FINDINGS-PCURVE.md.
+
 Tooling: DeepSeek delegations via oc_run.sh now default to deepseek/deepseek-flash ("DeepSeek
 V4.1 Flash"), no effort pin (the earlier --variant high was a misread of "normal").
 
