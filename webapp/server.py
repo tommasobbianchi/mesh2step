@@ -59,6 +59,22 @@ CONVERT_TIMEOUT_S = 900.0
 # The feature pass (MESH2STEP_FEATURE=1) runs several prototype builders after the engine.
 # ponytail: fixed ceiling, per-builder budgets if a slot held this long starves the queue.
 FEATURE_TIMEOUT_S = float(os.environ.get("MESH2STEP_FEATURE_TIMEOUT_S", "3600"))
+
+
+def _app_version() -> str:
+    """Commit the service was started from, plus the native engine build it runs."""
+    import re
+    import subprocess
+    try:
+        git = ["git", "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"]
+        sha = subprocess.run(git, capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        sha = ""
+    m = re.search(r"mesh2step-native-(v[\w.]+)", os.environ.get("MESH2STEP_NATIVE", ""))
+    return " · ".join(p for p in (sha or "unknown", m and f"engine {m.group(1)}") if p)
+
+
+APP_VERSION = _app_version()
 # Measured peak RSS is 24.95 MB per 1k triangles + 128 MB (trueform, on meshes
 # that merge nothing). At this limit one conversion peaks near 3.1 GB and two
 # concurrent ones plus the server fit inside the unit's 8G MemoryMax -- see
@@ -419,7 +435,7 @@ def _feature_upgrade(stl_path, out_path) -> dict | None:
 
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
-                       n_in_tris, cut_before, cut_after, repair_info) -> dict:
+                       n_in_tris, cut_before, cut_after, repair_info, feature=False) -> dict:
     """The part that takes minutes. Runs on a worker so the request can let go.
 
     Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
@@ -445,7 +461,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             timeout=CONVERT_TIMEOUT_S,
         )
         if (engine == "trueform" and res.get("ok")
-                and os.environ.get("MESH2STEP_FEATURE") == "1"):
+                and (feature or os.environ.get("MESH2STEP_FEATURE") == "1")):
             res = _feature_upgrade(stl_path, out_path) or res
     except NativeTimeout:
         __import__("shutil").rmtree(workdir, ignore_errors=True)
@@ -642,6 +658,7 @@ def convert(
     repair: str | None = Form(None),
     cuts: str | None = Form(None),
     unify_angle: float = Form(5.0),
+    feature: bool = Form(False),
 ):
     _purge_expired()
 
@@ -750,7 +767,7 @@ def convert(
             native_engine=native_engine, schema=schema, native_unify=native_unify,
             merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
             n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
-            repair_info=repair_info,
+            repair_info=repair_info, feature=feature,
         )
         handed_off = True  # the worker owns the admission slot from here on
         try:
@@ -777,7 +794,8 @@ def convert(
 def limits() -> dict:
     """What the client should say before someone waits for a rejection."""
     return {"max_triangles": MAX_INPUT_TRIANGLES,
-            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024)}
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "version": APP_VERSION}
 
 
 @app.get("/api/job/{job}")

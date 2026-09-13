@@ -82,6 +82,7 @@ let trisBeforeCut = 0;
 let maxTriangles = null;   // from the server, so the number lives in one place
 fetch('api/limits').then((r) => r.json()).then((l) => {
   maxTriangles = l.max_triangles;
+  if (l.version) document.getElementById('app-version').textContent = ` · version ${l.version}`;
   // the sentence lives in the markup so it renders even if this fetch fails;
   // correct it only when the server's number differs from the one shipped
   const hint = document.querySelector('.primary-hint');
@@ -246,6 +247,7 @@ function applyEngine() {
   }
   if (!isTrueform) _updateCutButtons();
   document.getElementById('unify-angle-row').classList.toggle('hidden', !isTrueform);
+  document.getElementById('feature-row').classList.toggle('hidden', !isTrueform);
 }
 engineSelect.addEventListener('change', applyEngine);
 
@@ -256,6 +258,7 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('schema').value = 'ap214';
   document.getElementById('repair').value = 'off';
   document.getElementById('engine').value = 'faceted';
+  document.getElementById('feature-toggle').checked = false;
   document.getElementById('unify-angle').value = document.getElementById('unify-angle-num').value = 5;
   applyEngine();
 });
@@ -785,6 +788,7 @@ convertBtn.addEventListener('click', async () => {
     }
   } else {
     fd.append('unify_angle', document.getElementById('unify-angle-num').value);
+    if (document.getElementById('feature-toggle').checked) fd.append('feature', 'true');
   }
 
   try {
@@ -936,6 +940,7 @@ function renderTrueformStats(data) {
   if (s.smooth_planes != null) {
     html += row('smooth', `planes ${s.smooth_planes} · cylinders ${s.smooth_cylinders} · fillets ${s.smooth_fillets} · components ${s.smooth_built_components}`);
   }
+  if (s.feature_method) html += row('feature build', s.feature_method);
   html += row('output', `${s.schema.toUpperCase()} · ${s.seconds.toFixed(2)}s`);
     statsEl.innerHTML = html;
   statsEl.classList.remove('hidden');
