@@ -262,6 +262,14 @@ SCOPE (user, 2026-09-13): tori and spheres are NOT today's issue -- they go to t
    reconstructed. Fact U stays as a record for the next version; the torus sweep and torus code
    map were cancelled. Dropping torus slices (n5f) is correct for today's scope.
 
+W. **ShapeFix_Edge::FixSameParameter repairs every same-parameter face on part 11 (N35_REPAIR,
+   binary 37a2860c81c1).** 26 bad faces; each deep-copied, BRepCheck_Analyzer on the copy:
+   no repair 0/26 valid; reset tolerance to 1e-4 + BRepLib::SameParameter(forced) 17/26;
+   ShapeFix_Edge::FixSameParameter on every edge 26/26; drop + re-project pcurves then forced
+   SameParameter 23/26. Min edge length on these faces 0.089-0.125 mm. Next: apply
+   FixSameParameter (env-gated) to the sewn shell before the validity gate, then run parts 11
+   and 9 and the corpus.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
