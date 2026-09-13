@@ -454,6 +454,17 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
    (nsValid || !strict)`. A sew that REDUCES free edges but leaves any open is discarded, and the
    targeted/blanket cascade then runs on the unsewn shell. n47 (DIAG_FBF on) prints
    "N13_SEW freeE=<before>-><after>" to measure how much the sew closes before it is thrown away.
+   MEASURED (n47, binary c02cf4c7c84e, base + N13_SEW_FREE + N13_SEW_WHY + DIAG_FBF):
+     recover 0: N13_SEW faces=26533->26533 freeE=541->54 closed=0 accepted=0 tol=0.1
+     recover 1: N13_SEW faces=28686->28686 freeE=137->31 closed=0 accepted=0
+     N27_FIXFACE reject changed=1 closed=0 valid=0 (both passes)
+     sewn shell's invalid faces (N13_SEW_WHY): 91 status 27 UnorientableShape, 18 status 32
+     BadOrientationOfSubshape, 1 status 23.
+     Outcome unchanged: explodes 3679 planes / 98 cylinders, smoothBuiltCylinders 0.
+   Sewing closes 90% (541->54) and 77% (137->31) of the gap and is discarded because it is not 100%.
+   Keeping a partial sew would leave 54 edges for the targeted arm instead of 541, but it also exposes
+   110 orientation-invalid faces that the final gate would reject.
+
 
 
    The 28 DIAG_FBF cylinders: 27 have a single Outer loop of 4-10 chains, 1 has Outer+Inner.
