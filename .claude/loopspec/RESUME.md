@@ -833,6 +833,18 @@ BC. **n67: exploding invalid planes first (STL2STEP_N67_PLANE_CULPRITS_FIRST) dr
    with an empty plane set the ladder falls to the cylinder paths (join-suspect / U1 / U2). Next n69: log each
    skipped culprit and its reason; STL2STEP_N69_ALLOW_SEAMED lets planes touching a seamed hole be exploded.
 
+BD. **Part 11's residual gap is ONE plane fitted 0.17-0.19 mm off its neighbours (n68, binary 0580f978a399, n66 flags
+   + J6_DIAG).** After the kept sew and collapsed-edge removal:
+     recover 0: 18 free = 10 zero-length + 8 real: cylinder 12 <-> plane 634 (0.692 mm, offset 0.174); plane 424 <->
+       cylinder 83 (58.4 mm, offset 0.194); plane 634 <-> facet (18.87 mm, offset 0.174); a 0.174 mm and a 0.194 mm
+       facet step edge. All real pairs are "reversed" (correctly oriented), just over the 0.1 mm sew tolerance.
+     recover 1: 13 free = 8 zero-length + 5 real, ALL around plane 634: cyl 12 <-> pln 634 0.692 mm @0.174,
+       pln 634 <-> facet 18.87 mm @0.174, and the 0.174 mm facet step.
+   Exploding plane 634 to facets would close the shell. It is not selected: the targeted open-shell arm skips a
+   free-edge owner that borders an exploded or partial cylinder (the v1.8.0 N27 victim skip), the same class of
+   protection that leaves part 9's last 4 invalid planes unexploded (fact BC). Widening the sew tolerance to 0.2
+   would also close it but is not an acceptable fix.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
