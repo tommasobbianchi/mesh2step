@@ -436,6 +436,18 @@ AG. **Part 9 explode ledger: where the 98 cylinders die (n43, binary e37c21e9e6d
      recover 1 (137): plane zero-length 37, no-chain 31, chain 25; cylinder no-chain 17, chain 11,
        zero-length 6; unknown 10. 78 faces, 19 cylinders.
    The shell stays open mainly because of PLANE faces with zero-length and chain-less edges.
+   Pairing by coordinates (DIAG_J6 pa/pb; "ci" is only a 0.05 mm endpoint match against COLLAPSED
+   chains, so ci=-1 means "not a collapsed analytic chain", not "no geometry"):
+     recover 0 (541): zero-length 197, all sitting on an endpoint of another free edge; of 344
+       non-zero, 242 have a partner free edge with the same endpoints within 0.001 mm (24 on
+       cylinder faces), 271 within 0.1, 314 within 0.5.
+     recover 1 (137): zero-length 45 (all on endpoints); of 92 non-zero, 40 partnered within
+       0.001 mm (12 cylinder), 60 within 0.1, 75 within 0.5; 17 unpartnered. Every endpoint is used
+       by 2 or 4 free edges -> they form closed gap loops.
+   So most of the opening is duplicated, unshared edges plus degenerate zero-length edges -- a
+   SHARING problem, not missing geometry. STL2STEP_N13_SEW_FREE (sewing arm) is not in the base flag
+   set; part 9 with it on: n47 running.
+
    The 28 DIAG_FBF cylinders: 27 have a single Outer loop of 4-10 chains, 1 has Outer+Inner.
    Existing switch STL2STEP_N26_NO_BLANKET holds the blanket and (n26b) keeps the built faces as an
    open shell; not yet measured on part 9 after n26b (n45 running). Exit line inside
