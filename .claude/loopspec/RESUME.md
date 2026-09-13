@@ -1452,3 +1452,11 @@ autorev_cut.py (flat clusters need >= 10 triangles and >= 1% of the cut area):
 - p26: 542 cut-surface triangles, 2 flats (both normal +Z, at -9.65 with 116 triangles and at 12.7 with 150), 0 hole candidates. Valid, dV +4.689% (envelope alone +14.793%), faces {9 plane, 4 cyl, 2 cone}, STEP valid.
 - p38: 2 flats (+Z at 76.2 with 14 triangles and at 152.4 with 146), 0 holes. Valid, +4.739% (envelope +7.932%), {8 plane, 7 cyl, 9 cone}, STEP valid.
 Both flats of p26 carry the SAME normal direction, so one of them is a pocket/slot floor, not an outer flat. The half-space box cut is right for an outer flat only. DeepSeek lists a through hole and a blind hole (p26) and a keyway (p38), none detected: the hole detector looks for one common axis direction across all remaining triangles, which breaks with several features. Not solved (|dV| > 1%). Needed: a feature classifier that separates outer flats, slots/pockets and cylindrical holes per connected cluster, with the correct cut side per cluster.
+
+## ER — per-patch feature map finds the real holes, bosses and flats exactly (2026-09-13)
+sem/featmap.py: connected patches of non-envelope triangles (joined across smooth dihedrals < 20 deg), each fitted as plane or cylinder:
+- p26 (turned X): plane +Z @12.70 (152 tris), 2 side planes +/-Y @6.35, cross HOLE R 4.826 along Z (span 22.35, dev 0.000; two half-patches), plane +Z @-9.652.
+- p38 (turned X): planes +Z @152.4 and @76.2, side planes, HOLE R 76.2 along X (4 half-patches, span 304.8, i.e. an axial bore) and HOLE R 76.2 along Z (2 halves, span 355.6), plane @-203.2.
+- p1 (all triangles): HOLE R 25.4 along Y (span 57.15), HOLE R 12.7 along Z; several "other" patches (dev 10-20) = merged fillet/boss areas, plus planes.
+- p3 (all): HOLE R 7.874 along Y, HOLE R 7.112 along Z, BOSS R 15.875 along Z, and paired planes.
+Cylinders come as half-patch pairs (mesh seams) and must be merged. This is the subtractive-feature evidence the turned (C) and multi-axis (E) parts need. Next: sem/features.py (patches + half merge) feeding autorev_cut2 (envelope minus flats minus holes) for p26/p38.
