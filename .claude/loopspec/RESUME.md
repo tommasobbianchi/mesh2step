@@ -228,7 +228,14 @@ T. **Part 11's bad faces fail the same way part 9 finally does: unreconciled str
    BRepCheck_Status 15-21 from the header: 15 InvalidRange, 16 EmptyWire, 17 RedundantEdge,
    18 SelfIntersectingWire, 19 NoSurface, 20 InvalidWire, 21 RedundantWire.
    A straight edge on a PLANE should be trivially same-parameter unless its 3D line is not in
-   the plane; plane-distance probe (N34_PLANEEDGE) running.
+   the plane. REFUTED by N34_PLANEEDGE (binary 8db5954f177f, 18 plane edges): the 3D lines lie
+   in their planes to <=1.5 um at start, middle and end. What the edges share instead: they are
+   MICRO-EDGES, 0.09-0.31 mm long; SameParameter flag is FALSE; tolerance sits at the 25 mm
+   spCap ceiling; pcurve is Geom2d_BSplineCurve with range equal to the 3D range. Part 9's
+   remaining bad edges look the same (sameParam=0, tol=25 on 4 of 6). So the defect is a failed
+   same-parameter computation on tiny edges, not geometry off the surface. Next: on a copy of
+   each bad face, test which repair makes it valid (reset tolerance + BRepLib::SameParameter;
+   ShapeFix_Edge::FixSameParameter; exact straight pcurve + SameParameter).
 
 U. **Tori cannot reach the STEP at all: the engine has no torus primitive.** Measured on part 11
    (n5f11, STL2STEP_N5F_AXCOH=1): 728 bands at R~4 mm, every axis with z=0 and in-plane axis
