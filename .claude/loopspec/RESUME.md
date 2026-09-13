@@ -1486,3 +1486,12 @@ Running: multi-axis parts 1 and 3 as the intersection of their stepped extrusion
 FreeCAD on sem/bcut/p26_v4.step: Solid valid True, 24 faces {Cylinder 5, Cone 2, Plane 17}, 0 invalid; dV -0.616%. Pipeline: turned envelope - top flat - slot (width 12.7, floor at 9.652) - cross hole R 4.826.
 Solved (28): 7 8 9 10 11 12 13 15 17 18 19 20 21 23 24 25 26 28 29 30 31 32 33 34 35 36 37 38.
 Approximate (valid solid, 1-3%): 2 (1.87%), 4 (1.67%). Wrong shape: 5, 16, 22, 27. None yet: 1, 3, 6, 14, 39.
+
+## EX — second opinion (DeepSeek v4-pro via opencode) on p14 STEP invalidity: root cause found (2026-09-13)
+Report: sem/kimi14/findings.md (OCP 7.9.3.1; reproducers diag*.py, fix_test.py). Verified claims:
+- The 25 invalid faces are NOT the 55 near-equal annuli. They are 23 single-wire slivers/lenses (2-6 circular-arc edges, area 0.04-201 mm2) plus 2 multi-wire shelves (861,818 mm2 at z=889; 6,779,647 mm2 at z=762), located at the level junctions z = 127/635/762/889.
+- Geometry survives STEP bit for bit (curves, pcurves, ranges, vertices, tolerances). Only the EDGE ORDER inside the wire changes: the reader sorts the edges into traversal order. BRepCheck_Wire::SelfIntersect (domain-based Geom2dInt_GInter on circular pcurves) then reports a false SelfIntersectingWire, which the analyzer turns into face-level UnorientableShape.
+- Trigger: consecutive boundary edges are arcs of NEAR-IDENTICAL circles (R 813.0078 vs 812.7787, centres 0.8 mm apart). Adjacent levels are traced from different slices, so their outlines differ by 0.1-1 mm, and the fuse exposes a thin shelf bounded by one arc of each.
+- No post-processing fixes it: ShapeFix_Shape/Wire/Solid, Sewing+MakeSolid, UnifySameDomain combos, ShapeDivideArea (worse, 26), vertex tolerance 0.01-1.0, write precision/surfacecurve modes 0/1/2, AP203/AP214/AP242, read precision modes, translation. Snapping to identical polylines leaves exactly coincident edges, which is worse (31).
+- Proposed builder-level fixes: build the stepped solid without creating junction slivers (single multi-section construction) or fuse with BOPAlgo glue (GlueShift/GlueFull). Converting circle edges to B-splines before writing is theoretically sound but its prototype segfaulted.
+Testing now: fuse with SetGlue (BOPAlgo_GlueShift / BOPAlgo_GlueFull), with and without loop snapping, on p14 with the STEP re-read invalid-face count.
