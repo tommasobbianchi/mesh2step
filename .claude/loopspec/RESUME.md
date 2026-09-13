@@ -698,6 +698,17 @@ AR. **Loop stitching is consistent; the failing faces concentrate on the seam-st
    Measured (off.log, first DIAG_PARTIAL_RID per rid): 28 failing -- seam straddle 14, nOuterCh>6 14,
    MakeWire-rebuild path 26; 70 built -- straddle 5, nOuterCh>6 23, rebuild path 28. Seam straddle is
    the discriminator (14/28 vs 5/70), matching the external advice to keep the patch off the seam.
+   The 8 faces still failing WITH N50 (n53 DIAG_FBF): rids 242 257 388 508 522 618 819 838 -- straddle 3,
+   nOuterCh>6 5, inward (outward=0) 4, one inner loop. The 20 rescued: straddle 11, nOuterCh>6 9, inward 3.
+   REFUTED as discriminators for face-build failure (off.log, first attempt):
+     - fitted u-range edge at the seam (|uMin| or |uMax| < 0.01): 8/8 failing, 17/20 rescued, 51/70 built
+       -- the range starts at a real mesh-vertex azimuth by construction, so this is the normal case.
+     - tilted end plane (ellipse edges in the wire; external question "is the terminating plane parallel
+       to the section plane"): 1/8 failing, 9/20 rescued, 33/70 built -- built faces have MORE ellipse
+       edges. Tilted caps do matter on another path: plane|cyl IntAna ellipses refused by the residual gate
+       (fact Z: 9 on part 9, 27 on part 11) set chainEdgeFail and explode both regions.
+   Edge types on the 8: 242 elips 2 + line 6; 257/388/508/522 lines only; 618/819/838 walk only 1 edge.
+
 
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
