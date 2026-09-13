@@ -1471,3 +1471,7 @@ Remaining p26 excess: a SLOT. Its two side walls (+/-Y planes at 6.35, 2 triangl
 autorev_cut3 (feature-map planes by area share; pairs of antiparallel planes facing each other = slot walls; box cut between the walls):
 - p38: slot width 50.8 (walls normal +/-Y), holes R 76.2. Valid, dV +0.759% (holes only: +2.604%), faces {18 plane, 13 cyl, 11 cone}, STEP valid. Under the 1% bar; FreeCAD check pending.
 - p26: slot width 12.7, hole R 4.826. Valid but dV -1.955% (holes only: +4.322%), faces {17 plane, 5 cyl, 2 cone}. The slot box spans +/-2R across the whole diameter instead of stopping at the slot FLOOR (the +Z plane at -9.65 between the walls). Fix: find the unpaired plane perpendicular to the walls lying between them (the floor) and limit the box to the material side of that floor.
+
+## EU — p38 SOLVED as a turned part (FreeCAD valid): 27 of 39 parts solved (2026-09-13)
+FreeCAD on sem/bcut/p38_v3.step: Solid valid True, 42 faces {Cylinder 13, Plane 18, Cone 11}, 0 invalid; dV +0.759%. Pipeline: turned envelope (autorev) - flats - slot (width 50.8) - holes R 76.2 (autorev_cut3). First turned part solved. p26_v3 is also FreeCAD valid (24 faces) but at -1.955% it is over-cut; the floor-bounded slot (autorev_cut4) is running.
+Solved so far (27): 7 8 9 10 11 12 13 15 17 18 19 20 21 23 24 25 28 29 30 31 32 33 34 35 36 37 38.
