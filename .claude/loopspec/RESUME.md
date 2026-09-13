@@ -950,6 +950,19 @@ BN. **n79: cylinder FACES cover 61% more area than their mesh regions on part 9 
    removes material, which could produce a loss of this size. Next n80: at each accepted partial cylinder face, log rid,
    face area vs region mesh area, span, R, outwardNormal and the winning attempt tag.
 
+BO. **n80: three rot-trim partial cylinder faces are built far larger than their regions -- the likely source of part 9's
+   volume loss (binary 308e69ded0e9, n71 flags + N80_PCYLAREA).** 97 accepted faces (last build per region), faceArea sum
+   293.882 vs meshArea 179.834. Classification against R x span x vH vs R x (2pi - span) x vH: 92 match the fitted span,
+   5 have no area -- the COMPLEMENT-ARC hypothesis of fact BN is REFUTED. Ratio face/mesh: <=1.1 84, <=1.5 8, <=3 2, >3 3.
+   The three outliers, all tag rot-trim/fwd, outward 1:
+     rid 445 R 10.11 span 1.889 vH 10.08: face 128.17 mm2 vs mesh 1.92 (66.7x); trim rectangle R*span*vH 192.63
+     rid 838 R 3.25 span 1.634 vH 2.29:   face 14.77 vs mesh 0.97 (15.3x); rectangle 12.15
+     rid 388 R 9.65 span 2.099 vH 9.65:   face 16.87 vs mesh 2.14 (7.9x); rectangle 195.51
+   These regions are narrow strips of a few triangles whose fitted u/v box is large; the rot-trim attempt (MakeFace on a
+   Geom_RectangularTrimmedSurface) produced a face covering most of the trim rectangle instead of the small wire -- a spurious
+   curved sheet inside the part. rot-trim is exactly the path with the trimmed-surface rotation bug fixed by N50_TRIMROT
+   (fact AL), which is NOT in the current flag set. n81 adds STL2STEP_N50_TRIMROT and re-measures the three faces and t4.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
