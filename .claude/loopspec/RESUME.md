@@ -1339,3 +1339,6 @@ auto25c (ruled ThruSections between the boundary sections of runs of thin monoto
 - p34: 4 groups (one loft over z 0-7.58). dV -0.183%, max distance 1.136 (auto25b: -0.072%, max 0.038). Faces {16 plane, 8 cyl, 3 other}.
 - p2: the lofts at z 5-9.8 and 15.5-20 worked, but z 9.8-15 fell back on a loop-count mismatch. dV -0.810%, max 5.0 (auto25b: +1.871%, max 0.50). 12 'other' faces.
 The sloped regions are not straight ruled tapers (and a plain loft does not pair the loop geometry reliably), so lofting makes the shape worse. Refuted. auto25b is the accepted stepped method; running it on the remaining stepped parts 14, 4, 3, 8, 17, 39 (b25b2).
+
+## DY — full round by "outline inside the round, 2D offset, fillet 0.495T": valid for p16 but over-segmented (2026-09-13)
+autoround2 on p16 (T 20, rho 10; slice at t = 5 with analytic inset d = 1.3397; outward 2D offset with arc joins; prism; fillet 0.495T): offset wires 3, fillet on 748 edges done. Model valid, dV -1.426%, STEP re-read valid. BUT faces {196 plane, 568 cyl, 6 torus, 354 other}, mesh->model p95 0.12, max 3.19. The loop segmentation (LINE/ARC tol 0.02) split the outline into hundreds of short primitives: the section through the round is noisier than 0.02. Numerically close but not a clean feature model. Rerunning with SEGTOL 0.05/0.08/0.12.
