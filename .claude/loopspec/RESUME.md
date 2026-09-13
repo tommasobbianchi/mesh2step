@@ -640,6 +640,17 @@ AO. **n52: ShapeFix_Wireframe::FixSmallEdges does not remove the post-sew zero-l
    (STL2STEP_N54_SHAPEFIX_SMALL, binary 1187644f33b5 which also counts collapsed = same vertex TShape
    at both ends), arm a without and arm b with N50_TRIMROT.
 
+AP. **n53: N50 rotation fix + N13_SEW_FREE + N48_SEW_PARTIAL + N52 (Wireframe) on part 9 -- 0 cylinders
+   (binary c83e072dca09).** FBF type=1 8 (vs 28 without N50).
+     recover 0: sew 725->84 kept; N52 free=84 zero=59 -> not applied (needs all zero-length);
+       N13_TARGETED freeE=84 regions=38.
+     recover 1: sew 613->65 kept; N52 free=65 zero=47 -> not applied.
+     J6 residual census: block 0 84 = 59 zero-length + 25 non-zero (longest 6.2973 mm);
+       block 1 65 = 47 zero + 18 non-zero. Final blanket 3679 / 98; smoothBuiltCylinders 0.
+   So the 20 cylinder faces that N50 rescues bring REAL gaps (non-zero free edges up to 6.3 mm) that
+   sewing at 0.1 mm cannot pair -- closure needs those edges to match their neighbours, not only the
+   zero-length cleanup.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
