@@ -1301,3 +1301,12 @@ batch3 (rho/chamfer search up to T/2, t up to 0.49T):
 - p32: fillets 6.75-7.0, 0.414, -1.023% (batch2: 0.006 / -0.021%)
 Every part got WORSE. The area-deficit offset proxy d = dA/P over-estimates at large offsets, so the 6 mm cap was not truncating real values. p16 is still wrong (fillet 9.7, +10.7%, 422 cylinder facets): a full-round link is not a prism plus fillets. Reverted auto2d to the batch2 range (copy in sem/auto2d.batch2.py); the batch2 results stand as the accepted builds.
 Status: 23 of 39 parts solved by the extrusion path. Remaining (16): 1, 2, 3, 4, 5, 6, 8, 14, 16, 17, 22, 26, 27, 34, 38, 39, which are 3D, full-round or tapered.
+
+## DR — semantic reading of the 16 remaining parts (contact sheet sem/r3d/remaining_3d.png) and the methods they need (2026-09-13)
+- A, stepped extrusions (one axis, several height levels): 2 (link with raised ring boss + fork), 4 (claw plate), 8 (bracket plates), 14 (lugged ring with hub), 17 and 39 (large thin levers with spokes/rings), 34 (two-level bracket), probably 3 (clevis). Method: sem/auto25.py. Slice at N heights, group equal-signature runs into levels, prism per level from its mid slice (nested loops -> faces with holes), fuse, unify.
+- B, turned: 5, 26, 38 (shafts with flanges, flats, cross holes). Method: revolve the radial profile r(z), then cut flats and holes.
+- C, full-round edges: 16 (link), 27 (holed ring disc). Method: inset profile by rho, prism of height T-2rho, rounded offset by rho.
+- D, holes along several axes: 1 (housing block). Method: intersect extrusions along axes, then cut bores.
+- E, tapered: 22 (countersink/taper). Method: extrusion + cone detection.
+- F, broken mesh: 6 (spiky triangles). Report, do not reconstruct.
+Starting with A.
