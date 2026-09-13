@@ -270,6 +270,15 @@ W. **ShapeFix_Edge::FixSameParameter repairs every same-parameter face on part 1
    FixSameParameter (env-gated) to the sewn shell before the validity gate, then run parts 11
    and 9 and the corpus.
 
+X. **Part 11's 938 arc fragments dropped by n18 are NOT pieces of cylinders -- dropping them is
+   correct for today's scope.** N18_ARCCOV with axis (binary 8141b9a9cf3b, n5f11 flag set incl.
+   N29_ARCH_MAXTRI=200000 + N22_NOQUORUM): all 938 are law bands (origin CylGrow, law=1), 3-6 deg
+   each. Grouped by radius (0.2%), the 14 groups summing 150-250 deg have a DIFFERENT axis
+   direction and axis point for almost every member (e.g. R 57.3: 41 members, no direction shared
+   by more than 2), axial mid-positions spread over ~5 m. They are local cylinder fits to a doubly
+   curved surface (sphere/torus/freeform), which is out of today's scope. Cylinder work on part 11
+   is therefore the shell-validity problem (W), not band merging.
+
 Tooling: DeepSeek delegations via oc_run.sh default to deepseek/deepseek-flash ("DeepSeek V4.1
 Flash") at MEDIUM effort (--variant medium), per the user's instruction. Verified: the DeepSeek
 API accepts reasoning_effort "medium" for deepseek-flash (HTTP 200); opencode had no "medium"
