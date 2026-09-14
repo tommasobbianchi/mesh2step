@@ -329,7 +329,7 @@ def regions(tri):
             "coverage": {k: round(float(100 * v / tot), 2) for k, v in cov.items()},
             "unassigned_pct": round(float(100 * area[label < 0].sum() / tot), 2),
             "params": {k: sorted(p for kk, _, p in kinds if kk == k) for k in ("cylinder", "cone", "sphere", "torus")},
-            "label": label, "topology": (V, F, nb, n, area, tol)}
+            "label": label, "kinds": [k for k, _, _ in kinds], "topology": (V, F, nb, n, area, tol)}
 
 
 if __name__ == "__main__":

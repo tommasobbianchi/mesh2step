@@ -475,6 +475,67 @@ def _retry_broken_trueform(stl_path, out_path, res, *, schema, unify_angle) -> d
     return best
 
 
+# The shape rebuild (tools/feature_recon/edgebuild.py): every mesh region one fitted analytic surface,
+# every edge the exact intersection of its two surfaces, every corner their exact common point. The
+# engine output stays unless the rebuild is a valid single closed solid on the mesh, and never with
+# fewer cylinder faces than the engine built. cadbench normal 67 -> 86 of 103 models with exact face
+# types (2026-09-14); Bracket_40 0 -> 4 hole cylinders, Schlauchschelle a valid solid with its cones.
+EDGEBUILD = Path(__file__).resolve().parents[1] / "tools" / "feature_recon" / "edgebuild.py"
+EDGEBUILD_TIMEOUT_S = float(os.environ.get("MESH2STEP_EDGEBUILD_TIMEOUT_S", "900"))
+# ponytail: not yet measured above this size (memory of the Python fit in the service cgroup)
+EDGEBUILD_MAX_TRIS = int(os.environ.get("MESH2STEP_EDGEBUILD_MAX_TRIS", "60000"))
+EDGE_MAX_DV_PCT = 1.0        # exact curved faces vs chord mesh: the corpus maximum was 0.42 %
+EDGE_MAX_P95_REL = 0.005     # of the diagonal, same limit as the feature pass
+
+
+def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
+    """Replace the engine STEP with the exact-intersection shape rebuild when it passes the gate.
+
+    Runs in its own process group like the feature pass: a crash or hang costs this attempt, never
+    the worker. `res` is returned unchanged whenever the rebuild fails or is refused.
+    """
+    import ast
+    import signal
+    import subprocess
+
+    if (os.environ.get("MESH2STEP_EDGEBUILD", "1") == "0" or not res.get("ok")
+            or (res.get("triangles") or 0) > EDGEBUILD_MAX_TRIS):
+        return res
+    cand = Path(out_path).with_name("edge.step")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(EDGEBUILD), str(stl_path), str(cand)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=EDGEBUILD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return res
+    except OSError:
+        return res
+    line = next((ln for ln in reversed(stdout.splitlines()) if ln.startswith("RESULT ")), None)
+    if proc.returncode != 0 or line is None or not cand.exists():
+        cand.unlink(missing_ok=True)
+        return res
+    m = ast.literal_eval(line[7:].split(" radii ")[0])
+    before = res.get("smoothBuiltCylinders") or 0
+    if not (m["valid"] and m["solids"] == 1 and m["free_edges"] == 0
+            and abs(m["dv_pct"]) <= EDGE_MAX_DV_PCT and m["dist_p95"] <= EDGE_MAX_P95_REL * m["diag"]
+            and m["cylinders"] >= before):
+        cand.unlink(missing_ok=True)
+        return res
+    cand.replace(out_path)
+    other = m["faces"] - m["planes"] - m["cylinders"]
+    note = (f"shape rebuilt from exact surfaces: {m['planes']} planes, {m['cylinders']} cylinders, "
+            f"{other} other curved faces (engine built {before} cylinders; volume {m['dv_pct']:+.2f}% vs mesh)")
+    return dict(res, output=str(out_path), solids=1, openShells=0, watertight=True, freeEdges=0,
+                stepVolumeMM3=m["volume"], volumeDeltaPct=m["dv_pct"], facesAfterUnify=m["faces"],
+                facesAfterSmooth=m["faces"], smoothPlanes=m["planes"], smoothCylinders=m["cylinders"],
+                smoothBuiltPlanes=m["planes"], smoothBuiltCylinders=m["cylinders"],
+                featureMethod="edgebuild", warnings=[note, *(res.get("warnings") or [])])
+
+
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info, feature=False) -> dict:
@@ -505,7 +566,8 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         if engine == "trueform" and res.get("ok"):
             res = _retry_broken_trueform(stl_path, out_path, res, schema=schema,
                                          unify_angle=native_unify)
-        if (engine == "trueform" and res.get("ok")
+            res = _edgebuild_upgrade(stl_path, out_path, res)
+        if (engine == "trueform" and res.get("ok") and not res.get("featureMethod")
                 and (feature or os.environ.get("MESH2STEP_FEATURE") == "1")):
             res = _feature_upgrade(stl_path, out_path) or res
     except NativeTimeout:
