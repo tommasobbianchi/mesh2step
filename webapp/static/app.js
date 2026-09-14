@@ -107,7 +107,7 @@ async function loadFile(file) {
   selectedFile = file;
   const ext = file.name.split('.').pop().toLowerCase();
   const buf = await file.arrayBuffer();
-  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
 
   let obj = null, triCount = 0;
   try {
@@ -212,6 +212,75 @@ dropZone.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) loadFile
 for (const id of ['file-input', 'file-input-2']) {
   document.getElementById(id).addEventListener('change', (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
 }
+
+// ---- result preview: the written STEP, coloured by what each face was rebuilt as ----
+const FACE_COLORS = { plane: 0x8fb3d9, cylinder: 0xe4572e, cone: 0xf5a623, sphere: 0xb86bff, torus: 0x3fb68b, other: 0x9a9a9a };
+const resultMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.05, roughness: 0.7, side: THREE.DoubleSide });
+let resultMesh = null;
+let resultFaces = [];
+let resultFaceIds = null;
+const viewSelect = document.getElementById('view-select');
+const faceInfo = document.getElementById('face-info');
+
+function clearResultPreview() {
+  if (resultMesh) { scene.remove(resultMesh); resultMesh.geometry.dispose(); resultMesh = null; }
+  resultFaces = []; resultFaceIds = null;
+  viewSelect.value = 'mesh'; viewSelect.disabled = true;
+  faceInfo.textContent = '';
+  if (currentMesh) currentMesh.visible = true;
+}
+
+function applyView() {
+  const v = viewSelect.value;
+  if (currentMesh) currentMesh.visible = v !== 'result';
+  if (resultMesh) resultMesh.visible = v !== 'mesh';
+  if (currentMesh) currentMesh.traverse((c) => { if (c.isMesh) { c.material.transparent = v === 'both'; c.material.opacity = v === 'both' ? 0.25 : 1; } });
+}
+viewSelect.addEventListener('change', applyView);
+
+async function showResultPreview(token) {
+  clearResultPreview();
+  faceInfo.textContent = 'Loading result preview…';
+  try {
+    const res = await fetch(`api/result-mesh/${token}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const d = await res.json();
+    const b64 = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)).buffer;
+    const pos = new Float32Array(b64(d.positions));
+    const ids = new Uint32Array(b64(d.faceIds));
+    const col = new Float32Array(pos.length);
+    const c = new THREE.Color();
+    for (let t = 0; t < ids.length; t++) {
+      c.setHex(FACE_COLORS[d.faces[ids[t]].type] ?? FACE_COLORS.other);
+      for (let k = 0; k < 3; k++) col.set([c.r, c.g, c.b], (t * 3 + k) * 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.computeVertexNormals();
+    resultMesh = new THREE.Mesh(g, resultMaterial);
+    resultFaces = d.faces; resultFaceIds = ids;
+    scene.add(resultMesh);
+    viewSelect.disabled = false; viewSelect.value = 'result'; applyView();
+    const n = (k) => d.faces.filter((f) => f.type === k).length;
+    faceInfo.textContent = `Result: ${n('cylinder')} cylinders (red) · ${n('plane')} planes (blue)`
+      + (n('cone') + n('sphere') + n('torus') ? ` · ${n('cone') + n('sphere') + n('torus')} other curved` : '')
+      + (n('other') ? ` · ${n('other')} freeform (grey)` : '') + ' — hover a face for details';
+  } catch (e) {
+    faceInfo.textContent = 'Result preview unavailable: ' + e.message;
+  }
+}
+
+canvas.addEventListener('pointermove', (ev) => {
+  if (!resultMesh || !resultMesh.visible || componentMode) return;
+  const rect = canvas.getBoundingClientRect();
+  const p = new THREE.Vector2(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(p, camera);
+  const hit = raycaster.intersectObject(resultMesh)[0];
+  if (!hit) return;
+  const f = resultFaces[resultFaceIds[hit.faceIndex]];
+  canvas.title = f ? (f.radius ? `${f.type} · R ${f.radius} mm` : f.type) : '';
+});
 
 // ---- wireframe + theme ----
 document.getElementById('wireframe-toggle').addEventListener('change', (e) => { material.wireframe = e.target.checked; });
@@ -501,7 +570,7 @@ async function _sendCutPreview() {
     if (statsHeader) nTris = JSON.parse(statsHeader).n_tris_after;
     const buf = await res.arrayBuffer();
     const geo = new STLLoader().parse(buf);
-    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
     const obj = new THREE.Mesh(geo, material);
     scene.add(obj);
     currentMesh = obj;
@@ -527,7 +596,7 @@ async function _reloadOriginalPreview() {
   else if (ext === 'ply') { const g = new PLYLoader().parse(buf); g.computeVertexNormals(); obj = new THREE.Mesh(g, material); }
   else if (ext === 'obj') { obj = new OBJLoader().parse(new TextDecoder().decode(buf)); obj.traverse(c => { if (c.isMesh) c.material = material; }); }
   else if (ext === '3mf') { obj = new ThreeMFLoader().parse(buf); obj.traverse(c => { if (c.isMesh) c.material = material; }); }
-  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+  if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
   if (obj) {
     obj.traverse(c => { if (c.isMesh && c.geometry) triCount += (c.geometry.index ? c.geometry.index.count / 3 : c.geometry.attributes.position.count / 3); });
     scene.add(obj);
@@ -651,7 +720,7 @@ async function _startComponents() {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const geo = new STLLoader().parse(bytes.buffer);
 
-    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
     const obj = new THREE.Mesh(geo, componentMaterial);
     scene.add(obj);
     currentMesh = obj;
@@ -852,9 +921,14 @@ function renderResult(data) {
     lines.push(`${s.faces_before_rebuild.toLocaleString()} flat patches became ${s.n_faces_built.toLocaleString()} surfaces`);
   } else {
     const bits = [];
-    if (s.smooth_planes) bits.push(`${s.smooth_planes} flat face${s.smooth_planes === 1 ? '' : 's'}`);
-    if (s.smooth_cylinders) bits.push(`${s.smooth_cylinders} round face${s.smooth_cylinders === 1 ? '' : 's'}`);
-    if (bits.length) lines.push('Recognised ' + bits.join(' and '));
+    // built counts when the engine reports them: detection alone is not a result
+    const planes = s.smooth_built_planes ?? s.smooth_planes;
+    const cyls = s.smooth_built_cylinders ?? s.smooth_cylinders;
+    if (planes) bits.push(`${planes} flat face${planes === 1 ? '' : 's'}`);
+    if (cyls) bits.push(`${cyls} round face${cyls === 1 ? '' : 's'}`);
+    if (bits.length) lines.push('Rebuilt ' + bits.join(' and '));
+    const lost = (s.smooth_cylinders || 0) - (cyls || 0);
+    if (lost > 0) lines.push(`${lost} round face${lost === 1 ? ' was' : 's were'} found in the mesh but could not be built`);
     else if (s.n_faces_built) lines.push(`${s.n_faces_built.toLocaleString()} surfaces`);
   }
   const kb = s.output_size_bytes ? `${(s.output_size_bytes / 1024).toFixed(0)} KB` : '';
@@ -871,6 +945,7 @@ function renderResult(data) {
     window.location.href = `api/download/${data.download_token}`;
   });
   renderStats(data);
+  showResultPreview(data.download_token);
 }
 
 function renderStats(data) {

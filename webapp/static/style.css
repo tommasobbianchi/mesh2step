@@ -357,3 +357,5 @@ select {
   -webkit-text-fill-color: transparent;
 }
 .modal-brand .nr-mark { height: 34px; }
+
+#view-select { min-width: 6.5em; }

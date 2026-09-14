@@ -904,6 +904,79 @@ def download(token: str):
     return FileResponse(job["path"], media_type="application/step", filename=job["name"])
 
 
+
+def _result_mesh(step_path: Path) -> dict:
+    """The written STEP tessellated for the browser: every triangle tagged with the B-Rep face it
+    came from, and every face with its surface type (and radius where it has one), so the page can
+    show which faces were rebuilt as real geometry and which are still mesh facets."""
+    import numpy as np
+    from OCP import GeomAbs
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    r = STEPControl_Reader()
+    if r.ReadFile(str(step_path)) != 1:
+        raise HTTPException(422, "the result could not be read back for preview")
+    r.TransferRoots()
+    shape = r.OneShape()
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = max(float(np.linalg.norm([x1 - x0, y1 - y0, z1 - z0])), 1e-6)
+    BRepMesh_IncrementalMesh(shape, 1e-3 * diag, False, 0.35, True)
+    kinds = {GeomAbs.GeomAbs_Plane: "plane", GeomAbs.GeomAbs_Cylinder: "cylinder",
+             GeomAbs.GeomAbs_Cone: "cone", GeomAbs.GeomAbs_Sphere: "sphere",
+             GeomAbs.GeomAbs_Torus: "torus"}
+    pos, ids, faces = [], [], []
+    ex = TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        f = TopoDS.Face_s(ex.Current())
+        ex.Next()
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(f, loc)
+        if tri is None:
+            continue
+        ad = BRepAdaptor_Surface(f)
+        kind = kinds.get(ad.GetType(), "other")
+        face = {"type": kind}
+        if kind == "cylinder":
+            face["radius"] = round(ad.Cylinder().Radius(), 4)
+        elif kind == "sphere":
+            face["radius"] = round(ad.Sphere().Radius(), 4)
+        tr = loc.Transformation()
+        nodes = np.array([tri.Node(i).Transformed(tr).Coord() for i in range(1, tri.NbNodes() + 1)])
+        tris = np.array([tri.Triangle(i).Get() for i in range(1, tri.NbTriangles() + 1)]) - 1
+        if f.Orientation() == TopAbs_REVERSED:
+            tris = tris[:, ::-1]
+        pos.append(nodes[tris].reshape(-1, 3))
+        ids.append(np.full(len(tris), len(faces), dtype=np.uint32))
+        faces.append(face)
+    positions = (np.concatenate(pos) if pos else np.zeros((0, 3))).astype(np.float32)
+    face_ids = np.concatenate(ids) if ids else np.zeros(0, dtype=np.uint32)
+    return {"positions": base64.b64encode(positions.tobytes()).decode(),
+            "faceIds": base64.b64encode(face_ids.tobytes()).decode(),
+            "faces": faces}
+
+
+@app.get("/api/result-mesh/{token}")
+def result_mesh(token: str):
+    job = _JOBS.get(token)
+    if not job or not job["path"].exists():
+        raise HTTPException(404, "result expired or not found")
+    cache = job["path"].with_suffix(".preview.json")
+    if not cache.exists():
+        cache.write_text(json.dumps(_result_mesh(job["path"])))
+    return Response(cache.read_text(), media_type="application/json")
+
+
 _GUIDE = Path(__file__).parent.parent / "docs" / "USER_GUIDE.md"
 
 
@@ -997,6 +1070,10 @@ def _native_stats(res: dict, engine: str, schema: str) -> dict:
             {
                 "smooth_planes": res.get("smoothPlanes", 0),
                 "smooth_cylinders": res.get("smoothCylinders", 0),
+                # what was BUILT, not what segmentation found: a reverted component finds
+                # cylinders and ships none (Bracket_40: found 4, built 0)
+                "smooth_built_planes": res.get("smoothBuiltPlanes"),
+                "smooth_built_cylinders": res.get("smoothBuiltCylinders"),
                 "smooth_fillets": res.get("smoothFillets", 0),
                 "smooth_built_components": res.get("smoothBuiltComponents", 0),
                 "smooth_reverted_components": res.get("smoothRevertedComponents", 0),

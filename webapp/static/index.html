@@ -119,6 +119,14 @@
       <div id="viewport-footer">
         <span id="mesh-info" class="mesh-info">No model loaded</span>
         <label class="wireframe-toggle"><input id="wireframe-toggle" type="checkbox" /> Wireframe</label>
+        <label class="wireframe-toggle">View
+          <select id="view-select" disabled title="Compare your mesh with the converted result">
+            <option value="mesh" selected>Mesh</option>
+            <option value="result">Result</option>
+            <option value="both">Both</option>
+          </select>
+        </label>
+        <span id="face-info" class="mesh-info"></span>
         <div class="viewport-controls-hint">Left drag: orbit · Right drag: pan · Scroll: zoom</div>
       </div>
     </section>
