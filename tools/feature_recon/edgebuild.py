@@ -709,6 +709,10 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                         k0_fix = k_plane; ncons["cone-plane angle"] += 1
                 elif kind == "torus" and abs(abs(s["a"] @ n_) - 1) < 1e-9:
                     dist = float(n_ @ (s["o"] + s["a"] * s["hc"]) - d_)
+                    if os.environ.get("EB_DEBUG"):
+                        log(f"  torus-plane candidate S{L} vs S{M}: |a.n|-1 {abs(float(s['a'] @ n_)) - 1:+.1e}, tube-plane distance "
+                            f"{dist:+.6f}, minor {s['minor']:.6f}, |dist|-minor {abs(dist) - s['minor']:+.2e} -> "
+                            f"{'CONSTRAINT' if abs(abs(dist) - s['minor']) < REL * s['minor'] else 'no'}")
                     if abs(abs(dist) - s["minor"]) < REL * s["minor"]:
                         sg = math.copysign(1, dist)
                         cons.append(lambda t, n_=n_, d_=d_, sg=sg: sg * (n_ @ (t["o"] + t["a"] * t["hc"]) - d_) - t["minor"])
@@ -767,6 +771,13 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
             cons.append(lambda t, k0_fix=k0_fix: t["k0"] - k0_fix)     # keep it through any further projection
         if cons:
             S[L] = refine(s, region_verts(L), cons)
+            if os.environ.get("EB_DEBUG"):
+                # a constraint left unsatisfied means the set is inconsistent (mechparts/1: fillet torus S28 still 5e-5 off
+                # its tangent plane after projection, so torus and plane never touch and the chain between them fails)
+                res_c = [float(c(S[L])) for c in cons]
+                if max(abs(x) for x in res_c) > 1e-9 * diag:
+                    log(f"  UNSATISFIED constraints on S{L} ({kind}, {len(cons)} constraints): residuals "
+                        + ", ".join(f"{x:+.2e}" for x in res_c) + f" | neighbours {sorted(M_ for M_ in adj[L] if M_ in S)}")
 log(f"surfaces {collections.Counter(s['kind'] for s in S.values())}, constraints {dict(ncons)}")
 if os.environ.get("EB_DEBUG"):
     for L, s in S.items():
@@ -847,6 +858,22 @@ if os.environ.get("EB_DUMP_REGION"):
                 ch_ = chains[cid]; nb_ = ch_["labs"][1] if ch_["labs"][0] == L_d else ch_["labs"][0]
                 parts.append(f"S{nb_}{'' if ch_['corner_ends'] else '(closed)'}:{len(ch_['verts'])}v")
             log(f"    loop {i_l}: " + ", ".join(parts))
+            if L_d in S and S[L_d]["kind"] == "plane":
+                # signed area in the plane (loops run with the region on the left seen along the outward normal): positive =
+                # an outer boundary, negative = a hole. Two positive loops = two lobes of one region touching at a point.
+                n_p = S[L_d]["n"]; u_p, w_p = frame(n_p)
+                pts_l = []
+                for cid, fwd in wl:
+                    vs_l = chains[cid]["verts"] if fwd else chains[cid]["verts"][::-1]
+                    pts_l.extend(V[vs_l[:-1]])
+                P2 = np.array([[float(p @ u_p), float(p @ w_p)] for p in pts_l])
+                area_l = 0.5 * float(np.sum(P2[:, 0] * np.roll(P2[:, 1], -1) - np.roll(P2[:, 0], -1) * P2[:, 1])) if len(P2) >= 3 else 0.0
+                shared_v = set()
+                for j_l, wl2 in enumerate(region_loops[L_d]):
+                    if j_l != i_l:
+                        other_v = {v_ for c2, f2 in wl2 for v_ in chains[c2]["verts"]}
+                        shared_v |= {v_ for c1, f1 in wl for v_ in chains[c1]["verts"]} & other_v
+                log(f"      loop {i_l} signed area {area_l:+.3f}, vertices shared with other loops of S{L_d}: {len(shared_v)}")
     # every region adjacent to the dumped ones, with its loop count, to spot a hole loop that went to the wrong face
     for L_d in (int(x) for x in os.environ["EB_DUMP_REGION"].split(",")):
         nbs = sorted({(ch_["labs"][1] if ch_["labs"][0] == L_d else ch_["labs"][0]) for ch_ in chains if L_d in ch_["labs"]})
@@ -955,7 +982,9 @@ def common_axis(s1, s2):
     if "line" in (k1[0], k2[0]):
         (_, o, a), q = (k1, k2) if k1[0] == "line" else (k2, k1)
         if q[0] == "dir":
-            return (o, a) if abs(abs(a @ q[2]) - 1) < 1e-12 else None
+            # 1e-9 (the tangency constraints' limit): a fillet torus whose plane normal is (2e-6, 0, 1) has |a.n|-1 of
+            # -1.9e-12 and needs its closed-form circle (mechparts/1); alone this change did nothing, the rescue below uses it
+            return (o, a) if abs(abs(a @ q[2]) - 1) < 1e-9 else None
         d = q[1] - o; off = np.linalg.norm(d - (d @ a) * a)
         if q[0] == "point":
             return (o, a) if off < tl else None
@@ -1028,6 +1057,20 @@ for cid, ch in enumerate(chains):
         edges[cid] = None; ctypes["collapsed"] += 1; continue
     closed = vs[0] == vs[-1]
     inner, res = project(V[vs[1:-1]], surfs) if len(vs) > 2 else (np.zeros((0, 3)), np.zeros(0))
+    if len(res) and res.max() > 1e-6 * diag:
+        # an EXACTLY tangent pair about a common axis (fillet torus on its plane, fillet on a sphere) has parallel
+        # gradients along the whole curve, so point projection cannot converge; the curve is still known in closed
+        # form. Put the inner points on that circle instead of failing (mechparts/1: fillet torus S28 on plane S45,
+        # tangency constraint satisfied, projection stuck at 9.2e-3).
+        ca_r = common_axis(*surfs)
+        if ca_r is not None:
+            o_r, a_r = ca_r; q_r = V[vs[1:-1]] - o_r; h_r = q_r @ a_r
+            rad_r = q_r - np.outer(h_r, a_r); rr_r = np.linalg.norm(rad_r, axis=1)
+            hr_r = meridian_meet(surfs, o_r, a_r, float(h_r.mean()), float(rr_r.mean()))
+            if (hr_r is not None and hr_r[1] > 1e-6 * diag and np.abs(h_r - hr_r[0]).max() < 1e-4 * diag
+                    and np.abs(rr_r - hr_r[1]).max() < 1e-4 * diag):
+                inner = o_r + np.outer(np.full(len(h_r), hr_r[0]), a_r) + rad_r / np.maximum(rr_r[:, None], 1e-300) * hr_r[1]
+                res = np.zeros(len(inner))
     if len(res) and res.max() > 1e-6 * diag:
         if os.environ.get("EB_DEBUG"):
             worst = V[vs[1:-1]][int(np.argmax(res))]
@@ -1175,42 +1218,161 @@ for L, s in S.items():
                     apex_face = TopoDS.Face_s(exa.Current())
                 exa.Next()
     if apex_face is not None:
-        face = apex_face; sgn = 1.0          # the primitive's lateral face is already outward
+        faces_out = [apex_face]; sgn = 1.0          # the primitive's lateral face is already outward
     elif not region_loops[L]:
-        face = BRepBuilderAPI_MakeFace(gs, 1e-7).Face()
+        faces_out = [BRepBuilderAPI_MakeFace(gs, 1e-7).Face()]
     else:
-        face = TopoDS_Face(); bb.MakeFace(face, gs, TopLoc_Location(), 1e-7)
-        for wl in region_loops[L]:
-            seq = [(cid, fwd) for cid, fwd in wl if edges[cid] is not None]
-            if sgn < 0:
-                seq = [(cid, not fwd) for cid, fwd in reversed(seq)]
-            mw = BRepBuilderAPI_MakeWire()
-            for cid, fwd in seq:
-                mw.Add(edges[cid] if fwd else TopoDS.Edge_s(edges[cid].Reversed()))
-            if not mw.IsDone():
-                fail(f"face {L} ({s['kind']}): its boundary does not close (wire error {mw.Error()})")
-            bb.Add(face, mw.Wire())
+        # a PLANE region can hold several OUTER loops: separate faces lying on one plane (mechparts/1: four side planes,
+        # outer loops of 398.4 and 4.8 mm2, no shared vertex). A face takes one outer wire, so ShapeFix_Face kept the big
+        # loop and dropped the small one, leaving its edges free. One face per outer loop, with the holes inside it.
+        # (Periodic surfaces are left alone: their 2 -> 1 wire merge through the seam is normal and harmless.)
+        groups = [list(range(len(region_loops[L])))]
+        if s["kind"] == "plane" and len(region_loops[L]) > 1 and not os.environ.get("EB_NO_PLANE_SPLIT"):
+            u_g, w_g = frame(s["n"]); polys = []
+            for wl in region_loops[L]:
+                pts_g = []
+                for cid, fwd in wl:
+                    vs_g = chains[cid]["verts"] if fwd else chains[cid]["verts"][::-1]
+                    pts_g.extend(V[vs_g[:-1]])
+                P2g = np.array([[float(p @ u_g), float(p @ w_g)] for p in pts_g]) if pts_g else np.zeros((0, 2))
+                ar_g = (0.5 * float(np.sum(P2g[:, 0] * np.roll(P2g[:, 1], -1) - np.roll(P2g[:, 0], -1) * P2g[:, 1]))
+                        if len(P2g) >= 3 else 0.0)
+                polys.append((P2g, ar_g))
+            outer_idx = [i for i, (_, a_) in enumerate(polys) if a_ > 0]
+            if len(outer_idx) > 1:
+                def _inside(pt, poly):
+                    x, y = pt; inside = False; n_ = len(poly)
+                    for k in range(n_):
+                        x1, y1 = poly[k]; x2, y2 = poly[(k + 1) % n_]
+                        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-300) + x1:
+                            inside = not inside
+                    return inside
+                groups = [[i] for i in outer_idx]
+                for j, (P2h, a_h) in enumerate(polys):
+                    if a_h > 0 or len(P2h) == 0:
+                        continue
+                    host = [g for g in groups if _inside(P2h[0], polys[g[0]][0])]
+                    (host[0] if host else groups[0]).append(j)
+                log(f"  plane S{L}: {len(outer_idx)} outer loops -> {len(groups)} faces")
         def _nwires(f_):
             from OCP.TopAbs import TopAbs_WIRE as _TW
             e_ = TopExp_Explorer(f_, _TW); k_ = 0
             while e_.More():
                 k_ += 1; e_.Next()
             return k_
-        n_before = _nwires(face)
-        sf = ShapeFix_Face(face); sf.SetPrecision(1e-7 * diag); sf.SetMaxTolerance(1e-3 * diag); sf.Perform()
-        face = sf.Face()
-        if os.environ.get("EB_DUMP_REGION") and str(L) in os.environ["EB_DUMP_REGION"].split(","):
-            from OCP.GProp import GProp_GProps as _GPd
-            from OCP.BRepGProp import BRepGProp as _BGd
-            _g = _GPd(); _BGd.SurfaceProperties_s(face, _g)
-            log(f"  face S{L} ({s['kind']}): {len(region_loops[L])} loops -> {n_before} wires built -> "
-                f"{_nwires(face)} wires after ShapeFix_Face, area {_g.Mass():.3f}")
-    if sgn < 0:
-        face = TopoDS.Face_s(face.Reversed())
-    sew.Add(face)
+        faces_out = []
+        for grp in groups:
+            face = TopoDS_Face(); bb.MakeFace(face, gs, TopLoc_Location(), 1e-7)
+            for li in grp:
+                wl = region_loops[L][li]
+                seq = [(cid, fwd) for cid, fwd in wl if edges[cid] is not None]
+                if sgn < 0:
+                    seq = [(cid, not fwd) for cid, fwd in reversed(seq)]
+                mw = BRepBuilderAPI_MakeWire()
+                for cid, fwd in seq:
+                    mw.Add(edges[cid] if fwd else TopoDS.Edge_s(edges[cid].Reversed()))
+                if not mw.IsDone():
+                    fail(f"face {L} ({s['kind']}): its boundary does not close (wire error {mw.Error()})")
+                bb.Add(face, mw.Wire())
+            n_before = _nwires(face)
+            sf = ShapeFix_Face(face); sf.SetPrecision(1e-7 * diag); sf.SetMaxTolerance(1e-3 * diag); sf.Perform()
+            face = sf.Face()
+            if os.environ.get("EB_DEBUG") and _nwires(face) < n_before:
+                # face healing removed a boundary: its edges are then left free on the neighbouring faces
+                log(f"  WIRE DROPPED by ShapeFix_Face on S{L} ({s['kind']}): {n_before} -> {_nwires(face)} wires, {len(grp)} loops in this face")
+            if os.environ.get("EB_DUMP_REGION") and str(L) in os.environ["EB_DUMP_REGION"].split(","):
+                from OCP.GProp import GProp_GProps as _GPd
+                from OCP.BRepGProp import BRepGProp as _BGd
+                _g = _GPd(); _BGd.SurfaceProperties_s(face, _g)
+                log(f"  face S{L} ({s['kind']}): {len(grp)} loops -> {n_before} wires built -> "
+                    f"{_nwires(face)} wires after ShapeFix_Face, area {_g.Mass():.3f}")
+            faces_out.append(face)
+    for face in faces_out:
+        if sgn < 0:
+            face = TopoDS.Face_s(face.Reversed())
+        sew.Add(face)
 sew.Perform()
 sewn = sew.SewedShape()
 log(f"sewn {len(S)} faces, free edges {sew.NbFreeEdges()}, multiple edges {sew.NbMultipleEdges()}")
+if os.environ.get("EB_DEBUG") and sew.NbFreeEdges():
+    # the OWNING face of each free edge in the sewn shape: "nearest surfaces" misleads for short fillet arcs, which sit
+    # within 1e-3 of two planes (mechparts/1: 7 of 12 free circles reported as plane/plane)
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape as _EFmap
+    from OCP.TopExp import TopExp as _TE
+    from OCP.TopAbs import TopAbs_EDGE as _TEd, TopAbs_FACE as _TFa
+    from OCP.BRepAdaptor import BRepAdaptor_Surface as _ASf
+    from OCP.GProp import GProp_GProps as _GPf
+    from OCP.BRepGProp import BRepGProp as _BGf
+    _ef = _EFmap(); _TE.MapShapesAndAncestors_s(sewn, _TEd, _TFa, _ef)
+    _kinds_free = collections.Counter()
+    for _i in range(1, _ef.Extent() + 1):
+        _faces = _ef.FindFromIndex(_i)
+        if _faces.Extent() != 1:
+            continue
+        _f = TopoDS.Face_s(_faces.First()); _ad = _ASf(_f); _t = str(_ad.GetType()).split("_")[-1]
+        _g = _GPf(); _BGf.SurfaceProperties_s(_f, _g)
+        _extra = f" R {_ad.Cylinder().Radius():.4f}" if _t == "Cylinder" else (f" minor {_ad.Torus().MinorRadius():.4f}" if _t == "Torus" else "")
+        _kinds_free[f"{_t}{_extra}"] += 1
+    log(f"  free edges by OWNING face: {dict(_kinds_free)}")
+    # every free edge with owner, curve and midpoint, then pairs by midpoint: the SAME curve built twice with different
+    # end vertices pairs up closely; a curve with no partner means a face lost or never got that boundary
+    from OCP.BRepAdaptor import BRepAdaptor_Curve as _ACf
+    _fe_rows = []
+    for _i in range(1, _ef.Extent() + 1):
+        _faces = _ef.FindFromIndex(_i)
+        if _faces.Extent() != 1:
+            continue
+        _e = TopoDS.Edge_s(_ef.FindKey(_i)); _cu = _ACf(_e); _u0, _u1 = _cu.FirstParameter(), _cu.LastParameter()
+        _pm = _cu.Value(0.5 * (_u0 + _u1)); _pa = _cu.Value(_u0); _pb = _cu.Value(_u1)
+        _fo = TopoDS.Face_s(_faces.First()); _ad = _ASf(_fo); _t = str(_ad.GetType()).split("_")[-1]
+        _own = f"{_t}{' R %.4f' % _ad.Cylinder().Radius() if _t == 'Cylinder' else ''}"
+        _fe_rows.append((np.array([_pm.X(), _pm.Y(), _pm.Z()]), np.array([_pa.X(), _pa.Y(), _pa.Z()]), np.array([_pb.X(), _pb.Y(), _pb.Z()]),
+                         str(_cu.GetType()).split("_")[-1], _own))
+    _used = set()
+    for _a in range(len(_fe_rows)):
+        if _a in _used:
+            continue
+        _best = min((b for b in range(len(_fe_rows)) if b != _a and b not in _used),
+                    key=lambda b: float(np.linalg.norm(_fe_rows[b][0] - _fe_rows[_a][0])), default=None)
+        _ma, _ea0, _ea1, _ca, _oa = _fe_rows[_a]
+        if _best is not None and float(np.linalg.norm(_fe_rows[_best][0] - _ma)) < 1e-2 * diag:
+            _mb, _eb0, _eb1, _cb, _ob = _fe_rows[_best]; _used.update((_a, _best))
+            _end_gap = min(float(np.linalg.norm(_ea0 - _eb0)) + float(np.linalg.norm(_ea1 - _eb1)),
+                           float(np.linalg.norm(_ea0 - _eb1)) + float(np.linalg.norm(_ea1 - _eb0)))
+            log(f"  FREE PAIR {_ca}/{_oa} <-> {_cb}/{_ob}: mid gap {float(np.linalg.norm(_mb - _ma)):.2e}, end-vertex gap {_end_gap:.2e}, "
+                f"mid {np.round(_ma, 2).tolist()}")
+        else:
+            _used.add(_a)
+            log(f"  FREE ALONE {_ca}/{_oa}: mid {np.round(_ma, 2).tolist()} length {float(np.linalg.norm(_ea1 - _ea0)):.3f}")
+    # which regions sit at each free edge, and how well each fits its own vertices: a face boundary that lands 0.5 mm
+    # from its neighbour's (mechparts/1) means some region there does not lie on its surface
+    # plane regions that do NOT lie on their plane (the mixed-region pass only examines curved regions): mechparts/1's
+    # S48 misses its own vertices by 1.4e-3 while every free edge lies on a neighbouring, exactly fitted plane
+    for _Lp, _sp in S.items():
+        if _sp["kind"] != "plane":
+            continue
+        _dv = sdist(_sp, region_verts(_Lp))
+        if float(np.abs(_dv).max()) < 1e-5 * diag:
+            continue
+        _tp = region_tris(_Lp); _nt_p = nt[_tp]
+        _hist = np.histogram(_dv, bins=6)
+        _nbp = collections.Counter(S[M_]["kind"] for M_ in adj.get(_Lp, set()) if M_ in S) if isinstance(adj, dict) else {}
+        log(f"  PLANE NOT ON ITS PLANE S{_Lp}: {len(_tp)} tris, n {np.round(_sp['n'], 5).tolist()} d {_sp['d']:.4f}, "
+            f"vertex distance min {float(_dv.min()):+.2e} max {float(_dv.max()):+.2e}, histogram counts {_hist[0].tolist()} "
+            f"edges {np.round(_hist[1], 4).tolist()}, facet-normal spread {math.degrees(math.acos(max(-1.0, min(1.0, float((_nt_p @ _sp['n']).min()))))):.2f} deg, "
+            f"neighbour kinds {dict(_nbp)}")
+    # distance from each free edge's midpoint and ends to the MESH SURFACE (closest point on the triangles; triangle
+    # centres misled on a 250 mm part with large flat facets), and the region of the nearest triangle
+    import trimesh as _tm
+    _mesh_q = _tm.Trimesh(V, F, process=False)
+    for _m_fe, _e0_fe, _e1_fe, _c_fe, _o_fe in _fe_rows[:12]:
+        _pts_q = np.vstack([_m_fe, _e0_fe, _e1_fe])
+        _cp, _dq, _tq = _tm.proximity.closest_point(_mesh_q, _pts_q)
+        _Ln = int(label[int(_tq[0])])
+        _own = f"S{_Ln}:{S[_Ln]['kind']} own-fit max {float(np.abs(sdist(S[_Ln], region_verts(_Ln))).max()):.1e}" if _Ln in S else f"label {_Ln} (no surface)"
+        _surf_d = f", distance to S{_Ln} {float(abs(sdist(S[_Ln], _m_fe)[0])):.2e}" if _Ln in S else ""
+        log(f"  AT FREE {_c_fe}/{_o_fe} mid {np.round(_m_fe, 2).tolist()}: to mesh mid {_dq[0]:.2e} ends {_dq[1]:.2e}/{_dq[2]:.2e}; "
+            f"nearest triangle in {_own}{_surf_d}")
 if os.environ.get("EB_DEBUG"):
     from OCP.BRepAdaptor import BRepAdaptor_Curve as _AC
     for _i in range(1, min(sew.NbFreeEdges(), 12) + 1):
