@@ -139,11 +139,30 @@ def refine(s, P, cons=()):
     if s["kind"] == "plane":
         return s
     x = to_vec(s)
-    res = lambda x_: sdist(from_vec(s, x_), P)  # noqa: E731
-    for _ in range(12):
-        rr = res(x); step = np.linalg.lstsq(jac(res, x, len(rr)), -rr, rcond=None)[0]; x = x + step
-        if np.linalg.norm(step) < 1e-13 * diag:
+    P_all = P
+    for _trim in range(4):
+        res = lambda x_: sdist(from_vec(s, x_), P)  # noqa: E731
+        for _ in range(12):
+            rr = res(x)
+            if float(np.abs(rr).max()) < 1e-9 * diag:
+                break        # already on the vertices: the numeric Jacobian was 119 of 150 s on mechparts/7
+            step = np.linalg.lstsq(jac(res, x, len(rr)), -rr, rcond=None)[0]; x = x + step
+            if np.linalg.norm(step) < 1e-13 * diag:
+                break
+        # tessellation vertices lie ON the true surface: a few far off it are a neighbour's triangles (gearbox:
+        # 8 of 32 round vertices sat on the tangent top face, R 3.006-3.008 for 3.000). A median-based cut fails
+        # when the median itself is dragged, so trim by quantile: refit on the best 70 %, then take back every
+        # vertex that lies on that surface.
+        r_all = np.abs(sdist(from_vec(s, x), P_all))
+        if float(r_all.max()) < 1e-6 * diag or len(P_all) < 8:
             break
+        if _trim == 0:
+            keep = r_all <= np.quantile(r_all, 0.7)
+        else:
+            keep = r_all <= 1e-5 * diag
+            if keep.sum() < max(4, 0.6 * len(P_all)) or keep.sum() == len(P):
+                break
+        P = P_all[keep]
     if cons:
         g = lambda x_: np.array([c(from_vec(s, x_)) for c in cons])  # noqa: E731
         for _ in range(30):
@@ -207,6 +226,47 @@ for L in all_labels():
         fail(f"region {L} ({kinds[L]}) has no surface fit")
     S[L] = s if s["kind"] == "plane" else refine(s, region_verts(L))
 
+# a triangle of a curved region lying entirely ON an adjacent plane belongs to that plane: where a plane is
+# tangent to a round, regions.py hands it the plane's triangles (gearbox: 8 of 32 round vertices sat on the top
+# face around the R2 holes and dragged the rounds to R 3.006-3.008)
+n_moved = 0
+# OFF by default: on L10_gearbox it also stripped the round's own tangent-line triangles and left 7 free edges
+# (second opinion, DeepSeek, confirmed: off -> 0 free edges, 12 cylinders); it changed no cadbench count elsewhere.
+for L in ([L for L, s in S.items() if s["kind"] != "plane"] if os.environ.get("EB_PLANE_RELABEL") else []):
+    ts = region_tris(L); moved = []
+    for t in ts:
+        for i in range(3):
+            u_ = other(t, F[t][i], F[t][(i + 1) % 3]); M = int(label[u_])
+            if M >= 0 and M in S and S[M]["kind"] == "plane":
+                if (np.abs(sdist(S[M], V[F[t]])).max() < 1e-5 * diag and float(nt[t] @ S[M]["n"]) > 0.99999):
+                    label[t] = M; moved.append(t); break
+    if moved:
+        n_moved += len(moved)
+        if (label == L).sum() >= 3:
+            s_new = fit(L)
+            if s_new is not None:
+                S[L] = refine(s_new, region_verts(L))
+        else:
+            del S[L]
+if n_moved:
+    log(f"{n_moved} plane triangles moved out of curved regions")
+    # moving them can cut a region in two (gearbox: a round split by a hole rim): each piece is its own face
+    for L in [L for L, s in S.items() if s["kind"] != "plane"]:
+        ts = set(region_tris(L).tolist()); pieces = []
+        while ts:
+            st = [ts.pop()]; comp = []
+            while st:
+                t = st.pop(); comp.append(t)
+                for i in range(3):
+                    u_ = other(t, F[t][i], F[t][(i + 1) % 3])
+                    if u_ in ts:
+                        ts.remove(u_); st.append(u_)
+            pieces.append(comp)
+        for comp in sorted(pieces, key=len)[:-1]:
+            newL = len(kinds); kinds.append(S[L]["kind"]); label[comp] = newL; S[newL] = dict(S[L])
+            if len(comp) >= 3:
+                S[newL] = refine(S[newL], V[np.unique(F[comp])])
+
 # a curved region must hug and face its surface; flat facets that merely have their vertices on one sphere
 # (chamfered cube: 20 chamfer faces on the circumscribed sphere) are split back into planes
 for L in list(S):
@@ -215,7 +275,8 @@ for L in list(S):
         continue
     ts = region_tris(L); cen_ = tri[ts].mean(1)
     g_ = sgrad(s, cen_); g_ /= np.maximum(np.linalg.norm(g_, axis=1, keepdims=True), 1e-300)
-    if (np.abs(sdist(s, cen_)).max() < 5e-3 * diag
+    sizes_ = [s.get(k_) for k_ in ("R", "major", "minor") if s.get(k_) is not None]
+    if (np.abs(sdist(s, cen_)).max() < 5e-3 * diag and all(0 < z_ < diag for z_ in sizes_)
             and np.abs(np.einsum("ij,ij->i", g_, nt[ts])).min() > math.cos(math.radians(20))):
         continue
     del S[L]; tset = set(ts.tolist()); seen_t = set()
@@ -284,6 +345,10 @@ def surface_ok(s_, ts):
     P = V[np.unique(F[ts])]; cen = tri[ts].mean(1)
     res = float(np.abs(sdist(s_, P)).max())
     g = sgrad(s_, cen); g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-300)
+    # a surface larger than the part is a flat patch in disguise (guide block: a plane fit as a cylinder R 1.1e6)
+    sizes = [s_.get(k_) for k_ in ("R", "major", "minor") if s_.get(k_) is not None]
+    if any(not (0 < z_ < diag) for z_ in sizes):
+        return False, float("inf")
     ok = (res < 1e-5 * diag and float(np.abs(sdist(s_, cen)).max()) < 2e-3 * diag
           and float(np.abs(np.einsum("ij,ij->i", g, nt[ts])).min()) > math.cos(math.radians(20)))
     return ok, res
@@ -294,6 +359,13 @@ def best_axis_fit(ts, cands):
     for d_, p_, _ in cands:
         for p_try in ([p_, None] if p_ is not None else [None]):
             for s0 in fit_axis(ts, d_, p_try):
+                # the closed-form candidate on the RIGHT axis is already within a hair of the vertices; a wrong
+                # axis or kind is off by a visible amount. Only near-fits pay for a refine.
+                try:
+                    if float(np.abs(sdist(s0, V[np.unique(F[ts])])).max()) > 1e-3 * diag:
+                        continue
+                except Exception:  # noqa: BLE001 - a candidate, not a result
+                    continue
                 try:
                     s1 = refine(s0, V[np.unique(F[ts])]) if s0["kind"] != "sphere" else refine(s0, V[np.unique(F[ts])])
                 except Exception:  # noqa: BLE001 - a candidate, not a result
@@ -330,6 +402,11 @@ for s0_ in sorted(free_t):
                 seen_c.add(u_); st.append(u_)
     if len(comp) < 3:
         continue
+    Pc = V[np.unique(F[comp])]; cc_ = Pc.mean(0); nc_ = np.linalg.svd(Pc - cc_)[2][-1]
+    if np.abs((Pc - cc_) @ nc_).max() < 1e-5 * diag:
+        # a flat unlabelled patch is a plane (regions.py held it back as a possible curved facet)
+        newL = len(kinds); kinds.append("plane"); label[comp] = newL; S[newL] = fit(newL); n_new += 1
+        continue
     b = best_axis_fit(np.array(comp), cands0)
     if b is not None:
         newL = len(kinds); kinds.append(b["kind"]); label[comp] = newL; S[newL] = b; n_new += 1
@@ -351,7 +428,7 @@ for _ in range(50):
 tot_area = float(area.sum())
 for _ in range(10):
     left = np.where(label < 0)[0]
-    if not len(left) or float(area[left].sum()) > 1e-3 * tot_area:
+    if not len(left) or float(area[left].sum()) > 1e-2 * tot_area:
         break
     for t in left:
         share = collections.Counter()
@@ -397,6 +474,9 @@ for L, s in S.items():
 # adjacent regions on one surface are one face
 TOLM = 1e-4 * diag
 merged = True
+tried_union = set()
+tried_absorb = set()
+fragment_cache = {}
 while merged:
     merged = False; adj = adjacency()
     for L in all_labels():
@@ -410,10 +490,20 @@ while merged:
                     # two curved fits of ONE surface: a narrow 45-degree chamfer band reads locally as tilted
                     # cylinders (Schlauchschelle: one cone + 18 oblique "cylinders" that never meet at corners)
                     P_, C_ = sorted((L, M), key=lambda q: int((label == q).sum()))
+                # this check refit EVERY plane/curved neighbour pair on EVERY restart of the loop: 5266 refines,
+                # 79 of 150 s on mechparts/7 (166 cylinders). A failed pair is not retried until a region changes,
+                # and only a smaller region already lying near the larger surface pays for the refit.
+                absorb_key = (P_, C_, int((label == P_).sum()), int((label == C_).sum()))
+                if absorb_key in tried_absorb:
+                    s2 = None
+                else:
+                    tried_absorb.add(absorb_key)
+                    s2 = (None if float(np.abs(sdist(S[C_], region_verts(P_))).max()) > 1e-3 * diag
+                          else refine(S[C_], V[np.unique(F[np.isin(label, [P_, C_])])]))
+            if S[L]["kind"] != S[M]["kind"] and s2 is not None:
                 # judged on a refit over both vertex sets: the curved fit alone may be poor exactly because the
                 # facets took its triangles (cross block: quarter rounds at R 2.4937 instead of 2.5)
                 Pu = V[np.unique(F[np.isin(label, [P_, C_])])]
-                s2 = refine(S[C_], Pu)
                 # vertices alone are not enough: a cylinder's end disk has every vertex on the rim circle.
                 # A facet also FACES like the surface there.
                 tp = region_tris(P_); gn = sgrad(s2, tri[tp].mean(1))
@@ -425,11 +515,44 @@ while merged:
                 if facing and hugs and np.abs(sdist(s2, Pu)).max() < 1e-5 * diag:
                     label[label == P_] = C_; del S[P_]
                     S[C_] = s2; merged = True; break
-            if (S[L]["kind"] != "plane" and S[M]["kind"] != "plane"
-                    and not os.environ.get("EB_NO_UNION_REFIT")):
+            # a pair that failed stays failed until one of its regions grows: the loop restarts after every
+            # merge, and retrying every failed pair made best_axis_fit 1894 calls, 150 of 180 s on the puck
+            pair_key = (L, M, int((label == L).sum()), int((label == M).sum()))
+            # two HEALTHY surfaces are never one: every union that mattered joined a fragment (chamfer strips,
+            # sphere-like patches of a torus). Refitting every pair of mechparts/7's 166 cylinders cost
+            # best_axis_fit 1035 calls and fit_smooth 918 calls, 141 of 200 s.
+            def _fragment(q):
+                # cached per (region, size, surface identity): uncached it was 63612 calls, 127 of 293 s on mechparts/7
+                tq = region_tris(q); ck = (q, len(tq), id(S[q]))
+                if ck not in fragment_cache:
+                    fragment_cache[ck] = len(tq) < 25 or not surface_ok(S[q], tq)[0]
+                return fragment_cache[ck]
+            # no union refit for a pair with a sphere: a sphere has no axis of its own, and best_axis_fit returned
+            # None for every one of the puck's 15 sphere patches (second opinion, DeepSeek: 99 s -> 8.7 s, same result)
+            if (S[L]["kind"] != "plane" and S[M]["kind"] != "plane" and pair_key not in tried_union
+                    and "sphere" not in (S[L]["kind"], S[M]["kind"])
+                    and not os.environ.get("EB_NO_UNION_REFIT") and (_fragment(L) or _fragment(M))):
+                tried_union.add(pair_key)
                 # neither fragment holds the other, but their union may be ONE surface of another kind
                 # (outer 45-degree chamfer of the Schlauchschelle ring: 20 tilted "cylinder" strips of one cone)
                 ts_u = np.where(np.isin(label, [L, M]))[0]; Pu = V[np.unique(F[ts_u])]
+                # first about a known machining axis (puck: 15 sphere-like patches of two torus fillets).
+                # Only axes the pair itself implies: its own revolution axes, or known axes through a sphere
+                # centre. Trying every axis on every pair ran the puck past 12 minutes.
+                own = []
+                for q_ in (S[L], S[M]):
+                    if q_["kind"] in ("cylinder", "cone", "torus"):
+                        own.append([q_["a"], q_["o"], 0.0])
+                    elif q_["kind"] == "sphere":
+                        for c_ in cands0:
+                            p0 = c_[1] if c_[1] is not None else q_["c"]
+                            dq = q_["c"] - p0
+                            if np.linalg.norm(dq - (dq @ c_[0]) * c_[0]) < 1e-3 * diag:
+                                own.append([c_[0], q_["c"], 0.0])
+                b_ax = best_axis_fit(ts_u, own[:6]) if own else None
+                if b_ax is not None:
+                    label[label == M] = L; kinds[L] = b_ax["kind"]; del S[M]; S[L] = b_ax
+                    merged = True; break
                 best_u = None
                 for kind_u in ("cylinder", "cone", "sphere", "torus"):
                     kinds_save = kinds[L]; kinds[L] = kind_u; label_save = label.copy()
@@ -489,6 +612,26 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                         sg = math.copysign(1, dist)
                         cons.append(lambda t, n_=n_, d_=d_, sg=sg: sg * (n_ @ (t["o"] + t["a"] * t["hc"]) - d_) - t["minor"])
                         ncons["torus-plane"] += 1
+            elif (q["kind"] == "cylinder" and kind == "cylinder" and q["R"] >= s["R"] and os.environ.get("EB_CYL_CYL")
+                    and abs(abs(float(s["a"] @ q["a"])) - 1) < 1e-9):
+                # OPT-IN (EB_CYL_CYL=1) until reviewed: fixed mechparts/13 at 2 % but made 7 a +47 % wrong solid,
+                # 14 a -16 % wrong solid and 10 time out; at 2e-4 of R 13 failed again (bd projects-2i0)
+                # parallel cylinders tangent to each other: a blend radius between two arcs (mechparts/7: R 9.652
+                # between R 16 and R 50.8 missed its neighbours by 6.6e-4, 4 corners never met). The smaller one moves.
+                dq = q["o"] - s["o"]; dist_ax = float(np.linalg.norm(dq - (dq @ s["a"]) * s["a"]))
+                for sg_ in (1.0, -1.0):
+                    if abs(dist_ax - (q["R"] + sg_ * s["R"])) < REL * s["R"] and os.environ.get("EB_DEBUG"):
+                        log(f"  cyl-cyl candidate S{L} R {s['R']:.4f} vs S{M} R {q['R']:.4f}: axis distance {dist_ax:.4f}, "
+                            f"R{'+' if sg_ > 0 else '-'}R {q['R'] + sg_ * s['R']:.4f}, mismatch {abs(dist_ax - (q['R'] + sg_ * s['R'])):.2e} "
+                            f"({abs(dist_ax - (q['R'] + sg_ * s['R'])) / s['R']:.1e} of R), shared mesh edges {sum(1 for t_ in region_tris(L) for i_ in range(3) if label[other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])] == M)}")
+                    # 2e-4 of R, not the 2 % used against planes: on mechparts/7 the 12 real tangencies missed by
+                    # 2e-7..1.6e-5 of R, four false ones (R 9.652 vs R 10.935) by 8.6e-4..9.1e-4 and wrecked the solid
+                    if abs(dist_ax - (q["R"] + sg_ * s["R"])) < 2e-4 * s["R"]:
+                        oq, Rq = q["o"], q["R"]
+                        cons.append(lambda t, oq=oq, Rq=Rq, sg_=sg_: float(np.linalg.norm(
+                            (oq - t["o"]) - ((oq - t["o"]) @ t["a"]) * t["a"])) - (Rq + sg_ * t["R"]))
+                        ncons["cyl-cyl"] += 1
+                        break
             elif q["kind"] == "sphere" and kind == "cylinder" and q is not s:
                 qq = q["c"] - s["o"]; off = np.linalg.norm(qq - (qq @ s["a"]) * s["a"])
                 if off < REL * s["R"] and abs(q["R"] - s["R"]) < REL * s["R"]:
@@ -776,7 +919,19 @@ for cid, ch in enumerate(chains):
     while len(pts) < 9:
         pts = densify(pts, surfs)
     made = None
-    ca = common_axis(*surfs)
+    kk_ = {s_["kind"]: s_ for s_ in surfs}
+    if not closed and set(kk_) == {"plane", "cylinder"} and abs(float(kk_["cylinder"]["a"] @ kk_["plane"]["n"])) < 1e-9:
+        # plane parallel to a cylinder axis: the intersection is one or two exact lines (one when tangent).
+        # Projected points on a tangent pair are too soft for the 1e-7 line test (gearbox: a fillet's tangent
+        # edge came out a B-spline and stayed unsewn)
+        cy_, pl_ = kk_["cylinder"], kk_["plane"]
+        dist_ = float(pl_["n"] @ cy_["o"] - pl_["d"]); foot = cy_["o"] - dist_ * pl_["n"]
+        lat = np.cross(cy_["a"], pl_["n"]); off_ = math.sqrt(max(cy_["R"] ** 2 - dist_ ** 2, 0.0))
+        c_mid = pts.mean(0)
+        base_ = min((foot + off_ * lat, foot - off_ * lat), key=lambda b_: np.linalg.norm(np.cross(c_mid - b_, cy_["a"])))
+        if np.linalg.norm(np.cross(pts - base_, cy_["a"]), axis=1).max() < 1e-5 * diag:
+            made = (BRepBuilderAPI_MakeEdge(VA, VB).Edge(), "line")
+    ca = common_axis(*surfs) if made is None else None
     if ca is not None:
         o_, a_ = ca; q_ = pts - o_; hh = q_ @ a_; rr_ = np.linalg.norm(q_ - np.outer(hh, a_), axis=1)
         hr = meridian_meet(surfs, o_, a_, float(hh.mean()), float(rr_.mean()))
@@ -847,7 +1002,28 @@ for L, s in S.items():
     cen = tri[ts].mean(1)
     sgn = float((sgrad(s, cen) * nt[ts] * area[ts, None]).sum())
     gs = geom_surface(s, L)
-    if not region_loops[L]:
+    apex_face = None
+    if s["kind"] == "cone" and len(region_loops[L]) == 1 and len(region_loops[L][0]) == 1:
+        # a cone that reaches its apex has one boundary circle and the apex inside: a face from that single wire
+        # crashed OCCT (segfault, L01_cone). Build the exact lateral face from apex to base instead.
+        hh_ = (region_verts(L) - s["o"]) @ s["a"]; h_apex = -s["k1"] / s["k0"]
+        if min(abs(hh_.min() - h_apex), abs(hh_.max() - h_apex)) < 1e-3 * diag:
+            from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone
+            h_base = float(hh_.max() if abs(hh_.max() - h_apex) > abs(hh_.min() - h_apex) else hh_.min())
+            dir_ = s["a"] * math.copysign(1.0, h_base - h_apex); r_base = s["k0"] * h_base + s["k1"]
+            prim = BRepPrimAPI_MakeCone(gp_Ax2(pnt(s["o"] + s["a"] * h_apex), gdir(dir_)), 0.0, float(r_base),
+                                        float(abs(h_base - h_apex))).Shape()
+            from OCP.GeomAbs import GeomAbs_Cone as _GCone
+            from OCP.BRepAdaptor import BRepAdaptor_Surface as _BAS
+            from OCP.TopAbs import TopAbs_FACE
+            exa = TopExp_Explorer(prim, TopAbs_FACE)
+            while exa.More():
+                if _BAS(TopoDS.Face_s(exa.Current())).GetType() == _GCone:
+                    apex_face = TopoDS.Face_s(exa.Current())
+                exa.Next()
+    if apex_face is not None:
+        face = apex_face; sgn = 1.0          # the primitive's lateral face is already outward
+    elif not region_loops[L]:
         face = BRepBuilderAPI_MakeFace(gs, 1e-7).Face()
     else:
         face = TopoDS_Face(); bb.MakeFace(face, gs, TopLoc_Location(), 1e-7)
@@ -869,12 +1045,37 @@ for L, s in S.items():
 sew.Perform()
 sewn = sew.SewedShape()
 log(f"sewn {len(S)} faces, free edges {sew.NbFreeEdges()}, multiple edges {sew.NbMultipleEdges()}")
+if os.environ.get("EB_DEBUG"):
+    from OCP.BRepAdaptor import BRepAdaptor_Curve as _AC
+    for _i in range(1, min(sew.NbFreeEdges(), 12) + 1):
+        _c = _AC(sew.FreeEdge(_i)); _u = 0.5 * (_c.FirstParameter() + _c.LastParameter()); _p = _c.Value(_u)
+        _pp = np.array([_p.X(), _p.Y(), _p.Z()])
+        near = sorted(S, key=lambda L_: abs(float(sdist(S[L_], _pp)[0])))[:2]
+        log(f"  FREE edge {_i}: {str(_c.GetType()).split('_')[-1]} mid {np.round(_pp, 3).tolist()} "
+            f"length {_c.LastParameter() - _c.FirstParameter():.3f} nearest surfaces "
+            + ", ".join(f"S{L_}:{S[L_]['kind']}" for L_ in near))
 ms = BRepBuilderAPI_MakeSolid()
 ex = TopExp_Explorer(sewn, TopAbs_SHELL)
+n_shells = 0
 while ex.More():
-    ms.Add(TopoDS.Shell_s(ex.Current())); ex.Next()
-fx = ShapeFix_Solid(ms.Solid()); fx.Perform()
-shape = fx.Solid()
+    ms.Add(TopoDS.Shell_s(ex.Current())); ex.Next(); n_shells += 1
+if n_shells == 0:
+    # sewing a single closed face (a whole sphere) returns the face, not a shell: the solid came out empty and
+    # the STEP read back as a NULL shape (L01_sphere)
+    from OCP.TopoDS import TopoDS_Shell
+    from OCP.TopAbs import TopAbs_FACE as _TAF
+    sh_ = TopoDS_Shell(); bb.MakeShell(sh_)
+    exf = TopExp_Explorer(sewn, _TAF)
+    while exf.More():
+        bb.Add(sh_, exf.Current()); exf.Next()
+    ms.Add(sh_)
+try:
+    fx = ShapeFix_Solid(ms.Solid()); fx.Perform()
+    shape = fx.Solid()
+except Exception as exc:  # noqa: BLE001 - L10_gearbox: Geom_TrimmedCurve range error inside the healer
+    from OCP.BRepLib import BRepLib
+    log(f"  ShapeFix_Solid failed ({str(exc)[:60]}); orienting the closed solid directly")
+    shape = ms.Solid(); BRepLib.OrientClosedSolid_s(shape)
 log(f"solid valid {BRepCheck_Analyzer(shape).IsValid()}  ({time.time() - T0:.1f} s)")
 w = STEPControl_Writer(); w.Transfer(shape, STEPControl_AsIs); w.Write(str(out))
 mm = measure(out, _mesh(src), samples=300)
