@@ -72,6 +72,8 @@ def convert_native(
     no_unify: bool = False,
     verify: bool = True,
     timeout: float | None = None,
+    smooth_tol: float | None = None,
+    smooth_angle: float | None = None,
 ) -> dict:
     binary = native_binary()
     if binary is None:
@@ -101,6 +103,10 @@ def convert_native(
         # Skip the binary's re-read + volume check; the caller verifies the
         # output itself. Meaningfully faster on large faceted meshes.
         cmd += ["--no-verify"]
+    if smooth_tol is not None:
+        cmd += ["--smooth-tol", str(smooth_tol)]
+    if smooth_angle is not None:
+        cmd += ["--smooth-angle", str(smooth_angle)]
 
     seconds = timeout if timeout is not None else _DEFAULT_TIMEOUT
     try:

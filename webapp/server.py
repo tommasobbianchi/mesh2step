@@ -66,7 +66,7 @@ def _app_version() -> str:
     import re
     import subprocess
     try:
-        git = ["git", "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"]
+        git = ["git", "-C", str(Path(__file__).parent), "describe", "--tags", "--always"]
         sha = subprocess.run(git, capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         sha = ""
@@ -433,6 +433,48 @@ def _feature_upgrade(stl_path, out_path) -> dict | None:
     return res
 
 
+# A trueform STEP whose re-read volume is far off the mesh has a face that did not survive the
+# write (Schlauchschelle_param v2: -89%, the outer ring wall lost). A tighter fit tolerance, then a
+# stricter near-flat gate, build that face differently; a retry is kept only if it lands closer
+# AND recognises the same number of cylinders -- it repairs the write, it must not trade shape for
+# volume (measured: L08_pillow_block 5 -> 3 built cylinders, L04_chamf_cube_recon 0 -> 5 invented,
+# normal CADScore 73.14 -> 72.60 without this condition).
+RETRY_DV_PCT = 1.0
+RETRY_LADDER = ({"smooth_tol": 0.01}, {"smooth_angle": 1.0})
+
+
+def _volume_error_pct(res: dict) -> float:
+    m, s = res.get("meshVolumeMM3"), res.get("stepVolumeMM3")
+    return abs(s - m) / abs(m) * 100.0 if m and s is not None else float("inf")
+
+
+def _retry_broken_trueform(stl_path, out_path, res, *, schema, unify_angle) -> dict:
+    if res.get("solids") != 1 or res.get("openShells"):
+        return res  # an open or multi-body result has no single volume to compare
+    best, err = res, _volume_error_pct(res)
+    for i, extra in enumerate(RETRY_LADDER):
+        if err <= RETRY_DV_PCT:
+            break
+        cand = Path(out_path).with_name(f"retry{i}.step")
+        try:
+            r = convert_native(stl_path, cand, engine="trueform", schema=schema,
+                               unify_angle=unify_angle, timeout=CONVERT_TIMEOUT_S, **extra)
+        except (NativeTimeout, NativeEngineError):
+            continue
+        e = _volume_error_pct(r)
+        sound = (r.get("ok") and r.get("solids") == 1 and not r.get("openShells")
+                 and r.get("smoothBuiltCylinders") == res.get("smoothBuiltCylinders"))
+        if sound and e < err and cand.exists():
+            cand.replace(out_path)
+            flag = " ".join(f"--{k.replace('_', '-')} {v}" for k, v in extra.items())
+            r["output"] = str(out_path)
+            note = (f"the first build's STEP was {err:.1f}% off the mesh volume; "
+                    f"rebuilt with {flag} ({e:.2f}%)")
+            r["warnings"] = [note, *(r.get("warnings") or [])]
+            best, err = r, e
+    return best
+
+
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info, feature=False) -> dict:
@@ -460,6 +502,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             no_unify=(engine == "faceted" and merge_coplanar_angle is None),
             timeout=CONVERT_TIMEOUT_S,
         )
+        if engine == "trueform" and res.get("ok"):
+            res = _retry_broken_trueform(stl_path, out_path, res, schema=schema,
+                                         unify_angle=native_unify)
         if (engine == "trueform" and res.get("ok")
                 and (feature or os.environ.get("MESH2STEP_FEATURE") == "1")):
             res = _feature_upgrade(stl_path, out_path) or res
@@ -807,7 +852,8 @@ def job_status(job: str):
     if not fut.done():
         return {"ok": True, "pending": True, "job": job,
                 "elapsed": round(time.time() - entry["ts"], 1)}
-    _PENDING.pop(job, None)
+    # kept until the TTL purge or the MAX_PENDING_JOBS cap: a client whose connection dropped
+    # on the response carrying the result polls again and must get the same answer, not a 404
     try:
         return fut.result()
     except HTTPException as e:

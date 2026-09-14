@@ -809,12 +809,28 @@ convertBtn.addEventListener('click', async () => {
 
 async function waitForJob(job) {
   const started = Date.now();
+  // A dropped connection or a proxy 5xx mid-poll is not a failed conversion: the server keeps
+  // working, so keep asking. Only ~2 minutes of nothing but misses gives up.
+  let misses = 0;
   for (;;) {
     await new Promise((r) => setTimeout(r, 2000));
     const secs = Math.round((Date.now() - started) / 1000);
+    let res;
+    try {
+      res = await fetch(`api/job/${job}`);
+    } catch (e) {
+      res = null;
+    }
+    // our own server always answers JSON (a real 502/504 carries its reason in `detail`);
+    // a proxy or tunnel hiccup answers HTML or nothing at all
+    const data = res ? await res.json().catch(() => null) : null;
+    if (!data) {
+      if (++misses >= 60) throw new Error('lost contact with the server while converting');
+      statusEl.textContent = `Connection interrupted — retrying (${secs}s). The server keeps converting.`;
+      continue;
+    }
+    misses = 0;
     statusEl.textContent = `Still converting — ${secs}s. Large models take a few minutes.`;
-    const res = await fetch(`api/job/${job}`);
-    const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'server error');
     if (!data.pending) return data;
   }
