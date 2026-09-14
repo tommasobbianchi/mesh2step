@@ -1,0 +1,205 @@
+--- a/src/refit_build.cpp
++++ b/src/refit_build.cpp
+@@ -52,6 +52,7 @@
+ #include <ElCLib.hxx>
+ #include <Geom2d_Curve.hxx>
+ #include <Geom2d_Line.hxx>
++#include <Geom_BSplineCurve.hxx>
+ #include <Geom_Circle.hxx>
+ #include <Geom_Curve.hxx>
+ #include <Geom_CylindricalSurface.hxx>
+@@ -77,6 +78,9 @@
+ #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+ #include <TopTools_IndexedMapOfShape.hxx>
+ #include <TopTools_ListOfShape.hxx>
++#include <TColgp_Array1OfPnt.hxx>
++#include <TColStd_Array1OfInteger.hxx>
++#include <TColStd_Array1OfReal.hxx>
+ #include <TopAbs.hxx>
+ #include <TopoDS.hxx>
+ #include <TopoDS_Edge.hxx>
+@@ -3934,6 +3938,148 @@
+     return std::max(dev(m), std::max(dev(a), dev(b)));
+ }
+ 
++// MIXED analytic|facet boundary defect fix.
++//
++// A chain with one analytic side and one faceted-island side is kept as the raw
++// mesh polyline (rebuildCollapsed, mixed branch), so an analytic cylinder face
++// ends up bounded by straight chords that do not lie on its own surface. OCCT
++// tolerates that in memory but the STEP re-read splits the wire at the
++// off-surface chord and the solid loses almost all its volume (schlauch:
++// 548.9 -> 60.3 mm3, `ds_schlauch_findings.md`). The chord's faceted neighbour
++// is a `makeFacet` plane that shares the SAME `meshE[eid]`, so the fix must
++// replace the shared edge, not just the cylinder face's copy.
++//
++// Fix: for each chord whose faceted neighbour is a known island triangle,
++// replace the edge's 3D curve with a degree-2 BSpline that starts and ends on
++// the two mesh vertices and passes through the chord midpoint projected onto the
++// cylinder. The edge then lies on the cylinder for its own face and within the
++// facet plane's tolerance, so neither face carries a boundary off its surface.
++// Restricted to the cylinder side: a plane analytic side already carries its
++// chords on (or within fit tolerance of) its own plane.
++//
++// The exact plane/cylinder conic was tried first and rejected (measured): OCCT's
++// makeEllipseArc edge is not sameparameter and leaves the adjacent facet face
++// BRepCheck-BadOrientationOfSubshape, while a rebuilt conic edge only validates
++// in one of its two vertex/parameter orientations and selecting the correct arc
++// through BRepBuilderAPI_MakeEdge is unreliable (the 351-degree arc is produced
++// whenever the endpoint parameters straddle 0). The BSpline is a plain
++// sameparameter edge valid in both faces.
++
++// Radially project p onto the analytic cylinder (same axis frame the face uses).
++gp_Pnt projectOntoCylinder(const gp_Cylinder& cyl, const gp_Pnt& p) {
++    const gp_Pnt o = cyl.Location();
++    const gp_Dir a = cyl.Axis().Direction();
++    const gp_Vec v(o, p);
++    const double ax = v.Dot(gp_Vec(a));
++    gp_Vec rad = v - gp_Vec(a) * ax;
++    const double rl = rad.Magnitude();
++    if (rl < Precision::Confusion()) {
++        const gp_Dir x = cyl.Position().XDirection();
++        return o.Translated(gp_Vec(a) * ax + gp_Vec(x) * cyl.Radius());
++    }
++    rad.Multiply(1.0 / rl);
++    return o.Translated(gp_Vec(a) * ax + rad * cyl.Radius());
++}
++
++// Shared boundary of the analytic cylinder and one facet triangle. Endpoints
++// are the chord's two mesh vertices; the curve passes exactly through the chord
++// midpoint projected onto the cylinder (control point 2q - m makes the Bezier
++// midpoint (P0+2P1+P2)/4 equal q).
++TopoDS_Edge cylinderChordEdge(const gp_Cylinder& cyl, const TopoDS_Vertex& v1,
++                              const TopoDS_Vertex& v2, const gp_Pnt& mid) {
++    if (v1.IsNull() || v2.IsNull()) return {};
++    const gp_Pnt p1 = BRep_Tool::Pnt(v1);
++    const gp_Pnt p2 = BRep_Tool::Pnt(v2);
++    const gp_Pnt q = projectOntoCylinder(cyl, mid);
++    const gp_Pnt ctrl(2.0 * q.XYZ() - 0.5 * (p1.XYZ() + p2.XYZ()));
++    TColgp_Array1OfPnt pts(1, 3);
++    pts.SetValue(1, p1);
++    pts.SetValue(2, ctrl);
++    pts.SetValue(3, p2);
++    TColStd_Array1OfReal knots(1, 2);
++    knots.SetValue(1, 0.0);
++    knots.SetValue(2, 1.0);
++    TColStd_Array1OfInteger mults(1, 2);
++    mults.SetValue(1, 3);
++    mults.SetValue(2, 3);
++    try {
++        Handle(Geom_BSplineCurve) bsp = new Geom_BSplineCurve(pts, knots, mults, 2);
++        BRepBuilderAPI_MakeEdge me(bsp, v1, v2);
++        if (me.IsDone()) return me.Edge();
++    } catch (const Standard_Failure&) {
++    }
++    return {};
++}
++
++int recurveMixedCylinderEdges(const MeshView& mv, const std::vector<TopoDS_Vertex>& verts,
++                              const Region& cyl, const BoundaryChain& ch,
++                              const std::vector<int>& edgeFacetTri,
++                              std::vector<TopoDS_Edge>& meshE, std::vector<char>& edgeOk) {
++    if (cyl.type != SurfType::Cylinder || cyl.radius <= 0.0) return 0;
++    gp_Cylinder gc = cylForIntersect(cyl);
++    const double sew = (mv.sewTol > 0.0) ? mv.sewTol : Precision::Confusion();
++    const double acceptR = std::max(sew * 50.0, 1.0);
++    int nChanged = 0;
++    for (int eid : ch.meshEdges) {
++        if (eid < 0 || (size_t)eid >= mv.nEdge || !edgeOk[(size_t)eid]) continue;
++        if ((size_t)eid >= edgeFacetTri.size()) continue;
++        const int fk = edgeFacetTri[(size_t)eid];
++        if (fk < 0 || (size_t)fk >= mv.nTri || !mv.compTris || mv.compTris[fk] < 0) continue;
++        const auto& ev = mv.compEdges[eid];
++        if (ev.first < 0 || ev.second < 0 || (size_t)ev.first >= verts.size() ||
++            (size_t)ev.second >= verts.size())
++            continue;
++        const TopoDS_Vertex& v1 = verts[(size_t)ev.first];
++        const TopoDS_Vertex& v2 = verts[(size_t)ev.second];
++        if (v1.IsNull() || v2.IsNull()) continue;
++        const gp_Pnt a = BRep_Tool::Pnt(v1), b = BRep_Tool::Pnt(v2);
++        const gp_Pnt m(0.5 * (a.XYZ() + b.XYZ()));
++        const int* T = mv.tris[mv.compTris[fk]];
++        const gp_Pnt A(mv.pts[T[0]]), B(mv.pts[T[1]]), Cp(mv.pts[T[2]]);
++        gp_Vec n = gp_Vec(A, B).Crossed(gp_Vec(A, Cp));
++        if (n.SquareMagnitude() < 1e-24) continue;
++        gp_Pln pl(A, gp_Dir(n));
++        const double H = std::fabs(cyl.vMax - cyl.vMin);
++        IntAna_QuadQuadGeo iq(pl, gc, Precision::Angular(),
++                              std::max(sew, Precision::Confusion()), H);
++        if (!iq.IsDone()) continue;
++        const IntAna_ResultType ty = iq.TypeInter();
++        if (ty == IntAna_Empty || ty == IntAna_Same || ty == IntAna_NoGeometricSolution) continue;
++        AnalyticCurve best;
++        double bestR = 1e300;
++        auto consider = [&](const AnalyticCurve& c) {
++            const double r = std::max(curveResidual(c, a),
++                             std::max(curveResidual(c, b), curveResidual(c, m)));
++            if (r < bestR) { bestR = r; best = c; }
++        };
++        const int nsol = iq.NbSolutions();
++        for (int i = 1; i <= nsol; ++i) {
++            try {
++                if (ty == IntAna_Line || ty == IntAna_PointAndCircle) {
++                    AnalyticCurve c; c.kind = AnalyticCurve::Lin; c.lin = iq.Line(i); consider(c);
++                }
++                if (ty == IntAna_Circle || ty == IntAna_PointAndCircle) {
++                    AnalyticCurve c; c.kind = AnalyticCurve::Circ; c.circ = iq.Circle(i); consider(c);
++                }
++                if (ty == IntAna_Ellipse) {
++                    AnalyticCurve c; c.kind = AnalyticCurve::Elips; c.elips = iq.Ellipse(i); consider(c);
++                }
++            } catch (const Standard_Failure&) {
++            }
++        }
++        if (best.kind == AnalyticCurve::None || bestR > acceptR) continue;
++        TopoDS_Edge e = cylinderChordEdge(gc, v1, v2, m);
++        if (e.IsNull()) continue;
++        e = orientEdgeFromTo(e, v1);
++        if (e.IsNull()) continue;
++        meshE[(size_t)eid] = e;
++        bumpVertexTol(v1, curveResidual(best, a));
++        bumpVertexTol(v2, curveResidual(best, b));
++        ++nChanged;
++    }
++    return nChanged;
++}
++
+ // --- cascade ladder (D1 §1). Shared helper callable from A/B/C; wave-2 uses B. ---
+ 
+ enum class CascadeRung { None, U0, U1, U2 };
+@@ -4748,6 +4894,22 @@
+             rebuildMeshEdges();
+         };
+ 
++        // edgeFacetTri[e] = one island triangle that uses mesh edge e, i.e. the
++        // faceted face on the other side of a mixed analytic|island chain. Built
++        // once: an edge between an analytic region and an island has exactly one
++        // island-side triangle, and it is the plane whose intersection with the
++        // analytic cylinder the shared edge must follow (recurveMixedCylinderEdges).
++        std::vector<int> edgeFacetTri(mv.nEdge, -1);
++        for (size_t k = 0; k < mv.nTri; k++) {
++            const int rid = (k < rs.triRegion.size()) ? rs.triRegion[k] : -1;
++            if (rid >= 0) continue;   // island triangle only (triRegion == -1 <=> island >= 0)
++            for (int s = 0; s < 3; s++) {
++                const int e = mv.triEdges[k][s];
++                if (e >= 0 && (size_t)e < mv.nEdge && edgeFacetTri[(size_t)e] < 0)
++                    edgeFacetTri[(size_t)e] = (int)k;
++            }
++        }
++
+         std::vector<char> collapsed(rs.chains.size(), 0);
+         std::vector<ChainGeom> geom(rs.chains.size());
+         // Per-chain edge-failure ledger (DECISION §5). Producer: chain build.
+@@ -4803,6 +4965,12 @@
+                                                           verts[(size_t)ev.second], an);
+                             rs.stats.maxEdgeTol = std::max(rs.stats.maxEdgeTol, d);
+                         }
++                        // Recurve the chords on the shared edge so the analytic
++                        // cylinder's boundary lies on its own surface (and on the
++                        // facet triangle's plane). See recurveMixedCylinderEdges.
++                        if (an && an->type == SurfType::Cylinder)
++                            recurveMixedCylinderEdges(mv, verts, *an, ch, edgeFacetTri, meshE,
++                                                      edgeOk);
+                     }
+                     { DIAG_SKIP(__LINE__); continue; }
+                 }
