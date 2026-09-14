@@ -917,10 +917,11 @@ def _result_mesh(step_path: Path) -> dict:
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.STEPControl import STEPControl_Reader
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
-    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
 
     r = STEPControl_Reader()
     if r.ReadFile(str(step_path)) != 1:
@@ -946,6 +947,13 @@ def _result_mesh(step_path: Path) -> dict:
             continue
         ad = BRepAdaptor_Surface(f)
         kind = kinds.get(ad.GetType(), "other")
+        if kind == "plane":
+            fe = TopTools_IndexedMapOfShape()
+            TopExp.MapShapes_s(f, TopAbs_EDGE, fe)
+            if fe.Extent() == 3:
+                # ponytail: a triangular plane is a leftover mesh facet; a real triangular CAD face
+                # would be mislabelled too, rare enough for a preview
+                kind = "facet"
         face = {"type": kind}
         if kind == "cylinder":
             face["radius"] = round(ad.Cylinder().Radius(), 4)
@@ -961,8 +969,32 @@ def _result_mesh(step_path: Path) -> dict:
         faces.append(face)
     positions = (np.concatenate(pos) if pos else np.zeros((0, 3))).astype(np.float32)
     face_ids = np.concatenate(ids) if ids else np.zeros(0, dtype=np.uint32)
+    # every B-Rep edge as line segments: the face boundaries are what tells one clean plane from a
+    # field of mesh facets, and shading alone hides it
+    from itertools import pairwise
+
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    em = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, em)
+    segs = []
+    for i in range(1, em.Extent() + 1):
+        e = TopoDS.Edge_s(em.FindKey(i))
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        try:
+            c = BRepAdaptor_Curve(e)
+            d = GCPnts_QuasiUniformDeflection(c, 1e-3 * diag)
+            pts = [d.Value(k).Coord() for k in range(1, d.NbPoints() + 1)] if d.IsDone() else []
+        except Exception:  # noqa: BLE001 - one unsampleable edge must not cost the preview
+            pts = []
+        if len(pts) < 2:
+            pts = [c.Value(c.FirstParameter()).Coord(), c.Value(c.LastParameter()).Coord()]
+        segs.extend(pairwise(pts))
+    edges = np.asarray(segs, dtype=np.float32).reshape(-1, 3)
     return {"positions": base64.b64encode(positions.tobytes()).decode(),
             "faceIds": base64.b64encode(face_ids.tobytes()).decode(),
+            "edges": base64.b64encode(edges.tobytes()).decode(),
             "faces": faces}
 
 
@@ -971,7 +1003,7 @@ def result_mesh(token: str):
     job = _JOBS.get(token)
     if not job or not job["path"].exists():
         raise HTTPException(404, "result expired or not found")
-    cache = job["path"].with_suffix(".preview.json")
+    cache = job["path"].with_suffix(".preview3.json")   # v3: edges + facet faces
     if not cache.exists():
         cache.write_text(json.dumps(_result_mesh(job["path"])))
     return Response(cache.read_text(), media_type="application/json")

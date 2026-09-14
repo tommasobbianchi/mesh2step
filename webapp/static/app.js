@@ -214,9 +214,26 @@ for (const id of ['file-input', 'file-input-2']) {
 }
 
 // ---- result preview: the written STEP, coloured by what each face was rebuilt as ----
-const FACE_COLORS = { plane: 0x8fb3d9, cylinder: 0xe4572e, cone: 0xf5a623, sphere: 0xb86bff, torus: 0x3fb68b, other: 0x9a9a9a };
-const resultMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.05, roughness: 0.7, side: THREE.DoubleSide });
+const FACE_COLORS = { plane: 0x5b8fd6, facet: 0xff2fb3, cylinder: 0xe4572e, cone: 0xf5a623, sphere: 0xb86bff, torus: 0x3fb68b, other: 0xc8c8c8 };
+const resultMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.05, roughness: 0.7, side: THREE.DoubleSide,
+  flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });   // offset: edges draw on top
 let resultMesh = null;
+let resultEdges = null;
+let leftoverMesh = null;
+const leftoverMaterial = new THREE.MeshBasicMaterial({ color: FACE_COLORS.facet, side: THREE.DoubleSide, depthTest: true });
+let leftoverBox = null;
+const focusBtn = document.getElementById('focus-leftovers');
+focusBtn.addEventListener('click', () => {
+  if (!leftoverBox) return;
+  const size = leftoverBox.getSize(new THREE.Vector3()); const center = leftoverBox.getCenter(new THREE.Vector3());
+  const d = Math.max(size.x, size.y, size.z, 1) * 2.2;
+  controls.target.copy(center);
+  camera.position.copy(center).add(camera.position.clone().sub(controls.target).normalize().multiplyScalar(d || 10));
+  camera.position.copy(center).add(new THREE.Vector3(1, 0.8, 1).normalize().multiplyScalar(d));
+  camera.near = d / 200; camera.updateProjectionMatrix();
+  viewSelect.value = 'leftovers'; applyView();
+});
+const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x0b0b10 });
 let resultFaces = [];
 let resultFaceIds = null;
 const viewSelect = document.getElementById('view-select');
@@ -224,8 +241,11 @@ const faceInfo = document.getElementById('face-info');
 
 function clearResultPreview() {
   if (resultMesh) { scene.remove(resultMesh); resultMesh.geometry.dispose(); resultMesh = null; }
+  if (resultEdges) { scene.remove(resultEdges); resultEdges.geometry.dispose(); resultEdges = null; }
+  if (leftoverMesh) { scene.remove(leftoverMesh); leftoverMesh.geometry.dispose(); leftoverMesh = null; }
   resultFaces = []; resultFaceIds = null;
   viewSelect.value = 'mesh'; viewSelect.disabled = true;
+  leftoverBox = null; focusBtn.disabled = true;
   faceInfo.textContent = '';
   if (currentMesh) currentMesh.visible = true;
 }
@@ -234,6 +254,14 @@ function applyView() {
   const v = viewSelect.value;
   if (currentMesh) currentMesh.visible = v !== 'result';
   if (resultMesh) resultMesh.visible = v !== 'mesh';
+  if (resultEdges) resultEdges.visible = v === 'result' || v === 'both';
+  if (leftoverMesh) leftoverMesh.visible = v !== 'mesh';
+  const ghost = v === 'leftovers';
+  resultMaterial.transparent = ghost; resultMaterial.opacity = ghost ? 0.12 : 1; resultMaterial.depthWrite = !ghost;
+  leftoverMaterial.depthTest = !ghost;          // in the leftovers view they show through every other face
+  if (leftoverMesh) leftoverMesh.renderOrder = ghost ? 2 : 0;
+  resultMaterial.needsUpdate = true; leftoverMaterial.needsUpdate = true;
+  if (currentMesh && ghost) currentMesh.visible = false;
   if (currentMesh) currentMesh.traverse((c) => { if (c.isMesh) { c.material.transparent = v === 'both'; c.material.opacity = v === 'both' ? 0.25 : 1; } });
 }
 viewSelect.addEventListener('change', applyView);
@@ -250,8 +278,14 @@ async function showResultPreview(token) {
     const ids = new Uint32Array(b64(d.faceIds));
     const col = new Float32Array(pos.length);
     const c = new THREE.Color();
+    // each face its own shade of its type colour: neighbouring faces separate even where edges are dense
+    const hsl = {};
     for (let t = 0; t < ids.length; t++) {
-      c.setHex(FACE_COLORS[d.faces[ids[t]].type] ?? FACE_COLORS.other);
+      const fid = ids[t];
+      c.setHex(FACE_COLORS[d.faces[fid].type] ?? FACE_COLORS.other);
+      c.getHSL(hsl);
+      const jitter = (((fid * 2654435761) >>> 0) % 1000) / 1000 - 0.5;   // stable per face
+      c.setHSL(hsl.h, hsl.s, Math.min(0.85, Math.max(0.2, hsl.l + jitter * 0.22)));
       for (let k = 0; k < 3; k++) col.set([c.r, c.g, c.b], (t * 3 + k) * 3);
     }
     const g = new THREE.BufferGeometry();
@@ -260,12 +294,34 @@ async function showResultPreview(token) {
     g.computeVertexNormals();
     resultMesh = new THREE.Mesh(g, resultMaterial);
     resultFaces = d.faces; resultFaceIds = ids;
+    const fbox = new THREE.Box3(); const tmp = new THREE.Vector3();
+    for (let t = 0; t < ids.length; t++) {
+      if (d.faces[ids[t]].type !== 'facet') continue;
+      for (let k = 0; k < 3; k++) fbox.expandByPoint(tmp.fromArray(pos, (t * 3 + k) * 3));
+    }
+    leftoverBox = fbox.isEmpty() ? null : fbox;
+    focusBtn.disabled = !leftoverBox;
     scene.add(resultMesh);
+    const lp = [];
+    for (let t = 0; t < ids.length; t++) if (d.faces[ids[t]].type === 'facet') for (let k = 0; k < 9; k++) lp.push(pos[t * 9 + k]);
+    if (lp.length) {
+      const lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lp), 3));
+      leftoverMesh = new THREE.Mesh(lg, leftoverMaterial);
+      scene.add(leftoverMesh);
+    }
+    if (d.edges) {
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(b64(d.edges)), 3));
+      resultEdges = new THREE.LineSegments(eg, edgeMaterial);
+      scene.add(resultEdges);
+    }
     viewSelect.disabled = false; viewSelect.value = 'result'; applyView();
     const n = (k) => d.faces.filter((f) => f.type === k).length;
     faceInfo.textContent = `Result: ${n('cylinder')} cylinders (red) · ${n('plane')} planes (blue)`
+      + (n('facet') ? ` · ${n('facet')} leftover mesh triangles (magenta)` : '')
       + (n('cone') + n('sphere') + n('torus') ? ` · ${n('cone') + n('sphere') + n('torus')} other curved` : '')
-      + (n('other') ? ` · ${n('other')} freeform (grey)` : '') + ' — hover a face for details';
+      + (n('other') ? ` · ${n('other')} freeform (light grey)` : '') + ` · ${d.faces.length} faces in total — dark lines are face boundaries, hover a face for details`;
   } catch (e) {
     faceInfo.textContent = 'Result preview unavailable: ' + e.message;
   }

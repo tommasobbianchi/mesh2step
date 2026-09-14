@@ -20,8 +20,11 @@ def test_the_result_preview_tags_every_triangle_with_its_face():
     pos = np.frombuffer(base64.b64decode(d["positions"]), dtype=np.float32).reshape(-1, 9)
     ids = np.frombuffer(base64.b64decode(d["faceIds"]), dtype=np.uint32)
     assert len(pos) == len(ids) >= 12
-    assert {f["type"] for f in d["faces"]} == {"plane"} and ids.max() == len(d["faces"]) - 1
+    # a faceted box is 12 triangles: every face is a leftover mesh facet, not a rebuilt plane
+    assert {f["type"] for f in d["faces"]} == {"facet"} and ids.max() == len(d["faces"]) - 1
     assert np.allclose(np.abs(pos).max(), 5.0, atol=1e-3)   # same coordinates as the mesh
+    edges = np.frombuffer(base64.b64decode(d["edges"]), dtype=np.float32).reshape(-1, 2, 3)
+    assert len(edges) >= 12   # a box has 12 edges, faceted diagonals add more
 
 
 def test_an_unknown_token_has_no_preview():
