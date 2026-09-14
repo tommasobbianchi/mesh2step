@@ -481,9 +481,25 @@ merged = True
 tried_union = set()
 tried_absorb = set()
 tried_same = set()
+union_stats = collections.Counter()   # EB_UNION_STATS=1: which union attempts ever succeed, by the pair's kinds
 fragment_cache = {}
+# the adjacency map is built ONCE and patched after each merge: rebuilding it from every mesh edge on every restart of
+# this loop was 1879 calls and 57 of 300 s on mechparts/1 (24k triangles). A merged-away region's neighbours pass to the
+# region that absorbed it, found through one remembered triangle of the vanished region.
+adj = adjacency()
+rep_t = {L_: int(np.argmax(label == L_)) for L_ in S}
+prev_S = set(S)
 while merged:
-    merged = False; adj = adjacency()
+    merged = False
+    for g_ in prev_S - set(S):
+        k_ = int(label[rep_t[g_]])
+        for n_ in adj.pop(g_, set()):
+            adj[n_].discard(g_)
+            if n_ != k_ and k_ >= 0:
+                adj[n_].add(k_); adj[k_].add(n_)
+        if k_ >= 0:
+            adj[k_].discard(g_); adj[k_].discard(k_)
+    prev_S = set(S)
     for L in all_labels():
         for M in sorted(adj[L]):
             if S[L]["kind"] != S[M]["kind"]:
@@ -554,12 +570,21 @@ while merged:
                             dq = q_["c"] - p0
                             if np.linalg.norm(dq - (dq @ c_[0]) * c_[0]) < 1e-3 * diag:
                                 own.append([c_[0], q_["c"], 0.0])
+                if not os.environ.get("EB_UNION_MIXED") and S[L]["kind"] != S[M]["kind"]:
+                    # same-kind only (EB_UNION_MIXED=1 restores mixed pairs): mixed-kind axis unions merged 0 times on
+                    # Schlauchschelle, puck, cross block and mechparts/7; every merge was cone+cone or torus+torus
+                    own = []
                 b_ax = best_axis_fit(ts_u, own[:6]) if own else None
+                if os.environ.get("EB_UNION_STATS"):
+                    union_stats[("axis", S[L]["kind"], S[M]["kind"], b_ax is not None)] += 1
                 if b_ax is not None:
                     label[label == M] = L; kinds[L] = b_ax["kind"]; del S[M]; S[L] = b_ax
                     merged = True; break
                 best_u = None
-                for kind_u in ("cylinder", "cone", "sphere", "torus"):
+                # OFF by default (EB_KINDS4=1 restores): the free-axis four-kind union merged 0 of 138 attempts measured
+                # (Schlauchschelle 62, puck 54, cross block 4, mechparts/7 42) and kept mechparts/1 (24k tris) in this
+                # loop past 600 s; without it mechparts/1 leaves the loop in 172 s. Results identical on 25 models.
+                for kind_u in (("cylinder", "cone", "sphere", "torus") if os.environ.get("EB_KINDS4") else ()):
                     kinds_save = kinds[L]; kinds[L] = kind_u; label_save = label.copy()
                     label[label == M] = L
                     try:
@@ -578,6 +603,9 @@ while merged:
                         # the SIMPLEST kind that fits wins: a narrow band has vertices only on its two rim
                         # circles, so cone, sphere and torus all fit it exactly (the chamfer came out a sphere)
                         best_u = (res_u, kind_u, s_u)
+                if os.environ.get("EB_UNION_STATS"):
+                    union_stats[("kinds4", S[L]["kind"], S[M]["kind"],
+                                 best_u is not None and best_u[1] not in (S[L]["kind"], S[M]["kind"]))] += 1
                 if best_u is not None and best_u[1] not in (S[L]["kind"], S[M]["kind"]):
                     label[label == M] = L; kinds[L] = best_u[1]; del S[M]; S[L] = best_u[2]
                     merged = True; break
@@ -603,6 +631,10 @@ while merged:
                                 merged = True; break
         if merged:
             break
+
+if os.environ.get("EB_UNION_STATS"):
+    for k_s, v_s in sorted(union_stats.items(), key=lambda kv: -kv[1]):
+        log(f"  union {k_s[0]:6s} {k_s[1]:>8s}+{k_s[2]:<8s} merged={k_s[3]}: {v_s}")
 
 # a curved region whose own fit misses some of its vertices is a MIX of surfaces (L04_puck: 15 "sphere" patches, each with
 # its median vertex on one torus fillet to 1e-6 but its worst vertices 2.95 mm off, on the side cylinder or the other fillet).
