@@ -59,12 +59,15 @@ def classify(rc, stdout):
     return "unsound", None
 
 
-def build(src, out, env_extra, timeout):
-    """(rc or None on timeout, stdout, seconds) of one edgebuild run."""
+def build(src, out, env_extra, deadline):
+    """(rc or None on timeout, stdout, seconds) of one edgebuild run that must end by `deadline` (epoch seconds)."""
     t0 = time.time()
+    timeout = deadline - t0
+    if timeout < 1.0:
+        return None, "", 0.0           # queued past the deadline: never started
     try:
         p = subprocess.run([sys.executable, str(EB), str(src), str(out)], env=dict(os.environ, EB_FAST_FAIL="1", **env_extra),
-                           capture_output=True, text=True, timeout=max(1.0, timeout))
+                           capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, time.time() - t0
     except subprocess.TimeoutExpired as e:
         return None, (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), time.time() - t0
@@ -75,7 +78,7 @@ def main():
         os.execv(sys.executable, [sys.executable, str(EB), *sys.argv[1:]])      # nothing to probe
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     deadline = time.time() + BUDGET
-    rc, stdout, sec = build(src, out, {}, deadline - time.time())
+    rc, stdout, sec = build(src, out, {}, deadline)
     cls, m = classify(rc, stdout)
     record = {"mesh": str(src), "body": os.environ.get("EB_BODY"), "default": cls, "tried": [], "winner": None}
     if cls == "pass" or cls not in LADDERS:
@@ -100,10 +103,11 @@ def main():
                     continue
                 tried_envs.update(json.dumps(v, sort_keys=True) for v in stage)
                 with ThreadPoolExecutor(max_workers=JOBS) as pool:
-                    futs = {pool.submit(build, src, out.with_name(f"{out.stem}.probe{i}{out.suffix}"), v,
-                                        deadline - time.time()): (i, v)
+                    futs = {pool.submit(build, src, out.with_name(f"{out.stem}.probe{i}{out.suffix}"), v, deadline): (i, v)
                             for i, v in enumerate(stage, start=len(record["tried"]))}
                     for fut in as_completed(futs):
+                        if fut.cancelled():
+                            continue            # queued behind a winner, never started
                         i, v = futs[fut]; rc_v, out_v, sec_v = fut.result(); cls_v, m_v = classify(rc_v, out_v)
                         short_ = ({k: m_v[k] for k in ("valid", "solids", "free_edges", "dv_pct", "dist_p95", "cylinders")}
                                   if m_v else None)
@@ -112,6 +116,8 @@ def main():
                               flush=True)
                         if cls_v == "pass" and winner is None:
                             winner = (i, v, rc_v, out_v)
+                            for f_ in futs:
+                                f_.cancel()     # the server kills the probe at its deadline: a winner must not wait on the queue
                         elif cls_v != cls_f and cls_v in LADDERS:
                             nxt.append((cls_v, v))
         # build on the least-loosened bases only: on mechparts/31 the absorb-leftovers base spent 12 variants that the

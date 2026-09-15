@@ -799,6 +799,10 @@ rep_t = {L_: int(np.argmax(label == L_)) for L_ in S}
 prev_S = set(S)
 while merged:
     merged = False
+    # region sizes for this scan, read by the pair keys below: (label == q).sum() per pair was 8.5M array sums, 102 s of
+    # mechparts/20's default build. Exact: label changes only at a merge, and every merge ends this scan
+    n_lab = np.bincount(label + 1)
+    _sz = lambda q: int(n_lab[q + 1]) if 0 <= q + 1 < len(n_lab) else 0  # noqa: E731
     for g_ in prev_S - set(S):
         k_ = int(label[rep_t[g_]])
         for n_ in adj.pop(g_, set()):
@@ -818,11 +822,11 @@ while merged:
                 else:
                     # two curved fits of ONE surface: a narrow 45-degree chamfer band reads locally as tilted
                     # cylinders (Schlauchschelle: one cone + 18 oblique "cylinders" that never meet at corners)
-                    P_, C_ = sorted((L, M), key=lambda q: int((label == q).sum()))
+                    P_, C_ = sorted((L, M), key=_sz)
                 # this check refit EVERY plane/curved neighbour pair on EVERY restart of the loop: 5266 refines,
                 # 79 of 150 s on mechparts/7 (166 cylinders). A failed pair is not retried until a region changes,
                 # and only a smaller region already lying near the larger surface pays for the refit.
-                absorb_key = (P_, C_, int((label == P_).sum()), int((label == C_).sum()))
+                absorb_key = (P_, C_, _sz(P_), _sz(C_))
                 if absorb_key in tried_absorb:
                     s2 = None
                 else:
@@ -846,7 +850,7 @@ while merged:
                     S[C_] = s2; merged = True; break
             # a pair that failed stays failed until one of its regions grows: the loop restarts after every
             # merge, and retrying every failed pair made best_axis_fit 1894 calls, 150 of 180 s on the puck
-            pair_key = (L, M, int((label == L).sum()), int((label == M).sum()))
+            pair_key = (L, M, _sz(L), _sz(M))
             # two HEALTHY surfaces are never one: every union that mattered joined a fragment (chamfer strips,
             # sphere-like patches of a torus). Refitting every pair of mechparts/7's 166 cylinders cost
             # best_axis_fit 1035 calls and fit_smooth 918 calls, 141 of 200 s.
@@ -927,10 +931,10 @@ while merged:
                     # fragments of ONE revolution surface fit separately differ more than TOLM (mechparts/7: a R6
                     # fillet around the R44.1 boss in 12 torus pieces, major 44.07-44.14, 11 free edges between them).
                     # Judge them on a JOINT refit of the union, like the cross-kind absorb (DeepSeek review, verified).
-                    same_key = (L, M, int((label == L).sum()), int((label == M).sum()))
+                    same_key = (L, M, _sz(L), _sz(M))
                     if same_key not in tried_same:
                         tried_same.add(same_key)
-                        C_, P_ = (L, M) if (label == L).sum() >= (label == M).sum() else (M, L)
+                        C_, P_ = (L, M) if _sz(L) >= _sz(M) else (M, L)
                         if float(np.abs(sdist(S[C_], region_verts(P_))).max()) < 1e-2 * diag:
                             ts_u = np.where(np.isin(label, [L, M]))[0]
                             s_u = refine(S[C_], V[np.unique(F[ts_u])])
