@@ -47,7 +47,8 @@ key = np.round(V0 / (1.5e-4 * diag)).astype(np.int64)
 _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
 F0 = inv.reshape(-1, 3)
 keep = np.logical_and.reduce([F0[:, 0] != F0[:, 1], F0[:, 1] != F0[:, 2], F0[:, 0] != F0[:, 2]])
-body = sorted(trimesh.Trimesh(V0[first], F0[keep], process=True).split(only_watertight=False), key=lambda p: -abs(p.volume))[0]
+body = sorted(trimesh.Trimesh(V0[first], F0[keep], process=True).split(only_watertight=False),
+              key=lambda p: -abs(p.volume))[int(os.environ.get("EB_BODY", "0"))]
 r = regions(body.triangles)
 V, F = r["topology"][0], r["topology"][1]
 label = np.array(r["label"]).copy()
@@ -133,14 +134,14 @@ def jac(fun, x, m_):
     return J
 
 
-def refine(s, P, cons=()):
+def refine(s, P, cons=(), fit=True):
     """Least squares on the region's vertices (they lie ON the true surface), then the smallest parameter change
-    that satisfies the tangency / coaxiality constraints exactly."""
+    that satisfies the tangency / coaxiality constraints exactly. fit=False: the projection alone."""
     if s["kind"] == "plane":
         return s
     x = to_vec(s)
     P_all = P
-    for _trim in range(4):
+    for _trim in range(4 if fit else 0):
         res = lambda x_: sdist(from_vec(s, x_), P)  # noqa: E731
         for _ in range(12):
             rr = res(x)
@@ -169,7 +170,10 @@ def refine(s, P, cons=()):
             rr = g(x)
             if np.abs(rr).max() < 1e-13 * diag:
                 break
-            x = x + np.linalg.lstsq(jac(g, x, len(rr)), -rr, rcond=None)[0]
+            # truncated like project(): two tangencies to ONE axis (slot end R 2.5 between coaxial walls R 33.8 and
+            # R 28.8, mechparts/30) are two parallel rows whose targets differ by 7e-5; the untruncated solve divided
+            # that by the noise singular value and slid the cylinder 8 mm around the axis
+            x = x + np.linalg.lstsq(jac(g, x, len(rr)), -rr, rcond=1e-6)[0]
     return from_vec(s, x)
 
 
@@ -283,6 +287,10 @@ for L in list(S):
     if (np.abs(sdist(s, cen_)).max() < 5e-3 * diag and all(0 < z_ < diag for z_ in sizes_)
             and np.abs(np.einsum("ij,ij->i", g_, nt[ts])).min() > math.cos(math.radians(20))):
         continue
+    if os.environ.get("EB_DEBUG"):
+        log(f"  flat-facet test S{L} ({s['kind']}, {len(ts)} tris, sizes {[round(float(z_), 4) for z_ in sizes_]}): centroid distance max "
+            f"{float(np.abs(sdist(s, cen_)).max()):.2e} (limit {5e-3 * diag:.2e}), worst facing angle "
+            f"{math.degrees(math.acos(min(1.0, float(np.abs(np.einsum('ij,ij->i', g_, nt[ts])).min())))):.1f} deg (limit 20)")
     del S[L]; tset = set(ts.tolist()); seen_t = set()
     for t0 in ts:
         if t0 in seen_t:
@@ -305,8 +313,11 @@ KIND_RANK = {"cylinder": 0, "cone": 1, "sphere": 2, "torus": 3}
 
 def axis_candidates():
     cands = []
+    # one pass for every region's area: scanning all triangles once PER region was 9.8 s in a single call (mechparts/1)
+    lab_ok = label >= 0
+    area_by_label = np.bincount(label[lab_ok], weights=area[lab_ok], minlength=int(label.max()) + 1) if lab_ok.any() else np.zeros(1)
     for L_, s_ in S.items():
-        w_ = float(area[label == L_].sum())
+        w_ = float(area_by_label[L_]) if 0 <= L_ < len(area_by_label) else 0.0
         d_, p_ = (s_["n"], None) if s_["kind"] == "plane" else (s_.get("a"), s_.get("o"))
         if d_ is None:
             continue
@@ -668,6 +679,66 @@ if n_mixed:
             S[L] = refine(S[L], region_verts(L))
     log(f"{n_mixed} triangles of mixed curved regions moved to the surface they lie on; surfaces now {collections.Counter(s['kind'] for s in S.values())}")
 
+# a curved region with no more vertices than its surface has parameters fits ANY such surface exactly: a 2-triangle
+# junction sliver became a 45-degree R 122 cylinder (mechparts/29) or a sphere 0.35 mm off-centre (L04_puck). It takes
+# the neighbouring surface its vertices lie on, else the simplest surface through them: a plane.
+DOF = {"sphere": 4, "cylinder": 5, "cone": 6, "torus": 7}
+adj_u = adjacency(); n_under = 0
+for L in [L for L, s in S.items() if s["kind"] != "plane"]:
+    Pv = region_verts(L)
+    if len(Pv) > DOF[S[L]["kind"]] + 1:
+        continue
+    best_m = min((M for M in adj_u[L] if M in S and M != L), key=lambda M: float(np.abs(sdist(S[M], Pv)).max()), default=None)
+    if best_m is not None and float(np.abs(sdist(S[best_m], Pv)).max()) < 1e-5 * diag:
+        label[label == L] = best_m; del S[L]; n_under += 1
+        for M in adj_u.pop(L, set()):
+            adj_u[M].discard(L)
+            if M != best_m:
+                adj_u[M].add(best_m); adj_u[best_m].add(M)
+        continue
+    kinds[L] = "plane"; pl_ = fit(L)
+    if float(np.abs(sdist(pl_, Pv)).max()) < 1e-5 * diag:
+        S[L] = pl_; n_under += 1
+    else:
+        kinds[L] = S[L]["kind"]
+if n_under:
+    log(f"{n_under} curved regions with too few vertices to fix their own surface took a neighbour's surface or a plane")
+
+# triangles of a PLANE region off its plane are another face swallowed by it (mechparts/29: a 2-triangle 45-degree
+# chamfer strip inside the top plane; its corners solved 0.8 mm off). Each connected group of them takes the
+# neighbouring surface its vertices lie on, else becomes its own plane when one fits.
+n_split = 0; adj_s = adjacency()
+for L in [L for L, s in S.items() if s["kind"] == "plane"]:
+    ts = region_tris(L)
+    off_t = ts[np.abs(sdist(S[L], tri[ts].reshape(-1, 3))).reshape(-1, 3).max(1) > 1e-5 * diag]
+    if len(off_t) == 0 or len(off_t) > 0.2 * len(ts):
+        continue
+    oset = set(off_t.tolist()); seen_o = set()
+    for t0 in off_t:
+        if t0 in seen_o:
+            continue
+        grp = []; stack = [t0]; seen_o.add(t0)
+        while stack:
+            t = stack.pop(); grp.append(t)
+            for i in range(3):
+                u = other(t, F[t][i], F[t][(i + 1) % 3])
+                if u in oset and u not in seen_o:
+                    seen_o.add(u); stack.append(u)
+        Pg = V[np.unique(F[grp])]
+        best_m = min((M for M in adj_s[L] if M in S and M != L), key=lambda M: float(np.abs(sdist(S[M], Pg)).max()), default=None)
+        if best_m is not None and float(np.abs(sdist(S[best_m], Pg)).max()) < 1e-5 * diag:
+            label[grp] = best_m; n_split += 1
+            continue
+        newL = len(kinds); kinds.append("plane"); label[grp] = newL; pl_ = fit(newL)
+        if float(np.abs(sdist(pl_, Pg)).max()) < 1e-5 * diag:
+            S[newL] = pl_; n_split += 1
+        else:
+            label[grp] = L
+    if (label == L).sum() >= 3:
+        S[L] = fit(L)
+if n_split:
+    log(f"{n_split} groups of triangles off their plane became their own face")
+
 if os.environ.get("EB_DUMP_SPHERE_TORUS"):
     # L04_puck: 15 sphere patches (centres on the axis, R 11-18.5) beside 2 exact tori. Are their VERTICES on a torus,
     # and do they border a torus at all (a sphere-only chain never meets the absorb check)?
@@ -682,6 +753,7 @@ if os.environ.get("EB_DUMP_SPHERE_TORUS"):
 adj = adjacency()
 REL = 0.02
 ncons = collections.Counter()
+cc_pairs, cc_lam, saved_cons = {}, set(), {}
 for kind in ("sphere", "cylinder", "cone", "torus"):
     for L in [L for L, s in S.items() if s["kind"] == kind]:
         s = S[L]; cons = []; k0_fix = None
@@ -717,7 +789,7 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                         sg = math.copysign(1, dist)
                         cons.append(lambda t, n_=n_, d_=d_, sg=sg: sg * (n_ @ (t["o"] + t["a"] * t["hc"]) - d_) - t["minor"])
                         ncons["torus-plane"] += 1
-            elif (q["kind"] == "cylinder" and kind == "cylinder" and q["R"] >= s["R"] and os.environ.get("EB_CYL_CYL")
+            elif (q["kind"] == "cylinder" and kind == "cylinder" and q["R"] >= s["R"] and os.environ.get("EB_CYL_CYL", "1")
                     and abs(abs(float(s["a"] @ q["a"])) - 1) < 1e-9):
                 # OPT-IN (EB_CYL_CYL=1) until reviewed: fixed mechparts/13 at 2 % but made 7 a +47 % wrong solid,
                 # 14 a -16 % wrong solid and 10 time out; at 2e-4 of R 13 failed again (bd projects-2i0)
@@ -728,7 +800,8 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                     if abs(dist_ax - (q["R"] + sg_ * s["R"])) < REL * s["R"] and os.environ.get("EB_DEBUG"):
                         log(f"  cyl-cyl candidate S{L} R {s['R']:.4f} vs S{M} R {q['R']:.4f}: axis distance {dist_ax:.4f}, "
                             f"R{'+' if sg_ > 0 else '-'}R {q['R'] + sg_ * s['R']:.4f}, mismatch {abs(dist_ax - (q['R'] + sg_ * s['R'])):.2e} "
-                            f"({abs(dist_ax - (q['R'] + sg_ * s['R'])) / s['R']:.1e} of R), shared mesh edges {sum(1 for t_ in region_tris(L) for i_ in range(3) if label[other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])] == M)}")
+                            f"({abs(dist_ax - (q['R'] + sg_ * s['R'])) / s['R']:.1e} of R), shared mesh edges {sum(1 for t_ in region_tris(L) for i_ in range(3) if label[other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])] == M)}, "
+                            f"normal dot across them {[round(float(nt[t_] @ nt[other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])]), 3) for t_ in region_tris(L) for i_ in range(3) if label[other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])] == M][:6]}")
                     # 2e-4 of R, not the 2 % used against planes: on mechparts/7 the 12 real tangencies missed by
                     # 2e-7..1.6e-5 of R, four false ones (R 9.652 vs R 10.935) by 8.6e-4..9.1e-4 and wrecked the solid
                     # 5e-4 of R separates mechparts/13's real tangency (2.2e-4) from mechparts/7's false ones (8.6e-4).
@@ -738,7 +811,7 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                         oq, target = q["o"], q["R"] + sg_ * s["R"]
                         cons.append(lambda t, oq=oq, target=target: float(np.linalg.norm(
                             (oq - t["o"]) - ((oq - t["o"]) @ t["a"]) * t["a"])) - target)
-                        ncons["cyl-cyl"] += 1
+                        ncons["cyl-cyl"] += 1; cc_pairs.setdefault(L, []).append((M, sg_)); cc_lam.add(id(cons[-1]))
                         break
             elif q["kind"] == "sphere" and kind == "cylinder" and q is not s:
                 qq = q["c"] - s["o"]; off = np.linalg.norm(qq - (qq @ s["a"]) * s["a"])
@@ -770,16 +843,49 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
             s = from_vec(s, x); S[L] = s
             cons.append(lambda t, k0_fix=k0_fix: t["k0"] - k0_fix)     # keep it through any further projection
         if cons:
+            saved_cons[L] = cons
             S[L] = refine(s, region_verts(L), cons)
+            if os.environ.get("EB_DEBUG") and L in cc_pairs:
+                free_ = refine(s, region_verts(L))
+                log(f"  CC-TRACE S{L}: before {np.round(s['o'], 4).tolist()} R {s['R']:.6f} | free fit {np.round(free_['o'], 4).tolist()} "
+                    f"R {free_['R']:.6f} | constrained {np.round(S[L]['o'], 4).tolist()} R {S[L]['R']:.6f} | residuals "
+                    + ", ".join(f"{float(c(S[L])):+.1e}" for c in cons) + f" | vertex fit max {float(np.abs(sdist(S[L], region_verts(L))).max()):.2e}")
+            if L in cc_pairs:
+                # a tangency may move a surface off its vertices by its own tolerance, no more. Two tangencies to walls
+                # that should share one axis but were fitted 1.1e-4 apart are two near-identical circles whose exact
+                # crossing lies 8 mm around the slot (mechparts/30: R 2.5 slot end, vertex fit 2e-13 -> 8.2 mm)
+                Pv_ = region_verts(L); free_ = refine(s, Pv_)
+                if (float(np.abs(sdist(S[L], Pv_)).max())
+                        > float(np.abs(sdist(free_, Pv_)).max()) + 5e-4 * s["R"] + 1e-5 * diag):
+                    cons = [c for c in cons if id(c) not in cc_lam]; del cc_pairs[L]; saved_cons[L] = cons
+                    S[L] = refine(s, Pv_, cons) if cons else free_
+                    log(f"  cyl-cyl tangencies of S{L} dropped: they pull it off its own vertices")
             if os.environ.get("EB_DEBUG"):
                 # a constraint left unsatisfied means the set is inconsistent (mechparts/1: fillet torus S28 still 5e-5 off
                 # its tangent plane after projection, so torus and plane never touch and the chain between them fails)
                 res_c = [float(c(S[L])) for c in cons]
-                if max(abs(x) for x in res_c) > 1e-9 * diag:
+                if res_c and max(abs(x) for x in res_c) > 1e-9 * diag:
                     log(f"  UNSATISFIED constraints on S{L} ({kind}, {len(cons)} constraints): residuals "
                         + ", ".join(f"{x:+.2e}" for x in res_c) + f" | neighbours {sorted(M_ for M_ in adj[L] if M_ in S)}")
+# the cyl-cyl target was frozen from the radii BEFORE refine(), whose free fit then moved R, and the constraint has no
+# pull on R (mechparts/14: S48 R -2.5e-4, the axes 3e-4 apart, never touching; DeepSeek review, verified). Re-project
+# each smaller cylinder onto the FINAL radii with its R held, largest first so every partner is already final.
+for L in sorted(cc_pairs, key=lambda L_: -S[L_]["R"]):
+    Rl = S[L]["R"]; cons = [c for c in saved_cons[L] if id(c) not in cc_lam]
+    for M, sg_ in cc_pairs[L]:
+        cons.append(lambda t, oq=S[M]["o"], target=S[M]["R"] + sg_ * Rl: float(np.linalg.norm(
+            (oq - t["o"]) - ((oq - t["o"]) @ t["a"]) * t["a"])) - target)
+    cons.append(lambda t, Rl=Rl: t["R"] - Rl)
+    new_ = refine(S[L], None, cons, fit=False); Pv_ = region_verts(L)
+    if float(np.abs(sdist(new_, Pv_)).max()) <= float(np.abs(sdist(S[L], Pv_)).max()) + 5e-4 * Rl + 1e-5 * diag:
+        S[L] = new_
 log(f"surfaces {collections.Counter(s['kind'] for s in S.values())}, constraints {dict(ncons)}")
 if os.environ.get("EB_DEBUG"):
+    for L, s in S.items():
+        ts_ = region_tris(L); off_ = np.abs(sdist(s, tri[ts_].reshape(-1, 3))).reshape(-1, 3).max(1) > 1e-5 * diag
+        if off_.any():
+            log(f"  OFF-SURFACE S{L} ({s['kind']}): {int(off_.sum())}/{len(ts_)} triangles, centroids "
+                + str(np.round(tri[ts_[off_]].mean(1)[:4], 3).tolist()))
     for L, s in S.items():
         log(f"  S{L} " + " ".join(f"{k}={np.round(v, 6).tolist() if isinstance(v, np.ndarray) else (round(v, 6) if isinstance(v, float) else v)}"
                                   for k, v in s.items() if k not in ("u", "w")))
@@ -881,14 +987,18 @@ if os.environ.get("EB_DUMP_REGION"):
 
 
 # ---------------------------------------------------------------- 4. exact corners and edges
-def project(P0, surfs, iters=300):
+RCOND = 1e-6
+
+
+def project(P0, surfs, iters=300, rcond=None):
+    rcond = RCOND if rcond is None else rcond
     P = np.array(P0, float).reshape(-1, 3).copy()
     for _ in range(iters):
         rr = np.stack([sdist(s, P) for s in surfs], 1)
         G = np.stack([sgrad(s, P) for s in surfs], 1)
         # tangent surfaces (fillet flank, fillet/sphere) have nearly parallel gradients: a 3e-8 singular value
         # threw the soap bar's points 0.2 mm away. Truncate it, and cap the step to a trust region.
-        step = -np.einsum("nij,nj->ni", np.linalg.pinv(G, rcond=1e-6), rr)
+        step = -np.einsum("nij,nj->ni", np.linalg.pinv(G, rcond=rcond), rr)
         ln = np.linalg.norm(step, axis=1, keepdims=True)
         step *= np.minimum(1.0, 1e-3 * diag / np.maximum(ln, 1e-300))
         P += step
@@ -921,6 +1031,16 @@ cpos, cres, cres_v = {}, 0.0, {}
 for v in corner:
     p, res = project(V[v], [S[L] for L in sorted(vlabels[v])])
     cpos[v] = p[0]; cres_v[v] = float(res[0]); cres = max(cres, cres_v[v])
+if cres > 1e-6 * diag:
+    # a cylinder on its exactly tangent plane leaves a 2e-5 singular value that rcond 1e-6 keeps: corners walk off
+    # (mechparts/29, 10; DeepSeek review, verified). 1e-3 on every part broke mechparts/1, and 1e-3 on the failed corners
+    # alone left them off the edge points still projected at 1e-6 (29: invalid, dV -1235 %). So a part whose corners fail
+    # does ALL its projections, corners and edges, again with that direction dropped.
+    RCOND = 1e-3; cres = 0.0
+    for v in corner:
+        p, res = project(V[v], [S[L] for L in sorted(vlabels[v])])
+        cpos[v] = p[0]; cres_v[v] = float(res[0]); cres = max(cres, cres_v[v])
+    log(f"corners failed at rcond 1e-6, solved again at 1e-3: worst residual {cres:.1e}")
 if cres > 1e-6 * diag:
     bad = [v for v in corner if np.abs(np.array([sdist(S[L], cpos[v])[0] for L in vlabels[v]])).max() > 1e-6 * diag]
     if os.environ.get("EB_DEBUG"):
