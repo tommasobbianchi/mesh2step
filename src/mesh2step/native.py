@@ -74,6 +74,7 @@ def convert_native(
     timeout: float | None = None,
     smooth_tol: float | None = None,
     smooth_angle: float | None = None,
+    force_sew: bool = False,
 ) -> dict:
     binary = native_binary()
     if binary is None:
@@ -107,6 +108,9 @@ def convert_native(
         cmd += ["--smooth-tol", str(smooth_tol)]
     if smooth_angle is not None:
         cmd += ["--smooth-angle", str(smooth_angle)]
+    if force_sew:
+        # sewing repair pass on every component: closes the holes left when the build skips zero-area triangles
+        cmd += ["--force-sew"]
 
     seconds = timeout if timeout is not None else _DEFAULT_TIMEOUT
     try:

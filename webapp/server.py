@@ -606,6 +606,17 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                          if engine == "trueform" and os.environ.get("MESH2STEP_ENGINE_FALLBACK") == "1"
                          else CONVERT_TIMEOUT_S),
             )
+            if (engine == "trueform" and not res.get("ok")
+                    and "post-write verification failed" in str(res.get("error") or "")):
+                # the engine skipped zero-area triangles of a watertight mesh and wrote an open shell, which re-reads
+                # as 0 solids (convogliatore auto rally v3 v5: 12 sliver triangles). Sewing every component first
+                # closes it; served only if that build passes the engine's own verification
+                sewn = convert_native(stl_path, out_path, engine=native_engine, schema=schema, unify_angle=native_unify,
+                                      timeout=CONVERT_TIMEOUT_S, force_sew=True)
+                if sewn.get("ok"):
+                    sewn["warnings"] = [f"the first build did not re-read as a solid ({res.get('error')}); "
+                                        "rebuilt with --force-sew", *(sewn.get("warnings") or [])]
+                    res = sewn
         except NativeEngineError as e:          # NativeTimeout included
             # OPT-IN (MESH2STEP_ENGINE_FALLBACK=1): the documented contract is that a timeout answers 504 and explains
             # itself (test_a_timeout_explains_itself_and_cleans_up); serving a rebuilt shape instead changes that.
