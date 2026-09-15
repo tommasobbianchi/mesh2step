@@ -233,6 +233,27 @@ def refine(s, P, cons=(), fit=True):
             # R 28.8, mechparts/30) are two parallel rows whose targets differ by 7e-5; the untruncated solve divided
             # that by the noise singular value and slid the cylinder 8 mm around the axis
             x = x + np.linalg.lstsq(jac(g, x, len(rr)), -rr, rcond=1e-6)[0]
+        if s["kind"] == "cone" and fit and P is not None and len(P) >= 4 and not os.environ.get("EB_NO_CONE_REFIT"):
+            # the free fit slides a narrow cone's origin across its band (a 2 mm 45-degree chamfer: 7.1e-4) and the
+            # coaxial projection above moves only the origin back, so k1 stays 7.2e-4 short of the cylinder rim it
+            # meets (mechparts/31: 6 corners at 2.6e-4; DeepSeek review, verified). Refit on the vertices inside the
+            # constraints' null space, re-projecting after each step.
+            res_c = lambda x_: sdist(from_vec(s, x_), P)  # noqa: E731
+            for _ in range(8):
+                G_ = jac(g, x, len(cons)); _, sv_, Vt_ = np.linalg.svd(G_)
+                rank_ = int((sv_ > 1e-9 * max(float(sv_.max()), 1e-300)).sum())
+                N_ = Vt_[rank_:].T
+                if N_.shape[1] == 0:
+                    break
+                rr_c = res_c(x); step_ = N_ @ np.linalg.lstsq(jac(res_c, x, len(rr_c)) @ N_, -rr_c, rcond=None)[0]
+                x = x + step_
+                for _p in range(10):
+                    rr = g(x)
+                    if np.abs(rr).max() < 1e-13 * diag:
+                        break
+                    x = x + np.linalg.lstsq(jac(g, x, len(rr)), -rr, rcond=1e-6)[0]
+                if np.linalg.norm(step_) < 1e-13 * diag:
+                    break
     return from_vec(s, x)
 
 
@@ -527,6 +548,83 @@ for L in [L for L, s in S.items() if s["kind"] != "plane"]:
     if ok and aligned:
         continue
     b = best_axis_fit(ts, cands0)
+    # OPT-IN (EB_STRIP_SPLIT=1, a probe rung): on by default it split genuine rounds on parts that were sound (broom holder
+    # body 2: 37 -> 36 cylinders; mechparts/10: 46 -> 54 faces; the tube50 lid body 0 failed 6 corners). Bisected 2026-09-15.
+    if b is None and not ok and S[L]["kind"] != "sphere" and len(ts) >= 6 and os.environ.get("EB_STRIP_SPLIT"):
+        # no one surface fits: a chamfer strip running along a straight edge and round an arc end is flat facets plus
+        # a cone about the arc's axis (mechparts/30: strip S26 misses its own tilted-cylinder fit and the best cone about
+        # the vertical axis by 3.8e-2). Split it into coplanar facet groups, grow runs of adjacent groups that one cone
+        # about a known axis fits, and keep the split only when every group is either in such a run or exactly flat.
+        tl_ = list(ts); tset_ = set(tl_); gid_ = {}; groups_ = []
+        for t0_ in tl_:
+            if t0_ in gid_:
+                continue
+            g_ = [t0_]; gid_[t0_] = len(groups_); st_ = [t0_]
+            while st_:
+                t_ = st_.pop()
+                for i_ in range(3):
+                    u_ = other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])
+                    if u_ in tset_ and u_ not in gid_ and float(nt[t_] @ nt[u_]) > 1 - 1e-6:
+                        gid_[u_] = len(groups_); g_.append(u_); st_.append(u_)
+            groups_.append(g_)
+        gadj_ = collections.defaultdict(set)
+        for t_ in tl_:
+            for i_ in range(3):
+                u_ = other(t_, F[t_][i_], F[t_][(i_ + 1) % 3])
+                if u_ in tset_ and gid_[u_] != gid_[t_]:
+                    gadj_[gid_[t_]].add(gid_[u_])
+        runs_ = []; used_ = set()
+        if len(groups_) >= 3:
+            for d_c, p_c, _ in cands0:
+                for g0_ in range(len(groups_)):
+                    if g0_ in used_:
+                        continue
+                    run_ = [g0_]; front_ = [g0_]; best_s = None
+                    while front_:
+                        gj_ = front_.pop()
+                        for gk_ in sorted(gadj_[gj_]):
+                            if gk_ in used_ or gk_ in run_:
+                                continue
+                            trial_ = run_ + [gk_]
+                            tt_ = [t_ for g_ in trial_ for t_ in groups_[g_]]
+                            if len(trial_) < 3:
+                                run_.append(gk_); front_.append(gk_); continue
+                            cone_ = next((c_ for c_ in fit_axis(tt_, d_c, p_c) if c_["kind"] == "cone"), None)
+                            if cone_ is None:
+                                continue
+                            try:
+                                cone_ = refine(cone_, V[np.unique(F[tt_])])
+                            except Exception:  # noqa: BLE001 - a candidate, not a result
+                                continue
+                            ok_c, _ = surface_ok(cone_, tt_)
+                            if ok_c:
+                                run_.append(gk_); front_.append(gk_); best_s = cone_
+                    nr_ = np.array([nt[groups_[g_][0]] for g_ in run_])
+                    if best_s is not None and len(run_) >= 3 and float((nr_ @ nr_.T).min()) < math.cos(math.radians(15)):
+                        runs_.append((run_, best_s)); used_.update(run_)
+        rest_ = [g_ for g_ in range(len(groups_)) if g_ not in used_]
+        # (a limit of 3 leftover groups of >= 2 triangles was tried and removed: it rejected every mechparts/30 strip and
+        # the part fell back to 7 unsolvable corners. The small leftover planes re-merge in the later same-surface passes:
+        # 30 came out 47 faces, 13 planes, 10 cones, valid, dV -0.0008 %.)
+        flat_ok_ = all(len(V[np.unique(F[groups_[g_]])]) >= 3
+                       and float(np.abs((V[np.unique(F[groups_[g_]])] - V[np.unique(F[groups_[g_]])].mean(0)) @ nt[groups_[g_][0]]).max()) < 1e-5 * diag
+                       for g_ in rest_)
+        if os.environ.get("EB_DEBUG"):
+            log(f"  strip split S{L} ({S[L]['kind']}, {len(ts)} tris): {len(groups_)} facet groups, {len(runs_)} cone runs, "
+                f"{len(rest_)} other groups flat {flat_ok_}")
+        if runs_ and flat_ok_:
+            first_ = True
+            for run_, cone_ in runs_:
+                tt_ = [t_ for g_ in run_ for t_ in groups_[g_]]
+                newL = L if first_ else len(kinds)
+                if not first_:
+                    kinds.append("cone")
+                kinds[newL] = "cone"; label[tt_] = newL; S[newL] = cone_; first_ = False
+            for g_ in rest_:
+                newL = len(kinds); kinds.append("plane"); label[groups_[g_]] = newL; S[newL] = fit(newL)
+            n_axis_refit += 1
+            log(f"  strip S{L} split into {len(runs_)} cone run(s) and {len(rest_)} plane(s) about known axes")
+            continue
     if b is not None:
         if os.environ.get("EB_DEBUG"):
             Pv_d = V[np.unique(F[ts])]
@@ -1014,6 +1112,9 @@ for L in [L for L, s in S.items() if s["kind"] != "plane"]:
         S[L] = pl_g; n_giant += 1
     else:
         kinds[L] = S[L]["kind"]
+        # (splitting such a surface by facet normal into planes was tried 2026-09-15 and removed: on mechparts/20 the four
+        # R 2.8e8-4.7e8 strips are real rounds a plane misses by 0.38 mm, they split into 52-53 one-facet planes each and
+        # the part went from 28 to 65 failed corners. A single facet is always "flat"; these need a round refit.)
 if n_giant:
     log(f"{n_giant} curved surfaces larger than the part became planes")
 adj = adjacency()
@@ -1373,7 +1474,20 @@ if os.environ.get("EB_DEBUG"):
 
 
 def densify(P, surfs):
-    mids, _ = project(0.5 * (P[1:] + P[:-1]), surfs)
+    if os.environ.get("EB_OLD_DENSIFY"):
+        mids, _ = project(0.5 * (P[1:] + P[:-1]), surfs)
+    else:
+        # each new point also lies on the plane through its midpoint across the segment: two nearly tangent surfaces
+        # (a 45-degree chamfer cone meeting a 45-degree facet) let a midpoint projected onto them alone slide along
+        # their common tangent, and a 2.83 mm edge between two corners came out a 55 mm and a 158 mm B-spline
+        # (mechparts/31 chains 66 and 102). Three equations pin the point; it still lies on both surfaces.
+        mids = np.empty((len(P) - 1, 3))
+        for i_ in range(len(P) - 1):
+            m_ = 0.5 * (P[i_] + P[i_ + 1]); d_ = P[i_ + 1] - P[i_]; ld_ = float(np.linalg.norm(d_))
+            if ld_ < 1e-12 * diag:
+                mids[i_] = m_; continue
+            d_ = d_ / ld_
+            mids[i_] = project(m_, list(surfs) + [{"kind": "plane", "n": d_, "d": float(d_ @ m_)}])[0][0]
     o_ = np.empty((2 * len(P) - 1, 3)); o_[0::2] = P; o_[1::2] = mids
     return o_
 

@@ -484,6 +484,10 @@ def _retry_broken_trueform(stl_path, out_path, res, *, schema, unify_angle) -> d
 # fewer cylinder faces than the engine built. cadbench normal 67 -> 86 of 103 models with exact face
 # types (2026-09-14); Bracket_40 0 -> 4 hole cylinders, Schlauchschelle a valid solid with its cones.
 EDGEBUILD = Path(__file__).resolve().parents[1] / "tools" / "feature_recon" / "edgebuild.py"
+# adaptive probing around the builder: a body that misses the gate is retried with variants picked by its failure class
+# (user request 2026-09-15); MESH2STEP_EDGEBUILD_PROBE=0 runs the plain builder
+EDGEBUILD_PROBE = EDGEBUILD.with_name("probe.py")
+PROBE_ON = os.environ.get("MESH2STEP_EDGEBUILD_PROBE", "1") != "0"
 EDGEBUILD_TIMEOUT_S = float(os.environ.get("MESH2STEP_EDGEBUILD_TIMEOUT_S", "900"))
 # ponytail: not yet measured above this size (memory of the Python fit in the service cgroup)
 EDGEBUILD_MAX_TRIS = int(os.environ.get("MESH2STEP_EDGEBUILD_MAX_TRIS", "60000"))
@@ -506,10 +510,10 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
         return res
     deadline = time.time() + EDGEBUILD_TIMEOUT_S
 
-    def _run(args, env_extra):
+    def _run(args, env_extra, script=EDGEBUILD):
         try:
             proc = subprocess.Popen(
-                [sys.executable, str(EDGEBUILD), *args], env=dict(os.environ, **env_extra),
+                [sys.executable, str(script), *args], env=dict(os.environ, **env_extra),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
             )
             stdout, _ = proc.communicate(timeout=max(1.0, deadline - time.time()))
@@ -529,7 +533,12 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
     cands, metrics = [], []
     for k in range(n_bodies):
         cand = Path(out_path).with_name(f"edge{k}.step")
-        rc, out = _run([str(stl_path), str(cand)], {"EB_BODY": str(k)} if n_bodies > 1 else {})
+        env_b = {"EB_BODY": str(k)} if n_bodies > 1 else {}
+        if PROBE_ON and EDGEBUILD_PROBE.exists():
+            # the probe shares this body's remaining time; its stdout ends with the winning build's RESULT line
+            env_b["EB_PROBE_BUDGET"] = str(max(1.0, (deadline - time.time()) / (n_bodies - k) - 5))
+        rc, out = _run([str(stl_path), str(cand)], env_b,
+                       EDGEBUILD_PROBE if PROBE_ON and EDGEBUILD_PROBE.exists() else EDGEBUILD)
         line = next((ln for ln in reversed(out.splitlines()) if ln.startswith("RESULT ")), None)
         cands.append(cand)
         if rc != 0 or line is None or not cand.exists():
