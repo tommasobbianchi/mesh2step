@@ -265,6 +265,15 @@ def region_verts(L):
     return V[np.unique(F[label == L])]
 
 
+def refit_keep(s, P):
+    """refine() but, with EB_REFIT_GUARD, never leave a surface fitting its vertices worse than before (mechparts/20:
+    a 10-triangle cone the merge/mixed passes grew blew up to k0 3e17, 2.4 off its own vertices, 2 corners unsolvable)."""
+    new = refine(s, P)
+    if os.environ.get("EB_REFIT_GUARD") and float(np.abs(sdist(new, P)).max()) > float(np.abs(sdist(s, P)).max()) + 1e-9 * diag:
+        return s
+    return new
+
+
 def fit(L):
     ts = region_tris(L); P = region_verts(L); k = kinds[L]
     if k == "plane":
@@ -400,6 +409,14 @@ for L in list(S):
                 if u in tset and u not in seen_t and nt[t] @ nt[u] > 0.99999:
                     seen_t.add(u); stack.append(u)
         fgroups.append(grp)
+    # opt-in probe rung: a finely tessellated curved region (under 3 triangles per coplanar group) whose one fit failed is
+    # several merged curved surfaces, not flat facets (mechparts/20: 961-triangle "sphere" facing its facets at 57 deg;
+    # splitting it gave 83 facet planes and 28 corners that cannot meet). Hand it to the known-axis unlabelled pass.
+    if (os.environ.get("EB_CURVED_UNLABEL") and len(ts) < 3 * len(fgroups)
+            and all(z_ < 0.5 * diag for z_ in sizes_)):
+        label[ts] = -1
+        log(f"region {L} ({s['kind']}) is a poorly fitted curved region, left to the known-axis pass")
+        continue
     # a rejected region can be SEVERAL small rounds plus flat strips (broom holder logo: two R ~0.35 corner fillets and the
     # walls between them fitted as one R 5.4 cylinder). When every facet runs along the region's axis, grow runs of
     # adjacent facet groups that one circle about that axis fits; a run of three or more facets is a cylinder face.
@@ -510,6 +527,10 @@ def surface_ok(s_, ts):
     # a surface larger than the part is a flat patch in disguise (guide block: a plane fit as a cylinder R 1.1e6)
     sizes = [s_.get(k_) for k_ in ("R", "major", "minor") if s_.get(k_) is not None]
     if any(not (0 < z_ < diag) for z_ in sizes):
+        return False, float("inf")
+    if s_["kind"] == "cone" and os.environ.get("EB_REFIT_GUARD") and not (0 < abs(s_.get("k0", 0.0)) < 1e3):
+        # a nearly flat patch fits a cone of half-angle ~90 deg or an apex at infinity (mechparts/20: k0 3.3e17). It is a
+        # cylinder/plane in disguise; keeping it as a cone let a later refit diverge and left 2 corners unsolvable.
         return False, float("inf")
     ok = (res < 1e-5 * diag and float(np.abs(sdist(s_, cen)).max()) < 2e-3 * diag
           and float(np.abs(np.einsum("ij,ij->i", g, nt[ts])).min()) > math.cos(math.radians(20)))
@@ -753,7 +774,14 @@ for L, s in S.items():
     if new is not None and np.linalg.norm(new - a) > 0:
         o_pt = s["o"]; x = to_vec(s); t = dict(s); set_axis(t, new)
         t["o"] = o_pt - (o_pt @ t["a"]) * t["a"]
-        S[L] = refine(t, region_verts(L))
+        Pv_a = region_verts(L)
+        t = refine(t, Pv_a)
+        # a snapped axis can send a near-degenerate cone's refit to infinity (mechparts/20: k0 0.021 -> 3.3e17, 2.4 off
+        # its vertices). EB_REFIT_GUARD keeps the unsnapped surface when the snap fits worse.
+        if (os.environ.get("EB_REFIT_GUARD")
+                and float(np.abs(sdist(t, Pv_a)).max()) > float(np.abs(sdist(s, Pv_a)).max()) + 1e-9 * diag):
+            t = s
+        S[L] = t
 
 # adjacent regions on one surface are one face
 TOLM = 1e-4 * diag
@@ -893,7 +921,7 @@ while merged:
                 if (np.abs(sdist(S[L], region_verts(M))).max() < TOLM
                         and np.abs(sdist(S[M], region_verts(L))).max() < TOLM):
                     label[label == M] = L; del S[M]
-                    S[L] = S[L] if S[L]["kind"] == "plane" else refine(S[L], region_verts(L))
+                    S[L] = S[L] if S[L]["kind"] == "plane" else refit_keep(S[L], region_verts(L))
                     merged = True; break
                 if S[L]["kind"] != "plane":
                     # fragments of ONE revolution surface fit separately differ more than TOLM (mechparts/7: a R6
@@ -947,8 +975,76 @@ for _pass in ([] if os.environ.get("EB_NO_MIXED") else range(6)):
 if n_mixed:
     for L in [L for L, s in S.items() if s["kind"] != "plane"]:
         if (label == L).sum() >= 3:
-            S[L] = refine(S[L], region_verts(L))
+            S[L] = refit_keep(S[L], region_verts(L))
     log(f"{n_mixed} triangles of mixed curved regions moved to the surface they lie on; surfaces now {collections.Counter(s['kind'] for s in S.values())}")
+
+if os.environ.get("EB_SPLIT_MIXED"):
+    # A region whose own fit does not hug and face its triangles (surface_ok false) can still fit its VERTICES within
+    # 1e-5*diag, so the mixed pass above never touches it, yet its triangles really lie on KNOWN primitives: mechparts/20's
+    # S21 is the big-ring bottom R2 round (267 tris) + the R22.5 outer cylinder (90), S17 the R22.5 cylinder (54) + the
+    # round (10), all fitted as a distorted torus / a cone. Vote every triangle of such a region onto the healthiest
+    # region surface (the ring cylinders and the R2 rounds already exist as regions) and keep only if the vote is a
+    # majority: that leaves a genuine round with a slightly loose fit (the arm's R2 cylinders get 16/88 votes) untouched.
+    n_sm = 0
+    for _pass in range(6):
+        moved_sm = False
+        health = {M: (S[M]["kind"] == "plane" or surface_ok(S[M], region_tris(M))[0]) for M in S}
+        adj_sm = adjacency()
+        for L in list(S):
+            s = S[L]; ts = region_tris(L)
+            if len(ts) == 0:
+                continue
+            is_pl = s["kind"] == "plane"
+            # a torus whose tube centre is farther than the whole part is a cylinder/plane in disguise (mechparts/20 S2:
+            # major 13, minor 10, hc 5484, sitting on the small ring's R10 outer). It must be split whatever the vote says.
+            is_bad = (not is_pl) and s["kind"] == "torus" and abs(s.get("hc", 0.0)) > diag
+            if not is_pl and not is_bad and surface_ok(s, ts)[0]:
+                continue
+            if is_pl:
+                # only a small facet of a ROUND (a torus neighbour): mechparts/20's 2-triangle S118 on the ring widest
+                # point keeps a {round, plane, plane} corner whose two near-parallel planes cannot meet. Real flat faces
+                # (mechparts/26, washer) have no torus neighbour and are left alone.
+                nbrs = adj_sm.get(L, set())
+                if len(ts) > 12 or not any(S[M]["kind"] == "torus" for M in nbrs if M in S):
+                    continue
+            cands_sm = [M for M in S if M != L and health.get(M) and (not is_pl or S[M]["kind"] != "plane")]
+            if not cands_sm:
+                continue
+            newlab = {}; strict_sm = 0
+            for t in ts:
+                Pt = V[F[t]]
+                own_d = float(np.abs(sdist(S[L], Pt)).max())
+                best_sm = min(cands_sm, key=lambda M: float(np.abs(sdist(S[M], Pt)).max()))
+                bd = float(np.abs(sdist(S[best_sm], Pt)).max())
+                if (bd < 5e-3 * diag) if is_pl else (bd < own_d):
+                    strict_sm += 1
+                if (bd < own_d or bd < 5e-3 * diag):
+                    newlab[t] = best_sm
+            # majority on the STRICT votes only: a genuine round with a loose fit (the arm's R2 cylinders) gets few strict
+            # votes and is left alone; the loose clause above then only cleans up the leftovers of a region already split.
+            if strict_sm >= 0.5 * len(ts) or is_bad:
+                for t, M in newlab.items():
+                    label[t] = M
+                moved_sm = True; n_sm += 1
+                left_sm = [t for t in ts if t not in newlab]
+                log(f"  split-mixed S{L} ({S[L]['kind']}, {len(ts)} tris): {len(newlab)} moved, "
+                    f"{len(left_sm)} left, to "
+                    + str(collections.Counter(S[M]["kind"] + f" S{M}" for M in newlab.values())))
+                if left_sm:
+                    zl = V[np.unique(F[left_sm])][:, 2]
+                    log(f"    split-mixed leftover {len(left_sm)} tris near {np.round(V[np.unique(F[left_sm])].mean(0), 1).tolist()} "
+                        f"z {zl.min():.2f}..{zl.max():.2f}")
+        for L in [L for L in list(S) if not (label == L).any()]:
+            del S[L]
+        if not moved_sm:
+            break
+    for L in [L for L, s in S.items() if s["kind"] != "plane"]:
+        if (label == L).sum() >= 3:
+            S[L] = refit_keep(S[L], region_verts(L))
+    for L in [L for L, s in S.items() if s["kind"] == "plane"]:
+        if (label == L).sum() >= 3:
+            S[L] = fit(L)
+    log(f"split-mixed: {n_sm} mixed regions split; surfaces now {collections.Counter(s['kind'] for s in S.values())}")
 
 # a curved region with no more vertices than its surface has parameters fits ANY such surface exactly: a 2-triangle
 # junction sliver became a 45-degree R 122 cylinder (mechparts/29) or a sphere 0.35 mm off-centre (L04_puck). It takes
@@ -1079,7 +1175,7 @@ while merged_same:
                 same_ = surface_ok(S[L], ts_lm)[0] or surface_ok(S[M], ts_lm)[0]
             if same_:
                 label[label == M] = L; del S[M]
-                S[L] = refine(S[L], region_verts(L)); n_same += 1; merged_same = True
+                S[L] = refit_keep(S[L], region_verts(L)); n_same += 1; merged_same = True
                 break
         if merged_same:
             break
@@ -1602,6 +1698,39 @@ def arc_edge(cen, nrm, Rc, A, B, pts, closed, VA, VB):
     return mk_edge(Geom_Circle(gp_Ax2(pnt(cen), gdir(nrm), gdir(xd)), Rc), VA, VB, 0.0, th1)
 
 
+def iso_torus_snap(surfs, A, B, pts, VA, VB):
+    """A chain that runs along one iso-parametric line of a torus IS that exact circle. Near a tangent corner the
+    interpolated B-spline, and the p-curve projected from it, hook back on themselves; the hooked p-curve makes
+    BRepClass_FaceClassifier call interior UV points OUT, so BRepExtrema_DistShapeShape rejects the surface hit and
+    falls back to the boundary (mechparts/20 F9: dist_p95 1.286 vs 0.831, gate 0.005*diag). Projected from the exact
+    iso circle the p-curve is a clean line. Opt-in: EB_ISO_SNAP=1."""
+    du_tol = math.radians(float(os.environ.get("EB_ISO_SNAP_DEG", "5")))
+    for s_ in surfs:
+        if s_["kind"] != "torus" or "u" not in s_:
+            continue
+        C_ = s_["o"] + s_["a"] * s_["hc"]; e1_, e2_ = s_["u"], s_["w"]
+        q_ = pts - C_; h_ = q_ @ s_["a"]; rad_ = q_ - np.outer(h_, s_["a"])
+        rho_ = np.linalg.norm(rad_, axis=1)
+        uu_ = np.unwrap(np.arctan2(rad_ @ e2_, rad_ @ e1_))
+        vv_ = np.unwrap(np.arctan2(h_, rho_ - s_["major"]))
+        if uu_.max() - uu_.min() > du_tol or s_["minor"] <= 1e-6 * diag:
+            continue
+        u0_ = float(uu_.mean())
+        rad0_ = math.cos(u0_) * e1_ + math.sin(u0_) * e2_
+        cen_ = C_ + s_["major"] * rad0_
+        nrm_ = np.cross(s_["a"], rad0_)
+        # keep A -> B order (vv_[0] is A, vv_[-1] is B): arc_edge picks the short way from the turn sign, and a
+        # min->max ordering would make a chain that runs B->A come out as the long (270 deg) arc.
+        iso_pts = np.array([cen_ + s_["minor"] * (math.cos(t) * rad0_ + math.sin(t) * s_["a"])
+                            for t in np.linspace(float(vv_[0]), float(vv_[-1]), max(5, len(pts)))])
+        # the other surface must follow the circle too (same 1e-4*diag limit as the tangent-circle rescue): a short
+        # chain on a torus that is a real torus/cylinder curve, not an iso line, keeps its interpolated edge
+        if any(float(np.abs(sdist(o_, iso_pts)).max()) > 1e-4 * diag for o_ in surfs if o_ is not s_):
+            continue
+        return (arc_edge(cen_, nrm_, s_["minor"], A, B, iso_pts, False, VA, VB), "iso-circle")
+    return None
+
+
 TOLC = 1e-7 * diag
 ctypes = collections.Counter()
 edges = {}
@@ -1675,8 +1804,10 @@ for cid, ch in enumerate(chains):
     while len(pts) < 9:
         pts = densify(pts, surfs)
     made = None
+    if not closed and os.environ.get("EB_ISO_SNAP"):
+        made = iso_torus_snap(surfs, A, B, pts, VA, VB)
     kk_ = {s_["kind"]: s_ for s_ in surfs}
-    if not closed and set(kk_) == {"plane", "cylinder"} and abs(float(kk_["cylinder"]["a"] @ kk_["plane"]["n"])) < 1e-9:
+    if made is None and not closed and set(kk_) == {"plane", "cylinder"} and abs(float(kk_["cylinder"]["a"] @ kk_["plane"]["n"])) < 1e-9:
         # plane parallel to a cylinder axis: the intersection is one or two exact lines (one when tangent).
         # Projected points on a tangent pair are too soft for the 1e-7 line test (gearbox: a fillet's tangent
         # edge came out a B-spline and stayed unsewn)
@@ -2206,6 +2337,8 @@ if not BRepCheck_Analyzer(shape).IsValid():
     if n_tan:
         log(f"{n_tan} corners where arcs meet tangentially: vertex tolerance raised to their contact zone")
 log(f"solid valid {BRepCheck_Analyzer(shape).IsValid()}  ({time.time() - T0:.1f} s)")
+# (building about the bounding-box centre, EB_RECENTER, was tried 2026-09-15 and removed: mechparts/30, sound at its
+# 6.7 m offset, failed 7 corners once recentred, and 20 / 17 got no better)
 w = STEPControl_Writer(); w.Transfer(shape, STEPControl_AsIs); w.Write(str(out))
 # EB_BODY builds one body of a multi-body mesh: judge it against that body, not against the whole file
 mm = measure(out, np.asarray(body.triangles) if os.environ.get("EB_BODY") else _mesh(src), samples=300)

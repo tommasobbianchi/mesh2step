@@ -164,10 +164,12 @@ def regions(tri):
     _, _, patches = classify(tri)
     # 1. cylinders from quad seeds
     for o in sorted((o for o in patches if o[0] == "cylinder"), key=lambda o: -o[1]):
-        seed = [t for t in o[4] if label[t] < 0]
+        ax = np.asarray(o[3], float); ax /= np.linalg.norm(ax); u, w = frame(ax)
+        # EB_RIM_CYL: grow() labels every seed unconditionally, so seed only triangles facing the axis (the patch may
+        # carry fillet bands). Filtering here, not in grow(), keeps len(seed) < 4 from making an empty region.
+        seed = [t for t in o[4] if label[t] < 0 and (not os.environ.get("EB_RIM_CYL") or abs(float(n[t] @ ax)) < 0.02)]
         if len(seed) < 4:
             continue
-        ax = np.asarray(o[3], float); ax /= np.linalg.norm(ax); u, w = frame(ax)
         P = V[np.unique(F[seed])]
         c2, R, dev = fit_circle(np.c_[P @ u, P @ w])
         if dev > 5 * tol:

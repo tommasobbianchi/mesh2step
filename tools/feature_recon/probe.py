@@ -25,8 +25,12 @@ LOOSENING_KEYS = {"EB_CORNER_TOL", "EB_SEW_TOL", "EB_ABSORB_AREA"}
 # per failure class: (tightening / construction variants, loosening variants)
 LADDERS = {
     "open": ([{"EB_WELD": "1e-5"}, {"EB_WELD": "1e-6"}], []),
-    "corners": ([{"EB_STRIP_SPLIT": "1"}, {"EB_RCOND": "1e-3"}, {"EB_CYL_CYL": "0"}, {"EB_CONE_PLANE": "1"},
-                 {"EB_CYL_CYL": "0", "EB_RCOND": "1e-3"}],
+    # mechparts/20: a cylinder merged with its tangent round is split back (SPLIT_MIXED), refits may not get worse
+    # (REFIT_GUARD), and a round's side edge along one torus iso line is that exact circle (ISO_SNAP)
+    "corners": ([{"EB_RIM_CYL": "1"},
+                 {"EB_REFIT_GUARD": "1", "EB_CURVED_UNLABEL": "1", "EB_SPLIT_MIXED": "1", "EB_ISO_SNAP": "1"},
+                 {"EB_STRIP_SPLIT": "1"}, {"EB_CURVED_UNLABEL": "1"}, {"EB_RCOND": "1e-3"}, {"EB_CYL_CYL": "0"},
+                 {"EB_CONE_PLANE": "1"}, {"EB_CYL_CYL": "0", "EB_RCOND": "1e-3"}],
                 [{"EB_CORNER_TOL": "1e-5"}, {"EB_CORNER_TOL": "1e-4"}]),
     "chain": ([{"EB_CYL_CYL": "0"}, {"EB_RCOND": "1e-3"}, {"EB_NO_PLANE_SPLIT": "1"}], [{"EB_CORNER_TOL": "1e-5"}]),
     "unlabelled": ([{"EB_SPLIT_UNLABELLED": "1"}, {"EB_PLANE_RELABEL": "1"}, {"EB_NO_MIXED": "1"}, {"EB_UNION_MIXED": "1"},

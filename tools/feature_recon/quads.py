@@ -6,7 +6,7 @@
    on a line, normals perpendicular to it -> cylinder; on a line, constant angle -> cone;
    one point -> sphere; a circle -> torus (fillet on a round edge).
 usage: python3 quads.py <stl> [...]"""
-import collections, math, sys
+import collections, math, os, sys
 import numpy as np
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from slice import load, fit_circle
@@ -112,8 +112,11 @@ def classify(tri):
         # Constant 90 deg = cylinder, any other constant = cone. Checked BEFORE the point test: a full-height
         # cylinder strip puts every intersection at mid-height, which looks like a sphere centre.
         w, v = np.linalg.eigh(np.cov(N.T)); ax = v[:, 0]; dots = N @ ax
-        if math.sqrt(max(w[0], 0)) < 0.01:
-            if abs(dots.mean()) < 0.02:
+        # EB_RIM_CYL (edgebuild only): a full-ring cylinder patch carrying its near-tangent fillet bands tilts its normals
+        # by up to 0.112 (washer: sqrt(w0) 0.092) and read as "other", so no cylinder was ever seeded
+        rim_ = os.environ.get("EB_RIM_CYL")
+        if math.sqrt(max(w[0], 0)) < (0.15 if rim_ else 0.01):
+            if (np.abs(dots).max() < 0.15) if rim_ else (abs(dots.mean()) < 0.02):
                 out.append(("cylinder", len(qs), float(np.median(np.abs(R))), ax, pt))
             else:
                 out.append(("cone", len(qs), float(np.degrees(np.arccos(min(1.0, abs(dots.mean()))))), ax, pt))
