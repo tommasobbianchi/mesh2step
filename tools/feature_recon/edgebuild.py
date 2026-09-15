@@ -39,7 +39,7 @@ if len(sys.argv) > 2 and sys.argv[1] == "--combine":
 import numpy as np
 import trimesh
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path.home() / "projects/mesh2step"
 sys.path[:0] = [str(REPO / "src"), str(REPO / "tools/feature_recon")]
 os.environ.setdefault("REGION_TOL", "3e-4")
 from regions import regions, fit_smooth, fit_revolution  # noqa: E402
@@ -66,9 +66,12 @@ src, out = Path(sys.argv[1]), Path(sys.argv[2])
 m = trimesh.load(src, process=False)
 V0 = m.vertices[m.faces.reshape(-1)]
 diag = float(np.linalg.norm(V0.max(0) - V0.min(0)))
-key = np.round(V0 / (1.5e-4 * diag)).astype(np.int64)
+key = np.round(V0 / (float(os.environ.get("EB_WELD", "1.5e-4")) * diag)).astype(np.int64)   # EB_WELD: probe rung
 _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
 F0 = inv.reshape(-1, 3)
+# (an automatic finer weld whenever the 1.5e-4 weld left an edge used more than twice was tried 2026-09-15 and removed:
+# it fired on meshes that built fine at 1.5e-4 and broke the tube50 lid body 0 (8 free edges, dV -160 %) and the broom
+# holder body 2 (2 corners). A mesh that really is open at 1.5e-4 gets EB_WELD=1e-5 from the probe's "open" rung.)
 keep = np.logical_and.reduce([F0[:, 0] != F0[:, 1], F0[:, 1] != F0[:, 2], F0[:, 0] != F0[:, 2]])
 bodies_ = sorted(trimesh.Trimesh(V0[first], F0[keep], process=True).split(only_watertight=False), key=lambda p: -abs(p.volume))
 if os.environ.get("EB_COUNT_BODIES"):
@@ -583,6 +586,17 @@ for t0 in np.where(label < 0)[0]:
         cu_ = Pu_.mean(0); nu_ = np.linalg.svd(Pu_ - cu_)[2][-1]
         if float(np.abs((Pu_ - cu_) @ nu_).max()) < 1e-5 * diag:
             newL = len(kinds); kinds.append("plane"); label[grp_u] = newL; S[newL] = fit(newL); n_flat_u += 1
+        elif os.environ.get("EB_SPLIT_UNLABELLED"):
+            # EB_SPLIT_UNLABELLED probe rung: a group spanning two flat faces (mechparts/31: 45-degree chamfers along two
+            # straight edges meeting at 30 degrees, 2 triangles each) fits no single plane. Split it by facet normal and
+            # keep each part that is exactly flat as its own plane.
+            rest_ = list(grp_u)
+            while rest_:
+                n0_ = nt[rest_[0]]; part_ = [t for t in rest_ if float(nt[t] @ n0_) > 1 - 1e-6]
+                rest_ = [t for t in rest_ if t not in part_]
+                Pp_ = V[np.unique(F[part_])]
+                if len(Pp_) >= 3 and float(np.abs((Pp_ - Pp_.mean(0)) @ n0_).max()) < 1e-5 * diag:
+                    newL = len(kinds); kinds.append("plane"); label[part_] = newL; S[newL] = fit(newL); n_flat_u += 1
 if n_flat_u:
     log(f"{n_flat_u} flat groups of unlabelled triangles became plane regions")
 # what is still unlabelled is a corner-fan sliver spanning several surfaces (Schlauchschelle: 2 of 1560): it
@@ -590,7 +604,8 @@ if n_flat_u:
 tot_area = float(area.sum())
 for _ in range(10):
     left = np.where(label < 0)[0]
-    if not len(left) or float(area[left].sum()) > 1e-2 * tot_area:
+    # EB_ABSORB_AREA: loosening probe rung (mechparts/31: 16 triangles, 1.78 % of the area, in strips along two rims)
+    if not len(left) or float(area[left].sum()) > float(os.environ.get("EB_ABSORB_AREA", "1e-2")) * tot_area:
         break
     for t in left:
         share = collections.Counter()
@@ -601,6 +616,9 @@ for _ in range(10):
         if share:
             label[t] = share.most_common(1)[0][0]
 if (label < 0).any():
+    if os.environ.get("EB_DUMP_UNLABELLED"):
+        # the leftover triangles' corner coordinates (n x 3 x 3) and normals, to fit candidate surfaces offline
+        np.savez(os.environ["EB_DUMP_UNLABELLED"], tri=tri[label < 0], normal=nt[label < 0])
     if os.environ.get("EB_DEBUG"):
         left_d = np.where(label < 0)[0]
         log(f"  UNLABELLED {len(left_d)} triangles, area {float(area[left_d].sum()):.3f} of {tot_area:.1f} "
@@ -1057,7 +1075,7 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                         sg = math.copysign(1, dist)
                         cons.append(lambda t, n_=n_, d_=d_, sg=sg: sg * (n_ @ (t["o"] + t["a"] * t["hc"]) - d_) - t["minor"])
                         ncons["torus-plane"] += 1
-            elif (q["kind"] == "cylinder" and kind == "cylinder" and q["R"] >= s["R"] and os.environ.get("EB_CYL_CYL", "1")
+            elif (q["kind"] == "cylinder" and kind == "cylinder" and q["R"] >= s["R"] and os.environ.get("EB_CYL_CYL", "1") not in ("", "0")
                     and abs(abs(float(s["a"] @ q["a"])) - 1) < 1e-9):
                 # OPT-IN (EB_CYL_CYL=1) until reviewed: fixed mechparts/13 at 2 % but made 7 a +47 % wrong solid,
                 # 14 a -16 % wrong solid and 10 time out; at 2e-4 of R 13 failed again (bd projects-2i0)
@@ -1268,7 +1286,8 @@ if os.environ.get("EB_DUMP_REGION"):
 
 
 # ---------------------------------------------------------------- 4. exact corners and edges
-RCOND = 1e-6
+RCOND = float(os.environ.get("EB_RCOND", "1e-6"))          # EB_RCOND: probe rung
+CORNER_TOL = float(os.environ.get("EB_CORNER_TOL", "1e-6")) * diag   # EB_CORNER_TOL: loosening probe rung
 
 
 def project(P0, surfs, iters=300, rcond=None):
@@ -1312,7 +1331,7 @@ cpos, cres, cres_v = {}, 0.0, {}
 for v in corner:
     p, res = project(V[v], [S[L] for L in sorted(vlabels[v])])
     cpos[v] = p[0]; cres_v[v] = float(res[0]); cres = max(cres, cres_v[v])
-if cres > 1e-6 * diag:
+if cres > CORNER_TOL:
     # a cylinder on its exactly tangent plane leaves a 2e-5 singular value that rcond 1e-6 keeps: corners walk off
     # (mechparts/29, 10; DeepSeek review, verified). 1e-3 on every part broke mechparts/1, and 1e-3 on the failed corners
     # alone left them off the edge points still projected at 1e-6 (29: invalid, dV -1235 %). So a part whose corners fail
@@ -1322,8 +1341,8 @@ if cres > 1e-6 * diag:
         p, res = project(V[v], [S[L] for L in sorted(vlabels[v])])
         cpos[v] = p[0]; cres_v[v] = float(res[0]); cres = max(cres, cres_v[v])
     log(f"corners failed at rcond 1e-6, solved again at 1e-3: worst residual {cres:.1e}")
-if cres > 1e-6 * diag:
-    bad = [v for v in corner if np.abs(np.array([sdist(S[L], cpos[v])[0] for L in vlabels[v]])).max() > 1e-6 * diag]
+if cres > CORNER_TOL:
+    bad = [v for v in corner if np.abs(np.array([sdist(S[L], cpos[v])[0] for L in vlabels[v]])).max() > CORNER_TOL]
     if os.environ.get("EB_DEBUG"):
         for v in bad[:12]:
             log(f"  bad corner at {np.round(V[v], 4).tolist()} -> {np.round(cpos[v], 4).tolist()}: "
@@ -1478,7 +1497,8 @@ for cid, ch in enumerate(chains):
         edges[cid] = None; ctypes["collapsed"] += 1; continue
     closed = vs[0] == vs[-1]
     inner, res = project(V[vs[1:-1]], surfs) if len(vs) > 2 else (np.zeros((0, 3)), np.zeros(0))
-    if len(res) and res.max() > 1e-6 * diag:
+    circ_r = None     # (centre, axis, radius) when the rescue below put the chain on its closed-form circle
+    if len(res) and res.max() > CORNER_TOL:
         # an EXACTLY tangent pair about a common axis (fillet torus on its plane, fillet on a sphere) has parallel
         # gradients along the whole curve, so point projection cannot converge; the curve is still known in closed
         # form. Put the inner points on that circle instead of failing (mechparts/1: fillet torus S28 on plane S45,
@@ -1501,11 +1521,21 @@ for cid, ch in enumerate(chains):
             if os.environ.get("EB_DEBUG"):
                 log(f"    on both surfaces: {[round(float(np.abs(sdist(s_, V[vs[1:-1]])).max()), 6) for s_ in surfs]} "
                     f"(limit {1e-5 * diag:.2e}) -> {on_both_r}")
+            # a torus whose tube touches its plane exactly (the tangency constraint held) meets it on the circle
+            # rho = major in closed form, however far the labels wander across the flat band (mechparts/28: chain
+            # vertices up to 0.175 mm out and 3.4e-3 off a plane contaminated by 65 rim triangles)
+            tan_r = False
+            if hr_r is not None and {s_["kind"] for s_ in surfs} == {"plane", "torus"}:
+                t_r = next(s_ for s_ in surfs if s_["kind"] == "torus")
+                gap_r = abs(abs(hr_r[0] - float((t_r["o"] + t_r["a"] * t_r["hc"] - o_r) @ a_r)) - t_r["minor"])
+                tan_r = gap_r < 1e-7 * diag
+                if os.environ.get("EB_DEBUG"):
+                    log(f"    torus-plane tangency gap {gap_r:.2e} (limit {1e-7 * diag:.2e}) -> {tan_r}")
             if (hr_r is not None and hr_r[1] > 1e-6 * diag and np.abs(h_r - hr_r[0]).max() < 1e-4 * diag
-                    and (np.abs(rr_r - hr_r[1]).max() < 1e-4 * diag or on_both_r)):
+                    and (np.abs(rr_r - hr_r[1]).max() < 1e-4 * diag or on_both_r or tan_r)):
                 inner = o_r + np.outer(np.full(len(h_r), hr_r[0]), a_r) + rad_r / np.maximum(rr_r[:, None], 1e-300) * hr_r[1]
-                res = np.zeros(len(inner))
-    if len(res) and res.max() > 1e-6 * diag:
+                res = np.zeros(len(inner)); circ_r = (o_r + a_r * hr_r[0], a_r, hr_r[1])
+    if len(res) and res.max() > CORNER_TOL:
         if os.environ.get("EB_DEBUG"):
             worst = V[vs[1:-1]][int(np.argmax(res))]
             log(f"  chain {cid} labels {ch['labs']} worst vertex {np.round(worst, 5).tolist()}")
@@ -1520,6 +1550,11 @@ for cid, ch in enumerate(chains):
              f"(residual {res.max():.2e})")
     if ch["corner_ends"]:
         A = cpos[rep[vs[0]]]; B = cpos[rep[vs[-1]]]; VA = vert[rep[vs[0]]]; VB = vert[rep[vs[-1]]]
+    elif circ_r is not None:
+        # a rescued closed chain starts on its circle too: projecting its first vertex stalls on the tangent pair
+        # like the inner points did, and one point 0.175 mm off turned the circle into a B-spline (mechparts/28)
+        q0 = V[vs[0]] - circ_r[0]; q0 = q0 - (q0 @ circ_r[1]) * circ_r[1]
+        A = B = circ_r[0] + q0 / np.linalg.norm(q0) * circ_r[2]; VA = VB = BRepBuilderAPI_MakeVertex(pnt(A)).Vertex()
     else:
         A = B = project(V[vs[0]], surfs)[0][0]; VA = VB = BRepBuilderAPI_MakeVertex(pnt(A)).Vertex()
     pts = np.vstack([A, inner, B])
@@ -1607,6 +1642,64 @@ for cid, ch in enumerate(chains):
 log(f"edges {dict(ctypes)}")
 
 
+def tangent_corner_tolerances(shape_):
+    """Two arcs that meet TANGENTIALLY at a corner stay within their edge tolerances of each other for sqrt(2 Reff tol)
+    either side of it, farther than the corner's 1e-7 tolerance, so BRepCheck calls the face's wire self-intersecting
+    although the corner sits on the exact tangent point (mechparts/14: R 812.8 / R 177.8 and R 723.9 / R 304.8 on its
+    plates, 0.3 um from the tangent points; valid once those corners admit 1e-3 mm). Give each tangent corner that
+    contact zone. Runs on the finished solid: sewing rebuilds the vertices, so a tolerance set before it is lost."""
+    from OCP.BRep import BRep_Tool as _BTt
+    from OCP.BRepAdaptor import BRepAdaptor_Curve as _BACt
+    from OCP.TopAbs import TopAbs_EDGE as _TEd
+    from OCP.TopExp import TopExp as _TEt
+    from OCP.gp import gp_Vec
+    from OCP.TopAbs import TopAbs_VERTEX as _TVx
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    # group edge ends by the vertex itself: rounding positions to a grid split one corner's ends across two cells
+    # (mechparts/14: 2 of the 3 tangent corners never paired)
+    _vmap = TopTools_IndexedMapOfShape(); _TEt.MapShapes_s(shape_, _TVx, _vmap)
+    _ends = collections.defaultdict(list); _vx = {}
+    ex_ = TopExp_Explorer(shape_, _TEd)
+    while ex_.More():
+        e_ = TopoDS.Edge_s(ex_.Current()); ex_.Next()
+        c_ = _BACt(e_); k_ = str(c_.GetType()).split("_")[-1]
+        if k_ not in ("Circle", "Line") or _BTt.Degenerated_s(e_):
+            continue
+        ci_ = c_.Circle() if k_ == "Circle" else None
+        for u_, vx_ in ((c_.FirstParameter(), _TEt.FirstVertex_s(e_)), (c_.LastParameter(), _TEt.LastVertex_s(e_))):
+            p_ = gp_Pnt(); d_ = gp_Vec(); c_.D1(u_, p_, d_)
+            t_ = np.array([d_.X(), d_.Y(), d_.Z()]); t_ = t_ / max(float(np.linalg.norm(t_)), 1e-300)
+            k2_ = _vmap.FindIndex(vx_)
+            _ends[k2_].append((t_, ci_, _BTt.Tolerance_s(e_))); _vx.setdefault(k2_, []).append(vx_)
+    n_tan_ = 0
+    for key_, ends_ in _ends.items():
+        zone_ = 0.0
+        for i_ in range(len(ends_)):
+            for j_ in range(i_ + 1, len(ends_)):
+                (t1, c1, e1), (t2, c2, e2) = ends_[i_], ends_[j_]
+                if 1 - abs(float(t1 @ t2)) > 1e-8 or (c1 is None and c2 is None):
+                    continue
+                if c1 is not None and c2 is not None:
+                    a1, a2 = c1.Axis().Direction(), c2.Axis().Direction()
+                    if 1 - abs(a1.X() * a2.X() + a1.Y() * a2.Y() + a1.Z() * a2.Z()) > 1e-8:
+                        continue          # not coplanar: not two arcs of one face
+                    d_c = c1.Location().Distance(c2.Location()); R1, R2 = c1.Radius(), c2.Radius()
+                    if abs(d_c - (R1 + R2)) <= abs(d_c - abs(R1 - R2)):
+                        reff = R1 * R2 / (R1 + R2)
+                    elif abs(R1 - R2) > 1e-9 * diag:
+                        reff = R1 * R2 / abs(R1 - R2)
+                    else:
+                        continue          # the same circle continued: no contact zone
+                else:
+                    reff = (c1 or c2).Radius()
+                zone_ = max(zone_, math.sqrt(2 * reff * (e1 + e2)))
+        if zone_ > 0 and any(zone_ > _BTt.Tolerance_s(v_) for v_ in _vx[key_]):
+            for v_ in _vx[key_]:
+                BRep_Builder().UpdateVertex(v_, max(zone_, _BTt.Tolerance_s(v_)))
+            n_tan_ += 1
+    return n_tan_
+
+
 # ---------------------------------------------------------------- 5. faces, shell, solid
 def geom_surface(s, L):
     P = region_verts(L)
@@ -1632,7 +1725,8 @@ def geom_surface(s, L):
     return Geom_ToroidalSurface(gp_Ax3(pnt(s["o"] + s["a"] * s["hc"]), gdir(s["a"]), gdir(X)), s["major"], s["minor"])
 
 
-sew = BRepBuilderAPI_Sewing(1e-5 * diag)
+sew = BRepBuilderAPI_Sewing(float(os.environ.get("EB_SEW_TOL", "1e-5")) * diag)   # EB_SEW_TOL: loosening probe rung
+faces_presew = []
 bb = BRep_Builder()
 for L, s in S.items():
     ts = region_tris(L)
@@ -1659,6 +1753,7 @@ for L, s in S.items():
                     apex_face = TopoDS.Face_s(exa.Current())
                 exa.Next()
     torus_face = None
+    edge_ov = {}          # chain id -> edge used on THIS face only (a rim restarted on the seam, see below)
     if (s["kind"] == "torus" and len(region_loops[L]) == 2
             and all(len(wl) == 1 and not chains[wl[0][0]]["corner_ends"] for wl in region_loops[L])):
         # a fillet ring bounded by two whole circles: healing a face built from those two wires kept one and left the
@@ -1669,13 +1764,77 @@ for L, s in S.items():
         def _tube_angle(p):
             q_t = p - C_t; h_t = float(q_t @ s["a"]); rho_t = float(np.linalg.norm(q_t - h_t * s["a"]))
             return math.atan2(h_t, rho_t - s["major"]) % (2 * math.pi)
-        v_lo, v_hi = sorted(_tube_angle(V[chains[wl[0][0]]["verts"][0]]) for wl in region_loops[L])
+        # bound the band by the built circles' own vertices: a tangent contact's mesh vertex wanders across the band
+        # (mechparts/28: up to 0.175 mm), so its tube angle put the band rim 3e-4 off the neighbour's circle
+        from OCP.BRep import BRep_Tool as _BT
+        from OCP.TopExp import TopExp as _TE
+
+        def _rim_point(cid_):
+            if edges.get(cid_) is None:
+                return V[chains[cid_]["verts"][0]]
+            p_ = _BT.Pnt_s(_TE.FirstVertex_s(edges[cid_]))
+            return np.array([p_.X(), p_.Y(), p_.Z()])
+        v_lo, v_hi = sorted(_tube_angle(_rim_point(wl[0][0])) for wl in region_loops[L])
         v_mid = float(np.median([_tube_angle(c_) for c_ in cen]))
         if not v_lo <= v_mid <= v_hi:
             v_lo, v_hi = v_hi, v_lo + 2 * math.pi          # the band runs the other way round the tube
         mf_t = BRepBuilderAPI_MakeFace(gs, 0.0, 2 * math.pi, v_lo, v_hi, 1e-7)
         if mf_t.IsDone():
             torus_face = mf_t.Face()
+    if (s["kind"] == "cylinder" and len(region_loops[L]) == 2 and not os.environ.get("EB_NO_CYL_BAND")
+            and all(len(wl) == 1 and not chains[wl[0][0]]["corner_ends"] and edges.get(wl[0][0]) is not None
+                    for wl in region_loops[L])):
+        # a whole cylinder between two circles (a through hole, a bore): healing a face built from the two circle wires
+        # splits one circle where its vertex misses the seam, into a full arc and a 4e-5 mm sliver, and sewing then
+        # pairs the plane's circle with the sliver on one hole in four (mechparts/28 hole S4, 1 free edge). Build the band
+        # between the two circles' heights instead, like the fillet ring band above; its circles sew to the neighbours'.
+        from OCP.BRep import BRep_Tool as _BTc
+        from OCP.BRepAdaptor import BRepAdaptor_Curve as _BACc
+        from OCP.TopExp import TopExp as _TXc
+        ax_c = gs.Position(); lo_c = ax_c.Location(); di_c = ax_c.Direction()
+
+        def _coaxial_circle(e_):
+            # the band's rims are isolines of the cylinder: only a circle on the cylinder's own axis is one. A hole ending
+            # on a fillet torus is bounded by a torus-cylinder curve, and a band cut flat there was a wrong rim at every
+            # hole (mechparts/27: 4 -> 20 free edges)
+            c_ = _BACc(e_)
+            if str(c_.GetType()).split("_")[-1] != "Circle":
+                return False
+            ci_ = c_.Circle(); a_ = ci_.Axis().Direction(); p_ = ci_.Location()
+            q_ = np.array([p_.X() - lo_c.X(), p_.Y() - lo_c.Y(), p_.Z() - lo_c.Z()]); d_ = np.array([di_c.X(), di_c.Y(), di_c.Z()])
+            return (abs(abs(a_.X() * d_[0] + a_.Y() * d_[1] + a_.Z() * d_[2]) - 1) < 1e-9
+                    and float(np.linalg.norm(q_ - (q_ @ d_) * d_)) < 1e-6 * diag)
+
+        def _v_c(cid_):
+            p_ = _BTc.Pnt_s(_TXc.FirstVertex_s(edges[cid_]))
+            return (p_.X() - lo_c.X()) * di_c.X() + (p_.Y() - lo_c.Y()) * di_c.Y() + (p_.Z() - lo_c.Z()) * di_c.Z()
+        if all(_coaxial_circle(edges[wl[0][0]]) for wl in region_loops[L]):
+            v_c = sorted(_v_c(wl[0][0]) for wl in region_loops[L])
+            mf_c = BRepBuilderAPI_MakeFace(gs, 0.0, 2 * math.pi, v_c[0], v_c[1], 1e-7)
+            if mf_c.IsDone() and v_c[1] - v_c[0] > 1e-6 * diag:
+                torus_face = mf_c.Face()     # served by the same one-face path as the fillet ring band
+        else:
+            # one rim is not a circle (a hole ending on a fillet torus): healing adds the seam at u = 0 and splits any rim
+            # whose vertex is not on it into its edge and a sliver of up to 2.5e-4 mm; sewing drops some slivers and keeps
+            # others as free edges (mechparts/27: 4 holes of 10). Put the seam through the curved rim's vertex and
+            # restart each circular rim at that same angle, so there is nothing to split.
+            nonc_ = [wl[0][0] for wl in region_loops[L] if not _coaxial_circle(edges[wl[0][0]])]
+            if len(nonc_) == 1:
+                p_ = _BTc.Pnt_s(_TXc.FirstVertex_s(edges[nonc_[0]]))
+                d_ = np.array([di_c.X(), di_c.Y(), di_c.Z()])
+                q_ = np.array([p_.X() - lo_c.X(), p_.Y() - lo_c.Y(), p_.Z() - lo_c.Z()]); r_ = q_ - (q_ @ d_) * d_
+                if float(np.linalg.norm(r_)) > 1e-6 * diag:
+                    X_ = r_ / np.linalg.norm(r_)
+                    gs = Geom_CylindricalSurface(gp_Ax3(lo_c, di_c, gdir(X_)), s["R"])
+                    for wl in region_loops[L]:
+                        cid_ = wl[0][0]
+                        if cid_ == nonc_[0]:
+                            continue
+                        ci_ = _BACc(edges[cid_]).Circle()
+                        ax2_ = gp_Ax2(ci_.Location(), ci_.Axis().Direction(), gdir(X_))
+                        mk_ = BRepBuilderAPI_MakeEdge(Geom_Circle(ax2_, ci_.Radius()), 0.0, 2 * math.pi)
+                        if mk_.IsDone():
+                            edge_ov[cid_] = mk_.Edge()
     if apex_face is not None:
         faces_out = [apex_face]; sgn = 1.0          # the primitive's lateral face is already outward
     elif torus_face is not None:
@@ -1776,7 +1935,8 @@ for L, s in S.items():
                     seq = [(cid, not fwd) for cid, fwd in reversed(seq)]
                 mw = BRepBuilderAPI_MakeWire()
                 for cid, fwd in seq:
-                    mw.Add(edges[cid] if fwd else TopoDS.Edge_s(edges[cid].Reversed()))
+                    e_use = edge_ov.get(cid, edges[cid])
+                    mw.Add(e_use if fwd else TopoDS.Edge_s(e_use.Reversed()))
                 if not mw.IsDone():
                     fail(f"face {L} ({s['kind']}): its boundary does not close (wire error {mw.Error()})")
                 bb.Add(face, mw.Wire())
@@ -1800,6 +1960,16 @@ for L, s in S.items():
         if sgn < 0:
             face = TopoDS.Face_s(face.Reversed())
         sew.Add(face)
+        faces_presew.append(face)
+if os.environ.get("EB_DUMP_FACES"):
+    # the oriented faces exactly as handed to sewing, to replay sewing offline in seconds instead of a full rebuild
+    from OCP.BRepTools import BRepTools as _BRT
+    from OCP.TopoDS import TopoDS_Compound as _TDC
+    _cmp = _TDC(); BRep_Builder().MakeCompound(_cmp)
+    for _f in faces_presew:
+        BRep_Builder().Add(_cmp, _f)
+    _BRT.Write_s(_cmp, os.environ["EB_DUMP_FACES"])
+    log(f"dumped {len(faces_presew)} pre-sewing faces to {os.environ['EB_DUMP_FACES']}")
 sew.Perform()
 sewn = sew.SewedShape()
 log(f"sewn {len(S)} faces, free edges {sew.NbFreeEdges()}, multiple edges {sew.NbMultipleEdges()}")
@@ -1891,6 +2061,10 @@ if os.environ.get("EB_DEBUG"):
         log(f"  FREE edge {_i}: {str(_c.GetType()).split('_')[-1]} mid {np.round(_pp, 3).tolist()} "
             f"length {_c.LastParameter() - _c.FirstParameter():.3f} nearest surfaces "
             + ", ".join(f"S{L_}:{S[L_]['kind']}" for L_ in near))
+if os.environ.get("EB_FAST_FAIL") and sew.NbFreeEdges():
+    # set by the probe: a shell with free edges can never pass the gate (free_edges must be 0), and healing, the
+    # tangent pass and measuring an open solid cost 740 of 972 s on one mechparts/31 variant
+    fail(f"{sew.NbFreeEdges()} free edges after sewing")
 ms = BRepBuilderAPI_MakeSolid()
 ex = TopExp_Explorer(sewn, TopAbs_SHELL)
 n_shells = 0
@@ -1913,11 +2087,24 @@ except Exception as exc:  # noqa: BLE001 - L10_gearbox: Geom_TrimmedCurve range 
     from OCP.BRepLib import BRepLib
     log(f"  ShapeFix_Solid failed ({str(exc)[:60]}); orienting the closed solid directly")
     shape = ms.Solid(); BRepLib.OrientClosedSolid_s(shape)
+if not BRepCheck_Analyzer(shape).IsValid():
+    n_tan = tangent_corner_tolerances(shape)
+    if n_tan:
+        log(f"{n_tan} corners where arcs meet tangentially: vertex tolerance raised to their contact zone")
 log(f"solid valid {BRepCheck_Analyzer(shape).IsValid()}  ({time.time() - T0:.1f} s)")
 w = STEPControl_Writer(); w.Transfer(shape, STEPControl_AsIs); w.Write(str(out))
 # EB_BODY builds one body of a multi-body mesh: judge it against that body, not against the whole file
 mm = measure(out, np.asarray(body.triangles) if os.environ.get("EB_BODY") else _mesh(src), samples=300)
 if mm is None:
     fail("written STEP does not read back")
+if not mm["valid"]:
+    # a STEP file has no per-vertex tolerance: read back, every corner is 1e-7 again and tangent arcs "self-intersect"
+    # (mechparts/14). Judge the read-back solid with the tangent corners' contact zone (user decision 2026-09-15).
+    from mesh2step.feature import _read
+    from OCP.BRepCheck import BRepCheck_Analyzer as _BCA
+    rb_ = _read(out)
+    if rb_ is not None and tangent_corner_tolerances(rb_) and _BCA(rb_).IsValid():
+        mm["valid"] = True
+        log("read-back solid valid once its tangent-arc corners carry their contact zone")
 log("RESULT", {k: (round(v, 5) if isinstance(v, float) else v) for k, v in mm.items() if k != "radii"},
     "radii", sorted({round(x, 4) for x in mm["radii"]}))
