@@ -29,6 +29,10 @@ LADDERS = {
     # (REFIT_GUARD), and a round's side edge along one torus iso line is that exact circle (ISO_SNAP)
     "corners": ([{"EB_RIM_CYL": "1"},
                  {"EB_REFIT_GUARD": "1", "EB_CURVED_UNLABEL": "1", "EB_SPLIT_MIXED": "1", "EB_ISO_SNAP": "1"},
+                 # mechparts/17: the same, plus leftover curved groups fitted about a known axis (a R 200.66 bore in 5
+                 # fragments); a separate rung because on mechparts/20 it builds an invalid solid
+                 {"EB_REFIT_GUARD": "1", "EB_CURVED_UNLABEL": "1", "EB_SPLIT_MIXED": "1", "EB_ISO_SNAP": "1",
+                  "EB_LEFTOVER_AXIS": "1"},
                  {"EB_STRIP_SPLIT": "1"}, {"EB_CURVED_UNLABEL": "1"}, {"EB_RCOND": "1e-3"}, {"EB_CYL_CYL": "0"},
                  {"EB_CONE_PLANE": "1"}, {"EB_CYL_CYL": "0", "EB_RCOND": "1e-3"}],
                 [{"EB_CORNER_TOL": "1e-5"}, {"EB_CORNER_TOL": "1e-4"}]),

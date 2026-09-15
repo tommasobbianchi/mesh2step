@@ -718,6 +718,31 @@ for t0 in np.where(label < 0)[0]:
                     newL = len(kinds); kinds.append("plane"); label[part_] = newL; S[newL] = fit(newL); n_flat_u += 1
 if n_flat_u:
     log(f"{n_flat_u} flat groups of unlabelled triangles became plane regions")
+if os.environ.get("EB_LEFTOVER_AXIS"):
+    # EB_LEFTOVER_AXIS probe rung: the known-axis pass above fits a whole smooth component, which still holds the
+    # triangles a neighbour later takes back (mechparts/17: a R 200.66 bore in 5 fragments, 374 triangles, 1.05 % of the
+    # area, inside rejected mixed regions). Once the neighbours have taken theirs, each leftover group is that surface alone
+    cands_u = axis_candidates(); seen_u = set(); n_curved_u = 0
+    for t0 in np.where(label < 0)[0]:
+        if t0 in seen_u:
+            continue
+        grp_u = []; st_u = [int(t0)]; seen_u.add(int(t0))
+        while st_u:
+            t = st_u.pop(); grp_u.append(t)
+            for i in range(3):
+                u = other(t, F[t][i], F[t][(i + 1) % 3])
+                if label[u] < 0 and u not in seen_u:
+                    seen_u.add(u); st_u.append(u)
+        if len(grp_u) >= 3:
+            b = best_axis_fit(np.array(grp_u), cands_u)
+            if os.environ.get("EB_DEBUG"):
+                Pg_ = V[np.unique(F[grp_u])]
+                log(f"  leftover group {len(grp_u)} tris, box {np.round(Pg_.min(0), 2).tolist()}..{np.round(Pg_.max(0), 2).tolist()}: "
+                    + (f"{b['kind']} R {b.get('R', b.get('minor'))}" if b is not None else "no known-axis fit")
+                    + f"; candidate axes {[np.round(c_[0], 3).tolist() for c_ in cands_u[:8]]}")
+            if b is not None:
+                newL = len(kinds); kinds.append(b["kind"]); label[grp_u] = newL; S[newL] = b; n_curved_u += 1
+    log(f"{n_curved_u} curved groups of unlabelled triangles became regions about a known axis")
 # what is still unlabelled is a corner-fan sliver spanning several surfaces (Schlauchschelle: 2 of 1560): it
 # only has to belong to a face topologically, since no coordinate of the result comes from its vertices
 tot_area = float(area.sum())
