@@ -136,12 +136,15 @@ def frame(a):
 
 def sdist(s, P):
     """Signed distance, positive on the side the surface normal points to."""
-    P = np.atleast_2d(P); k = s["kind"]
+    if not isinstance(P, np.ndarray) or P.ndim != 2:
+        P = np.atleast_2d(P)
+    k = s["kind"]
     if k == "plane":
         return P @ s["n"] - s["d"]
     if k == "sphere":
         return np.linalg.norm(P - s["c"], axis=1) - s["R"]
-    q = P - s["o"]; h = q @ s["a"]; rho = np.linalg.norm(q - np.outer(h, s["a"]), axis=1)
+    # h[:, None] * a is np.outer(h, a) without its ravel/copy overhead (38 s of mechparts/20), bit for bit the same product
+    q = P - s["o"]; h = q @ s["a"]; rho = np.linalg.norm(q - h[:, None] * s["a"], axis=1)
     if k == "cylinder":
         return rho - s["R"]
     if k == "cone":
