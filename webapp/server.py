@@ -504,38 +504,65 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
     if (os.environ.get("MESH2STEP_EDGEBUILD", "1") == "0" or not res.get("ok")
             or (res.get("triangles") or 0) > EDGEBUILD_MAX_TRIS):
         return res
-    cand = Path(out_path).with_name("edge.step")
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, str(EDGEBUILD), str(stl_path), str(cand)],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
-        )
-        stdout, _ = proc.communicate(timeout=EDGEBUILD_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-        return res
-    except OSError:
-        return res
-    line = next((ln for ln in reversed(stdout.splitlines()) if ln.startswith("RESULT ")), None)
-    if proc.returncode != 0 or line is None or not cand.exists():
-        cand.unlink(missing_ok=True)
-        return res
-    m = ast.literal_eval(line[7:].split(" radii ")[0])
+    deadline = time.time() + EDGEBUILD_TIMEOUT_S
+
+    def _run(args, env_extra):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(EDGEBUILD), *args], env=dict(os.environ, **env_extra),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+            )
+            stdout, _ = proc.communicate(timeout=max(1.0, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            return None, ""
+        except OSError:
+            return None, ""
+        return proc.returncode, stdout
+
+    # a mesh of several closed bodies (print-in-place assembly, broom holder: bar + two clip arms 0.34 mm apart) is
+    # rebuilt body by body, each gated on its own, and served as one STEP of that many solids
+    rc, out = _run([str(stl_path), str(Path(out_path).with_name("count.step"))], {"EB_COUNT_BODIES": "1"})
+    count = next((ln for ln in out.splitlines() if ln.startswith("BODIES ")), None)
+    n_bodies = int(count.split()[1]) if rc == 0 and count else 1
+    cands, metrics = [], []
+    for k in range(n_bodies):
+        cand = Path(out_path).with_name(f"edge{k}.step")
+        rc, out = _run([str(stl_path), str(cand)], {"EB_BODY": str(k)} if n_bodies > 1 else {})
+        line = next((ln for ln in reversed(out.splitlines()) if ln.startswith("RESULT ")), None)
+        cands.append(cand)
+        if rc != 0 or line is None or not cand.exists():
+            break
+        m = ast.literal_eval(line[7:].split(" radii ")[0])
+        if not (m["valid"] and m["solids"] == 1 and m["free_edges"] == 0
+                and abs(m["dv_pct"]) <= EDGE_MAX_DV_PCT and m["dist_p95"] <= EDGE_MAX_P95_REL * m["diag"]):
+            break
+        metrics.append(m)
     before = res.get("smoothBuiltCylinders") or 0
-    if not (m["valid"] and m["solids"] == 1 and m["free_edges"] == 0
-            and abs(m["dv_pct"]) <= EDGE_MAX_DV_PCT and m["dist_p95"] <= EDGE_MAX_P95_REL * m["diag"]
-            and m["cylinders"] >= before):
-        cand.unlink(missing_ok=True)
+    final = Path(out_path).with_name("edge.step")
+    ok = len(metrics) == n_bodies and sum(m["cylinders"] for m in metrics) >= before
+    if ok and n_bodies > 1:
+        rc, out = _run(["--combine", str(final), *map(str, cands)], {})
+        ok = rc == 0 and f"COMBINED {n_bodies}" in out
+    elif ok:
+        cands[0].replace(final)
+    for c in cands:
+        c.unlink(missing_ok=True)
+    if not ok or not final.exists():
+        final.unlink(missing_ok=True)
         return res
-    cand.replace(out_path)
-    other = m["faces"] - m["planes"] - m["cylinders"]
-    note = (f"shape rebuilt from exact surfaces: {m['planes']} planes, {m['cylinders']} cylinders, "
-            f"{other} other curved faces (engine built {before} cylinders; volume {m['dv_pct']:+.2f}% vs mesh)")
-    return dict(res, output=str(out_path), solids=1, openShells=0, watertight=True, freeEdges=0,
-                stepVolumeMM3=m["volume"], volumeDeltaPct=m["dv_pct"], facesAfterUnify=m["faces"],
-                facesAfterSmooth=m["faces"], smoothPlanes=m["planes"], smoothCylinders=m["cylinders"],
-                smoothBuiltPlanes=m["planes"], smoothBuiltCylinders=m["cylinders"],
+    final.replace(out_path)
+    planes = sum(m["planes"] for m in metrics); cyls = sum(m["cylinders"] for m in metrics)
+    faces = sum(m["faces"] for m in metrics); volume = sum(m["volume"] for m in metrics)
+    dv = metrics[0]["dv_pct"] if n_bodies == 1 else 100.0 * (volume / sum(m["mesh_volume"] for m in metrics) - 1.0)
+    bodies = f"{n_bodies} bodies, " if n_bodies > 1 else ""
+    note = (f"shape rebuilt from exact surfaces: {bodies}{planes} planes, {cyls} cylinders, "
+            f"{faces - planes - cyls} other curved faces (engine built {before} cylinders; volume {dv:+.2f}% vs mesh)")
+    return dict(res, output=str(out_path), solids=n_bodies, openShells=0, watertight=True, freeEdges=0,
+                stepVolumeMM3=volume, volumeDeltaPct=dv, facesAfterUnify=faces,
+                facesAfterSmooth=faces, smoothPlanes=planes, smoothCylinders=cyls,
+                smoothBuiltPlanes=planes, smoothBuiltCylinders=cyls,
                 featureMethod="edgebuild", warnings=[note, *(res.get("warnings") or [])])
 
 

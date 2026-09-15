@@ -17,6 +17,25 @@ usage: edgebuild.py <mesh.stl> <out.step>    prints RESULT {...} radii [...]; ex
 import collections, math, os, sys, time
 from pathlib import Path
 
+if len(sys.argv) > 2 and sys.argv[1] == "--combine":
+    # edgebuild.py --combine OUT.step BODY0.step BODY1.step ...: the solids of separately rebuilt bodies of one mesh (a
+    # print-in-place assembly, broom holder: bar + two clip arms 0.34 mm apart) written as one STEP
+    from OCP.BRep import BRep_Builder
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+    bb_c = BRep_Builder(); comp_c = TopoDS_Compound(); bb_c.MakeCompound(comp_c); n_c = 0
+    for p_c in sys.argv[3:]:
+        r_c = STEPControl_Reader()
+        if r_c.ReadFile(p_c) != 1:
+            print(f"FAIL cannot read {p_c}"); sys.exit(1)
+        r_c.TransferRoots(); ex_c = TopExp_Explorer(r_c.OneShape(), TopAbs_SOLID)
+        while ex_c.More():
+            bb_c.Add(comp_c, ex_c.Current()); n_c += 1; ex_c.Next()
+    w_c = STEPControl_Writer(); w_c.Transfer(comp_c, STEPControl_AsIs); w_c.Write(sys.argv[2])
+    print(f"COMBINED {n_c}"); sys.exit(0)
+
 import numpy as np
 import trimesh
 
@@ -47,8 +66,11 @@ key = np.round(V0 / (1.5e-4 * diag)).astype(np.int64)
 _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
 F0 = inv.reshape(-1, 3)
 keep = np.logical_and.reduce([F0[:, 0] != F0[:, 1], F0[:, 1] != F0[:, 2], F0[:, 0] != F0[:, 2]])
-body = sorted(trimesh.Trimesh(V0[first], F0[keep], process=True).split(only_watertight=False),
-              key=lambda p: -abs(p.volume))[int(os.environ.get("EB_BODY", "0"))]
+bodies_ = sorted(trimesh.Trimesh(V0[first], F0[keep], process=True).split(only_watertight=False), key=lambda p: -abs(p.volume))
+if os.environ.get("EB_COUNT_BODIES"):
+    # the service asks first: a mesh of several closed bodies (a print-in-place assembly) is rebuilt body by body
+    print(f"BODIES {len(bodies_)}", flush=True); sys.exit(0)
+body = bodies_[int(os.environ.get("EB_BODY", "0"))]
 r = regions(body.triangles)
 V, F = r["topology"][0], r["topology"][1]
 label = np.array(r["label"]).copy()
@@ -284,26 +306,91 @@ for L in list(S):
     ts = region_tris(L); cen_ = tri[ts].mean(1)
     g_ = sgrad(s, cen_); g_ /= np.maximum(np.linalg.norm(g_, axis=1, keepdims=True), 1e-300)
     sizes_ = [s.get(k_) for k_ in ("R", "major", "minor") if s.get(k_) is not None]
-    if (np.abs(sdist(s, cen_)).max() < 5e-3 * diag and all(0 < z_ < diag for z_ in sizes_)
+    # the simplest surface wins: a narrow flat strip also fits a curved surface within tolerance (broom holder logo: a
+    # 7-triangle wall strip as a cylinder, refit later as an R 19.6 sphere, its corners 0.13 mm apart)
+    Pv_f = V[np.unique(F[ts])]; c_f = Pv_f.mean(0); n_f = np.linalg.svd(Pv_f - c_f)[2][-1]
+    flat_ = len(Pv_f) >= 3 and float(np.abs((Pv_f - c_f) @ n_f).max()) < 1e-6 * diag
+    if (not flat_ and np.abs(sdist(s, cen_)).max() < 5e-3 * diag and all(0 < z_ < diag for z_ in sizes_)
             and np.abs(np.einsum("ij,ij->i", g_, nt[ts])).min() > math.cos(math.radians(20))):
         continue
+    if os.environ.get("EB_DUMP_TRIS") and str(L) in os.environ["EB_DUMP_TRIS"].split(","):
+        # what a rejected curved region is made of: facet normal directions and where its triangles sit
+        ang_ = np.degrees(np.arctan2(nt[ts][:, 2], nt[ts][:, 0])); ny_ = nt[ts][:, 1] / np.maximum(np.linalg.norm(nt[ts], axis=1), 1e-300)
+        log(f"  TRIS S{L}: axis {np.round(s.get('a', np.zeros(3)), 4).tolist()} o {np.round(s.get('o', np.zeros(3)), 4).tolist()} "
+            f"R {s.get('R')}, normal y-component range {ny_.min():+.3f}..{ny_.max():+.3f}, centroid box "
+            f"{np.round(cen_.min(0), 3).tolist()}..{np.round(cen_.max(0), 3).tolist()}")
+        for a0 in range(-180, 180, 15):
+            sel_ = np.where(np.logical_and(ang_ >= a0, ang_ < a0 + 15))[0]
+            if len(sel_):
+                log(f"    normal xz-angle {a0:+4d}..{a0 + 15:+4d}: {len(sel_):3d} tris, centroid box "
+                    f"{np.round(cen_[sel_].min(0), 3).tolist()}..{np.round(cen_[sel_].max(0), 3).tolist()}, "
+                    f"surface distance max {float(np.abs(sdist(s, cen_[sel_])).max()):.2e}")
     if os.environ.get("EB_DEBUG"):
         log(f"  flat-facet test S{L} ({s['kind']}, {len(ts)} tris, sizes {[round(float(z_), 4) for z_ in sizes_]}): centroid distance max "
             f"{float(np.abs(sdist(s, cen_)).max()):.2e} (limit {5e-3 * diag:.2e}), worst facing angle "
             f"{math.degrees(math.acos(min(1.0, float(np.abs(np.einsum('ij,ij->i', g_, nt[ts])).min())))):.1f} deg (limit 20)")
     del S[L]; tset = set(ts.tolist()); seen_t = set()
+    fgroups = []                      # coplanar facet groups of the rejected region
     for t0 in ts:
         if t0 in seen_t:
             continue
-        newL = len(kinds); kinds.append("plane"); stack = [t0]; seen_t.add(t0)
+        grp = []; stack = [t0]; seen_t.add(t0)
         while stack:
-            t = stack.pop(); label[t] = newL
+            t = stack.pop(); grp.append(t)
             for i in range(3):
                 u = other(t, F[t][i], F[t][(i + 1) % 3])
                 if u in tset and u not in seen_t and nt[t] @ nt[u] > 0.99999:
                     seen_t.add(u); stack.append(u)
+        fgroups.append(grp)
+    # a rejected region can be SEVERAL small rounds plus flat strips (broom holder logo: two R ~0.35 corner fillets and the
+    # walls between them fitted as one R 5.4 cylinder). When every facet runs along the region's axis, grow runs of
+    # adjacent facet groups that one circle about that axis fits; a run of three or more facets is a cylinder face.
+    in_cyl = set(); n_rounds = 0
+    a_ax = s.get("a") if s["kind"] == "cylinder" else None
+    if a_ax is not None and float(np.abs(nt[ts] @ a_ax).max()) < 0.02 and len(fgroups) >= 3:
+        u_ax, w_ax = frame(a_ax)
+        g_of = {t: gi for gi, g in enumerate(fgroups) for t in g}
+        g_adj = collections.defaultdict(set)
+        for t in ts:
+            for i in range(3):
+                u = other(t, F[t][i], F[t][(i + 1) % 3])
+                if u in tset and g_of[u] != g_of[t]:
+                    g_adj[g_of[t]].add(g_of[u])
+        used_g = set()
+        for gi in range(len(fgroups)):
+            if gi in used_g:
+                continue
+            run = [gi]; frontier = [gi]
+            while frontier:
+                gj = frontier.pop()
+                for gk in sorted(g_adj[gj]):
+                    if gk in used_g or gk in run:
+                        continue
+                    # neighbouring facets of a round turn by a few degrees, not by a corner's 90
+                    if float(nt[fgroups[gj][0]] @ nt[fgroups[gk][0]]) < math.cos(math.radians(30)):
+                        continue
+                    trial = run + [gk]
+                    Pr = V[np.unique(F[[t for g in trial for t in fgroups[g]]])]
+                    if len(trial) >= 3:
+                        c2r, Rr, _ = fit_circle(np.c_[Pr @ u_ax, Pr @ w_ax])
+                        if not (0 < Rr < diag) or float(np.abs(np.linalg.norm(np.c_[Pr @ u_ax, Pr @ w_ax] - c2r, axis=1) - Rr).max()) > 1e-5 * diag:
+                            continue
+                    run.append(gk); frontier.append(gk)
+            # a round must actually turn: a near-straight run of facets fits any circle (broom holder logo: a leftover
+            # run became an R 19.6 "sphere" strip; DeepSeek review, verified). Require a 15-degree normal sweep.
+            nrm_r = np.array([nt[fgroups[g][0]] for g in run])
+            if len(run) >= 3 and float((nrm_r @ nrm_r.T).min()) < math.cos(math.radians(15)):
+                tris_r = [t for g in run for t in fgroups[g]]
+                Pr = V[np.unique(F[tris_r])]; c2r, Rr, _ = fit_circle(np.c_[Pr @ u_ax, Pr @ w_ax])
+                newL = len(kinds); kinds.append("cylinder"); label[tris_r] = newL
+                sc = {"kind": "cylinder"}; set_axis(sc, a_ax); sc["o"] = c2r[0] * sc["u"] + c2r[1] * sc["w"]; sc["R"] = float(Rr)
+                S[newL] = refine(sc, Pr); used_g.update(run); in_cyl.update(tris_r); n_rounds += 1
+    for grp in fgroups:
+        if grp[0] in in_cyl:
+            continue
+        newL = len(kinds); kinds.append("plane"); label[grp] = newL
         S[newL] = fit(newL)
-    log(f"region {L} ({s['kind']}) is flat facets, split into planes")
+    log(f"region {L} ({s['kind']}) is flat facets, split into planes" + (f" and {n_rounds} small rounds" if n_rounds else ""))
 
 # surfaces of revolution about a KNOWN machining axis: a face normal or the axis of a fitted cylinder/cone.
 # A free-axis fit of a small or narrow patch is ill-posed (a 7-triangle chamfer strip around a fillet fits a
@@ -402,6 +489,10 @@ for L in [L for L, s in S.items() if s["kind"] != "plane"]:
         continue
     b = best_axis_fit(ts, cands0)
     if b is not None:
+        if os.environ.get("EB_DEBUG"):
+            Pv_d = V[np.unique(F[ts])]
+            log(f"  axis refit S{L}: {S[L]['kind']} -> {b['kind']}, {len(ts)} tris, vertex distance max "
+                f"{float(np.abs(sdist(S[L], Pv_d)).max()):.2e} -> {float(np.abs(sdist(b, Pv_d)).max()):.2e}")
         S[L] = b; kinds[L] = b["kind"]; n_axis_refit += 1
 # unlabelled smooth components that are one surface about a known axis become regions (torus fillets, grooves)
 free_t = set(np.where(label < 0)[0].tolist()); seen_c = set(); n_new = 0
@@ -711,8 +802,12 @@ n_split = 0; adj_s = adjacency()
 for L in [L for L, s in S.items() if s["kind"] == "plane"]:
     ts = region_tris(L)
     off_t = ts[np.abs(sdist(S[L], tri[ts].reshape(-1, 3))).reshape(-1, 3).max(1) > 1e-5 * diag]
-    if len(off_t) == 0 or len(off_t) > 0.2 * len(ts):
+    if len(off_t) == 0:
         continue
+    # more than a fifth off its plane: the "plane" is doubtful, so its off triangles may still move to a neighbour whose
+    # surface they lie ON (broom holder arm: a 6-triangle tangent lead-in with 4 triangles on the R 20.4 arc), but no
+    # new plane is invented from them
+    many_off = len(off_t) > 0.2 * len(ts)
     oset = set(off_t.tolist()); seen_o = set()
     for t0 in off_t:
         if t0 in seen_o:
@@ -729,6 +824,8 @@ for L in [L for L, s in S.items() if s["kind"] == "plane"]:
         if best_m is not None and float(np.abs(sdist(S[best_m], Pg)).max()) < 1e-5 * diag:
             label[grp] = best_m; n_split += 1
             continue
+        if many_off:
+            continue
         newL = len(kinds); kinds.append("plane"); label[grp] = newL; pl_ = fit(newL)
         if float(np.abs(sdist(pl_, Pg)).max()) < 1e-5 * diag:
             S[newL] = pl_; n_split += 1
@@ -738,6 +835,26 @@ for L in [L for L, s in S.items() if s["kind"] == "plane"]:
         S[L] = fit(L)
 if n_split:
     log(f"{n_split} groups of triangles off their plane became their own face")
+
+# two neighbouring curved regions on ONE surface (broom holder arm: an R 0.68 fillet as S15 and S37, axes 1.4e-4 apart,
+# each region's loops threading through the other) have no intersection curve: their "edges" were noise and left 15
+# free edges. Each surface lying on the other's vertices makes them one region.
+n_same = 0; merged_same = True
+while merged_same:
+    merged_same = False; adj_c = adjacency()
+    for L in sorted(L_ for L_, s_ in S.items() if s_["kind"] != "plane"):
+        for M in sorted(adj_c[L]):
+            if M not in S or M == L or S[M]["kind"] != S[L]["kind"]:
+                continue
+            PL, PM = region_verts(L), region_verts(M)
+            if (float(np.abs(sdist(S[M], PL)).max()) < 1e-5 * diag and float(np.abs(sdist(S[L], PM)).max()) < 1e-5 * diag):
+                label[label == M] = L; del S[M]
+                S[L] = refine(S[L], region_verts(L)); n_same += 1; merged_same = True
+                break
+        if merged_same:
+            break
+if n_same:
+    log(f"{n_same} pairs of neighbouring regions on one surface merged")
 
 if os.environ.get("EB_DUMP_SPHERE_TORUS"):
     # L04_puck: 15 sphere patches (centres on the axis, R 11-18.5) beside 2 exact tori. Are their VERTICES on a torus,
@@ -752,6 +869,20 @@ if os.environ.get("EB_DUMP_SPHERE_TORUS"):
 # tangency and coaxiality between neighbours, enforced exactly (a fillet that misses its flank by 1e-3 has no edge)
 adj = adjacency()
 REL = 0.02
+# a plane that runs along a neighbour's axis but was fitted a hair off parallel (broom holder arm: n.a = 2e-6 on a
+# small wall tangent to an R 0.68 fillet) failed the exact-parallel test below, so its tangency was never enforced and
+# the fillet missed it by 3e-4. Make it exactly parallel when its own vertices still lie on the result.
+for L in [L for L, s in S.items() if s["kind"] == "plane"]:
+    n_ = S[L]["n"]; Pv_ = region_verts(L)
+    for M in sorted(adj[L]):
+        if M not in S or S[M]["kind"] not in ("cylinder", "cone", "torus"):
+            continue
+        a_ = S[M]["a"]; c_ = float(n_ @ a_)
+        if 1e-9 <= abs(c_) < 1e-4:
+            n2 = n_ - c_ * a_; n2 /= np.linalg.norm(n2); d2 = float((Pv_ @ n2).mean())
+            if float(np.abs(Pv_ @ n2 - d2).max()) < 1e-5 * diag:
+                S[L] = dict(S[L], n=n2, d=d2)
+            break
 ncons = collections.Counter()
 cc_pairs, cc_lam, saved_cons = {}, set(), {}
 for kind in ("sphere", "cylinder", "cone", "torus"):
@@ -850,6 +981,14 @@ for kind in ("sphere", "cylinder", "cone", "torus"):
                 log(f"  CC-TRACE S{L}: before {np.round(s['o'], 4).tolist()} R {s['R']:.6f} | free fit {np.round(free_['o'], 4).tolist()} "
                     f"R {free_['R']:.6f} | constrained {np.round(S[L]['o'], 4).tolist()} R {S[L]['R']:.6f} | residuals "
                     + ", ".join(f"{float(c(S[L])):+.1e}" for c in cons) + f" | vertex fit max {float(np.abs(sdist(S[L], region_verts(L))).max()):.2e}")
+            if L not in cc_pairs:
+                # every kind of constraint gets the same guard: a sphere-plane tangency (window 2 % of R) moved a
+                # 7-triangle R 19.6 sphere 0.13 mm off its own vertices (broom holder logo)
+                Pv_g = region_verts(L); free_g = refine(s, Pv_g)
+                if (float(np.abs(sdist(S[L], Pv_g)).max())
+                        > float(np.abs(sdist(free_g, Pv_g)).max()) + 1e-5 * diag):
+                    S[L] = free_g; saved_cons[L] = []
+                    log(f"  constraints of S{L} ({kind}) dropped: they pull it off its own vertices")
             if L in cc_pairs:
                 # a tangency may move a surface off its vertices by its own tolerance, no more. Two tangencies to walls
                 # that should share one axis but were fitted 1.1e-4 apart are two near-identical circles whose exact
@@ -1064,6 +1203,12 @@ for v in corner:
 for w_, vx_ in vert.items():
     BRep_Builder().UpdateVertex(vx_, vtol[w_])
 log(f"corners solved: {len(corner)} -> {len(vert)} vertices, worst residual {cres:.1e}")
+if os.environ.get("EB_DEBUG"):
+    for v in corner:
+        if rep[v] != v:
+            log(f"  MERGED corner {np.round(V[v], 4).tolist()} {sorted(vlabels[v])} into {np.round(V[rep[v]], 4).tolist()} "
+                f"{sorted(vlabels[rep[v]])}: mesh vertices {float(np.linalg.norm(V[v] - V[rep[v]])):.3e} apart, solved "
+                f"{float(np.linalg.norm(cpos[v] - cpos[rep[v]])):.1e} apart, moved {float(np.linalg.norm(cpos[v] - V[v])):.2e}")
 
 
 def densify(P, surfs):
@@ -1158,13 +1303,27 @@ def arc_edge(cen, nrm, Rc, A, B, pts, closed, VA, VB):
     def ang(p, nr):
         return math.atan2(float((p - cen) @ np.cross(nr, xd)), float((p - cen) @ xd)) % (2 * math.pi)
     if closed:
+        # a "closed" chain that leaves a corner and comes back to it without going round (4 vertices along a sliver,
+        # broom holder arm) is no circle: built as one it put two phantom full rims on an R 17 face
+        a_ = [ang(p, nrm) for p in pts]
+        if abs(sum(((a_[i + 1] - a_[i] + math.pi) % (2 * math.pi)) - math.pi for i in range(len(a_) - 1))) < math.pi:
+            return None
         if ang(pts[1], nrm) > math.pi:
             nrm = -nrm
         th1 = 2 * math.pi
     else:
-        if not (0 < ang(pts[len(pts) // 2], nrm) < ang(B, nrm)):
+        # direction from the chain itself: the summed turn between consecutive points. The midpoint test alone built a
+        # 12-degree rim arc as 348 degrees, and an arc whose two ends merged into one corner as a full circle
+        # (broom holder arm: an R 17 face of 3430 mm2 for ~600)
+        a_ = [ang(p, nrm) for p in pts]
+        turn = sum(((a_[i + 1] - a_[i] + math.pi) % (2 * math.pi)) - math.pi for i in range(len(a_) - 1))
+        if abs(turn) * Rc < 1e-6 * diag:
+            return None          # both ends on one corner: a zero-length edge, dropped like a collapsed chain
+        if turn < 0:
             nrm = -nrm
         th1 = ang(B, nrm)
+        if th1 < 1e-12:
+            th1 = 2 * math.pi
     return mk_edge(Geom_Circle(gp_Ax2(pnt(cen), gdir(nrm), gdir(xd)), Rc), VA, VB, 0.0, th1)
 
 
@@ -1283,6 +1442,13 @@ for cid, ch in enumerate(chains):
             pts = densify(pts, surfs)
         made = (mk_edge(crv, VA, VB, u0, u1), "bspline")
     edges[cid] = made[0]; ctypes[made[1]] += 1
+    if os.environ.get("EB_DUMP_REGION") and any(str(l_) in os.environ["EB_DUMP_REGION"].split(",") for l_ in ch["labs"]):
+        from OCP.BRepAdaptor import BRepAdaptor_Curve as _ACd
+        _span = ""
+        if made[0] is not None:
+            _cd = _ACd(made[0]); _span = f", parameter span {math.degrees(_cd.LastParameter() - _cd.FirstParameter()):.2f} deg-or-units"
+        log(f"  EDGE chain {cid} S{ch['labs'][0]}-S{ch['labs'][1]}: {len(vs)} mesh verts, closed {closed}, corner_ends {ch['corner_ends']}, "
+            f"ends {np.round(V[vs[0]], 3).tolist()} -> {np.round(V[vs[-1]], 3).tolist()}, built {made[1]}{_span}")
 log(f"edges {dict(ctypes)}")
 
 
@@ -1347,6 +1513,47 @@ for L, s in S.items():
         # loop and dropped the small one, leaving its edges free. One face per outer loop, with the holes inside it.
         # (Periodic surfaces are left alone: their 2 -> 1 wire merge through the seam is normal and harmless.)
         groups = [list(range(len(region_loops[L])))]
+        if s["kind"] in ("cylinder", "cone") and len(region_loops[L]) > 1:
+            # a partial cylinder with SEPARATE boundary loops (broom holder arm: an R 0.68 fillet interrupted by a slot)
+            # is separate faces. Only a band that goes all the way round has two loops bounding one face; a loop that
+            # goes round turns 2 pi about the axis, a lobe's loop turns 0.
+            # A hole in the face also turns 0, so loops are told apart like on a plane: signed area in the unrolled
+            # (angle, height) coordinates, the largest loop is an outer boundary, loops of its sign are other outer
+            # boundaries (other faces), loops of the opposite sign are holes and stay with the outer loop around them.
+            u_c, w_c = frame(s["a"]); turns_c = []; uv_c = []
+            for wl in region_loops[L]:
+                pts_c = []
+                for cid, fwd in wl:
+                    vs_c = chains[cid]["verts"] if fwd else chains[cid]["verts"][::-1]
+                    pts_c.extend(V[vs_c[:-1]])
+                ang_c = [math.atan2(float((p - s["o"]) @ w_c), float((p - s["o"]) @ u_c)) for p in pts_c]
+                steps_c = [((ang_c[(i + 1) % len(ang_c)] - ang_c[i] + math.pi) % (2 * math.pi)) - math.pi for i in range(len(ang_c))]
+                turns_c.append(abs(sum(steps_c)) if len(ang_c) >= 2 else 0.0)
+                th_c = np.concatenate([[ang_c[0]], ang_c[0] + np.cumsum(steps_c[:-1])]) if ang_c else np.zeros(0)
+                uv_c.append(np.c_[th_c, [float((p - s["o"]) @ s["a"]) for p in pts_c]] if pts_c else np.zeros((0, 2)))
+            if all(t_ < math.pi for t_ in turns_c):
+                area_c = [0.5 * float(np.sum(q[:, 0] * np.roll(q[:, 1], -1) - np.roll(q[:, 0], -1) * q[:, 1])) if len(q) >= 3 else 0.0
+                          for q in uv_c]
+                big_c = int(np.argmax(np.abs(area_c))); sign_c = math.copysign(1.0, area_c[big_c])
+                # ponytail: a same-sign loop under a tenth of the largest stays with it (broom holder arm 2: loops of 0.027
+                # and 0.62 beside 4.7 and 25 built as zero-area faces with self-intersecting wires); real separate lobes
+                # measured 0.97-1.0 of each other. Revisit if a part has genuinely small separate curved faces.
+                outer_c = [i for i, a_ in enumerate(area_c) if a_ * sign_c > 0.1 * abs(area_c[big_c])]
+                if len(outer_c) > 1:
+                    def _inside_c(pt, poly):
+                        x, y = pt; inside = False; n_ = len(poly)
+                        for k in range(n_):
+                            x1, y1 = poly[k]; x2, y2 = poly[(k + 1) % n_]
+                            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-300) + x1:
+                                inside = not inside
+                        return inside
+                    groups = [[i] for i in outer_c]
+                    for j, a_ in enumerate(area_c):
+                        if j in outer_c or len(uv_c[j]) == 0:
+                            continue
+                        host = [g for g in groups if _inside_c(uv_c[j][0], uv_c[g[0]])]
+                        (host[0] if host else groups[0]).append(j)
+                    log(f"  {s['kind']} S{L}: loop areas {[round(a_, 4) for a_ in area_c]} -> {len(groups)} faces")
         if s["kind"] == "plane" and len(region_loops[L]) > 1 and not os.environ.get("EB_NO_PLANE_SPLIT"):
             u_g, w_g = frame(s["n"]); polys = []
             for wl in region_loops[L]:
@@ -1383,9 +1590,13 @@ for L, s in S.items():
         faces_out = []
         for grp in groups:
             face = TopoDS_Face(); bb.MakeFace(face, gs, TopLoc_Location(), 1e-7)
+            n_loops_added = 0
             for li in grp:
                 wl = region_loops[L][li]
                 seq = [(cid, fwd) for cid, fwd in wl if edges[cid] is not None]
+                if not seq:
+                    continue     # every edge of this loop collapsed to a point: a zero-area sliver loop (broom holder arm)
+                n_loops_added += 1
                 if sgn < 0:
                     seq = [(cid, not fwd) for cid, fwd in reversed(seq)]
                 mw = BRepBuilderAPI_MakeWire()
@@ -1394,6 +1605,9 @@ for L, s in S.items():
                 if not mw.IsDone():
                     fail(f"face {L} ({s['kind']}): its boundary does not close (wire error {mw.Error()})")
                 bb.Add(face, mw.Wire())
+            if n_loops_added == 0:
+                log(f"  face S{L} ({s['kind']}) dropped: all its boundary edges collapsed")
+                continue
             n_before = _nwires(face)
             sf = ShapeFix_Face(face); sf.SetPrecision(1e-7 * diag); sf.SetMaxTolerance(1e-3 * diag); sf.Perform()
             face = sf.Face()
@@ -1526,7 +1740,8 @@ except Exception as exc:  # noqa: BLE001 - L10_gearbox: Geom_TrimmedCurve range 
     shape = ms.Solid(); BRepLib.OrientClosedSolid_s(shape)
 log(f"solid valid {BRepCheck_Analyzer(shape).IsValid()}  ({time.time() - T0:.1f} s)")
 w = STEPControl_Writer(); w.Transfer(shape, STEPControl_AsIs); w.Write(str(out))
-mm = measure(out, _mesh(src), samples=300)
+# EB_BODY builds one body of a multi-body mesh: judge it against that body, not against the whole file
+mm = measure(out, np.asarray(body.triangles) if os.environ.get("EB_BODY") else _mesh(src), samples=300)
 if mm is None:
     fail("written STEP does not read back")
 log("RESULT", {k: (round(v, 5) if isinstance(v, float) else v) for k, v in mm.items() if k != "radii"},
