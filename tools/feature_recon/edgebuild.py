@@ -48,6 +48,10 @@ from mesh2step.feature import _mesh, measure  # noqa: E402
 
 T0 = time.time()
 log = lambda *a: print(*a, flush=True)  # noqa: E731
+if os.environ.get("EB_TIMING"):
+    # elapsed seconds on every log line, to see where a large part spends its time (never set by the service, which
+    # parses lines starting with RESULT)
+    log = lambda *a: print(f"[{time.time() - T0:7.1f}s]", *a, flush=True)  # noqa: E731
 
 
 def fail(msg):
@@ -71,6 +75,34 @@ if os.environ.get("EB_COUNT_BODIES"):
     # the service asks first: a mesh of several closed bodies (a print-in-place assembly) is rebuilt body by body
     print(f"BODIES {len(bodies_)}", flush=True); sys.exit(0)
 body = bodies_[int(os.environ.get("EB_BODY", "0"))]
+if not body.is_watertight:
+    # a T-junction (mechparts/35: a vertex at z 2.5 in the middle of the other side's edge from z 0 to 5, 3 boundary edges
+    # in 31,013 triangles) is closed exactly by splitting the triangle that owns the long edge at that vertex
+    Fb = body.faces.copy(); Vb = body.vertices
+    eb_ = np.sort(np.concatenate([Fb[:, [0, 1]], Fb[:, [1, 2]], Fb[:, [2, 0]]]), axis=1)
+    ue_, ce_ = np.unique(eb_, axis=0, return_counts=True); bnd_ = ue_[ce_ == 1]
+    bverts_ = np.unique(bnd_); n_tj = 0; new_faces = []; drop_ = set()
+    for a_, b_ in bnd_:
+        seg_ = Vb[b_] - Vb[a_]; len_ = float(np.linalg.norm(seg_))
+        if len_ == 0:
+            continue
+        for c_ in bverts_:
+            if c_ in (a_, b_):
+                continue
+            t_ = float((Vb[c_] - Vb[a_]) @ seg_) / len_ ** 2
+            if 1e-6 < t_ < 1 - 1e-6 and float(np.linalg.norm(Vb[a_] + t_ * seg_ - Vb[c_])) < 1e-9 * max(1.0, len_):
+                for fi_, f_ in enumerate(Fb):
+                    if fi_ in drop_:
+                        continue
+                    for k_ in range(3):
+                        if {f_[k_], f_[(k_ + 1) % 3]} == {a_, b_}:
+                            p_, q_, r_ = f_[k_], f_[(k_ + 1) % 3], f_[(k_ + 2) % 3]
+                            new_faces += [[p_, c_, r_], [c_, q_, r_]]; drop_.add(fi_); n_tj += 1
+                            break
+                break
+    if n_tj:
+        body = trimesh.Trimesh(Vb, np.vstack([np.delete(Fb, sorted(drop_), axis=0), np.array(new_faces)]), process=False)
+        log(f"{n_tj} T-junctions closed by splitting the triangle at the vertex on its edge; watertight {body.is_watertight}")
 r = regions(body.triangles)
 V, F = r["topology"][0], r["topology"][1]
 label = np.array(r["label"]).copy()
@@ -149,6 +181,8 @@ def from_vec(s, x):
 
 
 def jac(fun, x, m_):
+    # central differences. (Tried 2026-09-15: forward differences halved the evaluations but shifted fits enough that
+    # the known-axis refit ran on 357 regions instead of 93 on mechparts/1: no net speed-up, so reverted.)
     J = np.zeros((m_, len(x)))
     for j in range(len(x)):
         dx = np.zeros(len(x)); dx[j] = 1e-7 * max(1.0, abs(x[j]))
@@ -346,6 +380,8 @@ for L in list(S):
     # walls between them fitted as one R 5.4 cylinder). When every facet runs along the region's axis, grow runs of
     # adjacent facet groups that one circle about that axis fits; a run of three or more facets is a cylinder face.
     in_cyl = set(); n_rounds = 0
+    # (tried 2026-09-15 and reverted: taking each run's axis from its own facet normals instead of the region axis
+    # moved mechparts/1 from sound to a failed torus-cylinder edge and made no part sound)
     a_ax = s.get("a") if s["kind"] == "cylinder" else None
     if a_ax is not None and float(np.abs(nt[ts] @ a_ax).max()) < 0.02 and len(fgroups) >= 3:
         u_ax, w_ax = frame(a_ax)
@@ -529,6 +565,26 @@ for _ in range(50):
                 label[t] = best; changed = True
     if not changed:
         break
+# a connected group of unlabelled triangles that one plane fits is a flat face segmentation left out (mechparts/9:
+# 8 large triangles, 2.45 % of the area, on no neighbour's surface): it becomes its own plane region
+seen_u = set(); n_flat_u = 0
+for t0 in np.where(label < 0)[0]:
+    if t0 in seen_u:
+        continue
+    grp_u = []; st_u = [int(t0)]; seen_u.add(int(t0))
+    while st_u:
+        t = st_u.pop(); grp_u.append(t)
+        for i in range(3):
+            u = other(t, F[t][i], F[t][(i + 1) % 3])
+            if label[u] < 0 and u not in seen_u:
+                seen_u.add(u); st_u.append(u)
+    Pu_ = V[np.unique(F[grp_u])]
+    if len(Pu_) >= 3:
+        cu_ = Pu_.mean(0); nu_ = np.linalg.svd(Pu_ - cu_)[2][-1]
+        if float(np.abs((Pu_ - cu_) @ nu_).max()) < 1e-5 * diag:
+            newL = len(kinds); kinds.append("plane"); label[grp_u] = newL; S[newL] = fit(newL); n_flat_u += 1
+if n_flat_u:
+    log(f"{n_flat_u} flat groups of unlabelled triangles became plane regions")
 # what is still unlabelled is a corner-fan sliver spanning several surfaces (Schlauchschelle: 2 of 1560): it
 # only has to belong to a face topologically, since no coordinate of the result comes from its vertices
 tot_area = float(area.sum())
@@ -545,6 +601,12 @@ for _ in range(10):
         if share:
             label[t] = share.most_common(1)[0][0]
 if (label < 0).any():
+    if os.environ.get("EB_DEBUG"):
+        left_d = np.where(label < 0)[0]
+        log(f"  UNLABELLED {len(left_d)} triangles, area {float(area[left_d].sum()):.3f} of {tot_area:.1f} "
+            f"({100 * float(area[left_d].sum()) / tot_area:.2f} %), labelled neighbours per triangle "
+            + str([sum(1 for i in range(3) if label[other(t, F[t][i], F[t][(i + 1) % 3])] >= 0) for t in left_d[:16]])
+            + f", centroids {np.round(tri[left_d].mean(1)[:4], 2).tolist()}")
     fail(f"{int((label < 0).sum())} triangles lie on no fitted surface (freeform or unrecognised)")
 
 
@@ -764,6 +826,8 @@ for _pass in ([] if os.environ.get("EB_NO_MIXED") else range(6)):
         del S[L]
     if not moved_any:
         break
+# (tried and removed 2026-09-15: moving curved-region triangles that lie exactly on a neighbouring plane fixed one of
+# mechparts/34's two corners but moved 8 real fillet triangles on L09_bearing_block, which then built invalid)
 if n_mixed:
     for L in [L for L, s in S.items() if s["kind"] != "plane"]:
         if (label == L).sum() >= 3:
@@ -794,6 +858,39 @@ for L in [L for L, s in S.items() if s["kind"] != "plane"]:
         kinds[L] = S[L]["kind"]
 if n_under:
     log(f"{n_under} curved regions with too few vertices to fix their own surface took a neighbour's surface or a plane")
+
+# a curved region its own fit misses, lying whole on a neighbour's surface, is part of that neighbour (mechparts/30: two
+# chamfer strips fitted as 45-degree R 48 cylinders, own miss 1.5e-2, on the chamfer cone within 4.9e-4). The per-triangle
+# mixed pass ran before that cone had its final fit.
+adj_w = adjacency(); n_whole = 0
+for L in sorted(L_ for L_, s_ in S.items() if s_["kind"] != "plane"):
+    if L not in S:
+        continue
+    Pv_w = region_verts(L)
+    if float(np.abs(sdist(S[L], Pv_w)).max()) < 1e-5 * diag:
+        continue
+    best_w = min((M for M in adj_w[L] if M in S and M != L), key=lambda M: float(np.abs(sdist(S[M], Pv_w)).max()), default=None)
+    if best_w is not None and float(np.abs(sdist(S[best_w], Pv_w)).max()) < 1e-5 * diag:
+        label[label == L] = best_w; del S[L]; n_whole += 1
+        for M in adj_w.pop(L, set()):
+            adj_w[M].discard(L)
+            if M != best_w:
+                adj_w[M].add(best_w); adj_w[best_w].add(M)
+if n_whole:
+    log(f"{n_whole} curved regions their own fit misses lay whole on a neighbour's surface and joined it")
+if os.environ.get("EB_DEBUG"):
+    # curved regions with no interior vertex: every vertex is on a boundary, so their own fit is unconstrained
+    adj_i = adjacency()
+    for L in [L for L, s in S.items() if s["kind"] != "plane"]:
+        ts_i = region_tris(L); vs_i = np.unique(F[ts_i]); interior_i = [v for v in vs_i if vlabels_all[v] == {L}] if "vlabels_all" in dir() else None
+        nbr_labels = {int(label[other(t, F[t][i], F[t][(i + 1) % 3])]) for t in ts_i for i in range(3)} - {L}
+        bnd_v = {v for t in ts_i for i in range(3) if int(label[other(t, F[t][i], F[t][(i + 1) % 3])]) != L for v in (F[t][i], F[t][(i + 1) % 3])}
+        if len(ts_i) <= 30 and len(bnd_v) == len(vs_i):
+            Pv_i = V[vs_i]
+            log(f"  NO-INTERIOR S{L} ({S[L]['kind']}, {len(ts_i)} tris, {len(vs_i)} verts): own max {float(np.abs(sdist(S[L], Pv_i)).max()):.2e}; "
+                + ", ".join(f"S{M}:{S[M]['kind']} max {float(np.abs(sdist(S[M], Pv_i)).max()):.2e} "
+                            f"per-vertex-min-over-neighbours max {float(np.min(np.stack([np.abs(sdist(S[M2], Pv_i)) for M2 in nbr_labels if M2 in S]), axis=0).max()):.2e}"
+                            for M in sorted(nbr_labels) if M in S))
 
 # triangles of a PLANE region off its plane are another face swallowed by it (mechparts/29: a 2-triangle 45-degree
 # chamfer strip inside the top plane; its corners solved 0.8 mm off). Each connected group of them takes the
@@ -847,7 +944,24 @@ while merged_same:
             if M not in S or M == L or S[M]["kind"] != S[L]["kind"]:
                 continue
             PL, PM = region_verts(L), region_verts(M)
-            if (float(np.abs(sdist(S[M], PL)).max()) < 1e-5 * diag and float(np.abs(sdist(S[L], PM)).max()) < 1e-5 * diag):
+            same_ = (float(np.abs(sdist(S[M], PL)).max()) < 1e-5 * diag and float(np.abs(sdist(S[L], PM)).max()) < 1e-5 * diag)
+            if not same_ and S[L]["kind"] in ("cylinder", "cone", "sphere"):
+                # two fits of one arc can differ by more than the tolerance (mechparts/34: R 50.8058 and R 50.8016,
+                # axes 4e-3 apart, one each side of a slot): ONE surface fitted to both vertex sets decides
+                PU = np.vstack([PL, PM]); near_ = min((S[L], S[M]), key=lambda q_: float(np.abs(sdist(q_, PU)).max()))
+                if float(np.abs(sdist(near_, PU)).max()) < 5e-4 * diag:
+                    try:
+                        joint_ = refine(near_, PU)
+                        same_ = float(np.abs(sdist(joint_, PU)).max()) < 1e-5 * diag
+                    except Exception:  # noqa: BLE001 - a candidate merge, not a result
+                        same_ = False
+            if same_:
+                # vertices alone are not enough: a side hole through a tube wall has every vertex on its two rims, which
+                # lie ON the tube (L02_cyl_side_hole: hole and tube merged into one R 17 cylinder). The merged surface must
+                # also hug and face the triangles of both regions.
+                ts_lm = np.concatenate([region_tris(L), region_tris(M)])
+                same_ = surface_ok(S[L], ts_lm)[0] or surface_ok(S[M], ts_lm)[0]
+            if same_:
                 label[label == M] = L; del S[M]
                 S[L] = refine(S[L], region_verts(L)); n_same += 1; merged_same = True
                 break
@@ -869,6 +983,22 @@ if os.environ.get("EB_DUMP_SPHERE_TORUS"):
 # tangency and coaxiality between neighbours, enforced exactly (a fillet that misses its flank by 1e-3 has no edge)
 adj = adjacency()
 REL = 0.02
+# a curved surface larger than the whole part is a flat patch in disguise that a later refit produced (mechparts/16:
+# a 23-triangle strip ended as a cylinder of R 1.1e8, its corner solved 470 mm away). A plane through its vertices
+# takes over when one fits them.
+n_giant = 0
+for L in [L for L, s in S.items() if s["kind"] != "plane"]:
+    sizes_g = [S[L].get(k_) for k_ in ("R", "major", "minor") if S[L].get(k_) is not None]
+    if all(0 < z_ < diag for z_ in sizes_g):
+        continue
+    kinds[L] = "plane"; pl_g = fit(L); Pv_g = region_verts(L)
+    if float(np.abs(sdist(pl_g, Pv_g)).max()) < 1e-5 * diag:
+        S[L] = pl_g; n_giant += 1
+    else:
+        kinds[L] = S[L]["kind"]
+if n_giant:
+    log(f"{n_giant} curved surfaces larger than the part became planes")
+adj = adjacency()
 # a plane that runs along a neighbour's axis but was fitted a hair off parallel (broom holder arm: n.a = 2e-6 on a
 # small wall tangent to an R 0.68 fillet) failed the exact-parallel test below, so its tangency was never enforced and
 # the fillet missed it by 3e-4. Make it exactly parallel when its own vertices still lie on the result.
@@ -878,8 +1008,15 @@ for L in [L for L, s in S.items() if s["kind"] == "plane"]:
         if M not in S or S[M]["kind"] not in ("cylinder", "cone", "torus"):
             continue
         a_ = S[M]["a"]; c_ = float(n_ @ a_)
+        n2 = None
         if 1e-9 <= abs(c_) < 1e-4:
-            n2 = n_ - c_ * a_; n2 /= np.linalg.norm(n2); d2 = float((Pv_ @ n2).mean())
+            n2 = n_ - c_ * a_; n2 /= np.linalg.norm(n2)
+        elif 1e-12 <= 1 - abs(c_) < 5e-9:
+            # the same for a plane ACROSS the axis (mechparts/28: top plane n = (-6e-6, 3e-6, 1) on a fillet torus of
+            # major R 64 whose axis leans by 4.5e-6: the tangent circle's height wandered 4e-4 and projection failed)
+            n2 = math.copysign(1.0, c_) * a_
+        if n2 is not None:
+            d2 = float((Pv_ @ n2).mean())
             if float(np.abs(Pv_ @ n2 - d2).max()) < 1e-5 * diag:
                 S[L] = dict(S[L], n=n2, d=d2)
             break
@@ -1025,6 +1162,11 @@ if os.environ.get("EB_DEBUG"):
         if off_.any():
             log(f"  OFF-SURFACE S{L} ({s['kind']}): {int(off_.sum())}/{len(ts_)} triangles, centroids "
                 + str(np.round(tri[ts_[off_]].mean(1)[:4], 3).tolist()))
+            # which neighbour its vertices actually lie on, and how closely
+            adj_o = adjacency(); Pv_o = region_verts(L)
+            near_o = sorted(((float(np.abs(sdist(S[M], Pv_o)).max()), M) for M in adj_o[L] if M in S and M != L))[:3]
+            log("    nearest neighbour surfaces: " + ", ".join(f"S{M}:{S[M]['kind']} max {d:.2e}" for d, M in near_o)
+                + f" | own max {float(np.abs(sdist(s, Pv_o)).max()):.2e}")
     for L, s in S.items():
         log(f"  S{L} " + " ".join(f"{k}={np.round(v, 6).tolist() if isinstance(v, np.ndarray) else (round(v, 6) if isinstance(v, float) else v)}"
                                   for k, v in s.items() if k not in ("u", "w")))
@@ -1342,12 +1484,25 @@ for cid, ch in enumerate(chains):
         # form. Put the inner points on that circle instead of failing (mechparts/1: fillet torus S28 on plane S45,
         # tangency constraint satisfied, projection stuck at 9.2e-3).
         ca_r = common_axis(*surfs)
+        if os.environ.get("EB_DEBUG"):
+            log(f"  RESCUE chain {cid} {surfs[0]['kind']}-{surfs[1]['kind']}: common axis {'none' if ca_r is None else np.round(ca_r[1], 8).tolist()}"
+                + "".join(f", S{l_} axis/normal {np.round(S[l_].get('a', S[l_].get('n')), 8).tolist()}" for l_ in ch["labs"]))
         if ca_r is not None:
             o_r, a_r = ca_r; q_r = V[vs[1:-1]] - o_r; h_r = q_r @ a_r
             rad_r = q_r - np.outer(h_r, a_r); rr_r = np.linalg.norm(rad_r, axis=1)
             hr_r = meridian_meet(surfs, o_r, a_r, float(h_r.mean()), float(rr_r.mean()))
+            if os.environ.get("EB_DEBUG"):
+                log(f"    meridian meet {None if hr_r is None else np.round(hr_r, 6).tolist()}, chain height {h_r.min():.6f}..{h_r.max():.6f}, "
+                    f"radius {rr_r.min():.6f}..{rr_r.max():.6f}, limit {1e-4 * diag:.2e}")
+            # on an exactly tangent contact the region labels wander across the band where both surfaces coincide: a
+            # chain vertex 0.175 mm off the circle still lies within 4.8e-3 of both (mechparts/28, R 64 fillet ring on
+            # its top plane). The edge is still that circle.
+            on_both_r = max(float(np.abs(sdist(s_, V[vs[1:-1]])).max()) for s_ in surfs) < 1e-5 * diag
+            if os.environ.get("EB_DEBUG"):
+                log(f"    on both surfaces: {[round(float(np.abs(sdist(s_, V[vs[1:-1]])).max()), 6) for s_ in surfs]} "
+                    f"(limit {1e-5 * diag:.2e}) -> {on_both_r}")
             if (hr_r is not None and hr_r[1] > 1e-6 * diag and np.abs(h_r - hr_r[0]).max() < 1e-4 * diag
-                    and np.abs(rr_r - hr_r[1]).max() < 1e-4 * diag):
+                    and (np.abs(rr_r - hr_r[1]).max() < 1e-4 * diag or on_both_r)):
                 inner = o_r + np.outer(np.full(len(h_r), hr_r[0]), a_r) + rad_r / np.maximum(rr_r[:, None], 1e-300) * hr_r[1]
                 res = np.zeros(len(inner))
     if len(res) and res.max() > 1e-6 * diag:
@@ -1503,8 +1658,28 @@ for L, s in S.items():
                 if _BAS(TopoDS.Face_s(exa.Current())).GetType() == _GCone:
                     apex_face = TopoDS.Face_s(exa.Current())
                 exa.Next()
+    torus_face = None
+    if (s["kind"] == "torus" and len(region_loops[L]) == 2
+            and all(len(wl) == 1 and not chains[wl[0][0]]["corner_ends"] for wl in region_loops[L])):
+        # a fillet ring bounded by two whole circles: healing a face built from those two wires kept one and left the
+        # other circle free (mechparts/24: fillet tori at z -40 and -10, 1 free edge, p95 2.7 mm). Build the band
+        # between the two tube angles directly; its circles sew to the neighbours' identical circles.
+        C_t = s["o"] + s["a"] * s["hc"]
+
+        def _tube_angle(p):
+            q_t = p - C_t; h_t = float(q_t @ s["a"]); rho_t = float(np.linalg.norm(q_t - h_t * s["a"]))
+            return math.atan2(h_t, rho_t - s["major"]) % (2 * math.pi)
+        v_lo, v_hi = sorted(_tube_angle(V[chains[wl[0][0]]["verts"][0]]) for wl in region_loops[L])
+        v_mid = float(np.median([_tube_angle(c_) for c_ in cen]))
+        if not v_lo <= v_mid <= v_hi:
+            v_lo, v_hi = v_hi, v_lo + 2 * math.pi          # the band runs the other way round the tube
+        mf_t = BRepBuilderAPI_MakeFace(gs, 0.0, 2 * math.pi, v_lo, v_hi, 1e-7)
+        if mf_t.IsDone():
+            torus_face = mf_t.Face()
     if apex_face is not None:
         faces_out = [apex_face]; sgn = 1.0          # the primitive's lateral face is already outward
+    elif torus_face is not None:
+        faces_out = [torus_face]
     elif not region_loops[L]:
         faces_out = [BRepBuilderAPI_MakeFace(gs, 1e-7).Face()]
     else:
