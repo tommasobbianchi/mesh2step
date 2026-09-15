@@ -56,6 +56,9 @@ QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
 # wall clock for the same work. A 300s ceiling failed it purely for being
 # unlucky about neighbours.
 CONVERT_TIMEOUT_S = 900.0
+# The native engine alone gets less than the whole conversion budget: when it hangs (mechparts/29: 3,788 triangles, still
+# running after 900 s) the exact shape rebuild still has time to run on its own and serve a validated solid.
+NATIVE_TIMEOUT_S = float(os.environ.get("MESH2STEP_NATIVE_TIMEOUT_S", "600"))
 # The feature pass (MESH2STEP_FEATURE=1) runs several prototype builders after the engine.
 # ponytail: fixed ceiling, per-builder budgets if a slot held this long starves the queue.
 FEATURE_TIMEOUT_S = float(os.environ.get("MESH2STEP_FEATURE_TIMEOUT_S", "3600"))
@@ -557,13 +560,30 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         )
     t_convert = time.time()
     try:
-        res = convert_native(
-            stl_path, out_path,
-            engine=native_engine, schema=schema, unify_angle=native_unify,
-            no_unify=(engine == "faceted" and merge_coplanar_angle is None),
-            timeout=CONVERT_TIMEOUT_S,
-        )
-        if engine == "trueform" and res.get("ok"):
+        try:
+            res = convert_native(
+                stl_path, out_path,
+                engine=native_engine, schema=schema, unify_angle=native_unify,
+                no_unify=(engine == "faceted" and merge_coplanar_angle is None),
+                # the shorter engine cap only applies when the fallback can use the time it frees
+                timeout=(min(NATIVE_TIMEOUT_S, CONVERT_TIMEOUT_S)
+                         if engine == "trueform" and os.environ.get("MESH2STEP_ENGINE_FALLBACK") == "1"
+                         else CONVERT_TIMEOUT_S),
+            )
+        except NativeEngineError as e:          # NativeTimeout included
+            # OPT-IN (MESH2STEP_ENGINE_FALLBACK=1): the documented contract is that a timeout answers 504 and explains
+            # itself (test_a_timeout_explains_itself_and_cleans_up); serving a rebuilt shape instead changes that.
+            if engine != "trueform" or os.environ.get("MESH2STEP_ENGINE_FALLBACK") != "1":
+                raise
+            # the engine hung or failed: the rebuild does not need its output, only the mesh. Served only if it passes
+            # the same gate; otherwise the engine's error stands.
+            res = _edgebuild_upgrade(stl_path, out_path, {
+                "ok": True, "triangles": n_in_tris, "smoothBuiltCylinders": 0,
+                "warnings": [f"the conversion engine did not finish ({type(e).__name__}); the shape was rebuilt without it"],
+            })
+            if res.get("featureMethod") != "edgebuild":
+                raise
+        if engine == "trueform" and res.get("ok") and not res.get("featureMethod"):
             res = _retry_broken_trueform(stl_path, out_path, res, schema=schema,
                                          unify_angle=native_unify)
             res = _edgebuild_upgrade(stl_path, out_path, res)
