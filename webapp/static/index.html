@@ -10,13 +10,17 @@
   <meta property="og:title" content="mesh2step — mesh in, real CAD out" />
   <meta property="og:description" content="Holes become true circles, walls become true surfaces. Free, in the browser, from Native Research." />
   <meta property="og:url" content="https://mesh2step.nativemedica.it/" />
-  <meta property="og:image" content="https://mesh2step.nativemedica.it/assets/share-card.png" />
+  <!-- Absolute, and pointed at the ORIGIN, not the branded host: mesh2step.nativemedica.it
+       is a 302 redirect, so it answers an image request with text/html. Scrapers that do not
+       follow a redirect for og:image (Facebook, LinkedIn, Discord) then show a blank card.
+       Measured 2026-09-16: branded -> 302 text/html, origin -> 200 image/png 38,243 B. -->
+  <meta property="og:image" content="https://nativedev.tail7d3518.ts.net/mesh2step/assets/share-card.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="mesh2step — mesh in, real CAD out" />
   <meta name="twitter:description" content="Holes become true circles, walls become true surfaces. Free, in the browser, from Native Research." />
-  <meta name="twitter:image" content="https://mesh2step.nativemedica.it/assets/share-card.png" />
+  <meta name="twitter:image" content="https://nativedev.tail7d3518.ts.net/mesh2step/assets/share-card.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&display=swap" />
