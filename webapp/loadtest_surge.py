@@ -38,28 +38,43 @@ from pathlib import Path
 
 import requests
 
-BENCH = Path("/tmp/awk/cadbench")
-# The bench corpus tops out at 19,042 triangles, well below the service's
-# 120,000 limit, so the near-limit end of the mix comes from the two real models
-# the server's own memory constants were measured on. Both live outside cadbench.
-NEAR_LIMIT = [Path("/tmp/awk/mem/sphere6.stl"),   # 81,920 tris, icosphere: merges
-                                                  # nothing, so it is the worst
-                                                  # case behind the 24.95 MB/1k
-                                                  # figure in server.py
-              Path("/tmp/awk/mmx.stl")]           # 64,289 tris, real part
+# 2026-09-16: /tmp/awk is gone (tmp is cleared), so cadbench, sphere6 and mmx no
+# longer exist and this harness could not run at all. The user corpus is a better
+# mix anyway: 39 REAL mechanical parts, 1,784 to 166,372 triangles, with
+# per-part conversion times measured on this very service the same night.
+BENCH = Path("/home/tommaso/corpora/mechparts")
+# The near-limit end of the mix. 25 and 33 sit just under the 120,000-triangle
+# engine ceiling; 12 and 39 are ABOVE it and therefore exercise the oversize
+# admission branch that sends them straight to the feature path -- a real
+# surge will contain both kinds and they fail differently.
+NEAR_LIMIT = [Path("/home/tommaso/corpora/mechparts/25.stl"),   # 107,608 tris
+              Path("/home/tommaso/corpora/mechparts/33.stl"),   # 105,434 tris
+              Path("/home/tommaso/corpora/mechparts/12.stl"),   # 164,996 tris, oversize
+              Path("/home/tommaso/corpora/mechparts/39.stl")]   # 166,372 tris, oversize
 
 # The unit the sampler watches. It must be the unit SERVING --url, or the memory
 # numbers describe an idle process. Default is the load-test twin, for the same
 # reason --url has no default.
-UNIT = "mesh2step-loadtest"
+# The load-test twin (mesh2step-loadtest, :20007) no longer exists -- neither the
+# unit nor the port is present as of 2026-09-16. Rehearsing against the live unit
+# is therefore the only option, and it is a deliberate choice made with the
+# service idle, NOT a default: --url is still required and still has no default.
+UNIT = "mesh2step"
 SAMPLE_INTERVAL_S = 0.5
-# The service unit sets MemoryMax=8G. Anything at or above it is throttling and
-# then a kill, which is exactly the outcome this test exists to rule out.
-CGROUP_BOUND_BYTES = 8 * 1024**3
-# The uvicorn process itself holds only the loaded mesh and the framework; the
-# engine's gigabytes are in a child. 2 GB is far above anything observed and
-# still low enough to catch a leak in the registries.
-SERVER_RSS_BOUND_BYTES = 2 * 1024**3
+# 60-capacity.conf sets MemoryMax=24G against 6 slots (approved 2026-09-08 on
+# twin evidence: six near-limit conversions peaked 4.68 GB in aggregate). The old
+# 8G here was the pre-2026-09-08 ceiling and would fail a healthy run.
+CGROUP_BOUND_BYTES = 24 * 1024**3
+# The uvicorn process itself holds the loaded mesh and the framework -- AND, since
+# MESH2STEP_FEATURE=1, the whole feature pass, which is Python running in-process
+# rather than in the engine child. The old 2 GB assumed "the engine's gigabytes
+# are in a child"; that stopped being the whole story when the feature path
+# became the reason people use this service.
+# Measured 2026-09-17, 48-request burst with 2 oversize feature conversions:
+# server RSS peaked 3,261 MB while the cgroup peaked 6,534 MB and memory.events
+# stayed all-zero (no throttle, no OOM). 6 GB is ~1.8x the observed peak: high
+# enough not to fail a healthy run, low enough to catch a registry leak.
+SERVER_RSS_BOUND_BYTES = 6 * 1024**3
 JOB_POLL_TIMEOUT_S = 900.0   # matches CONVERT_TIMEOUT_S in server.py
 JOB_POLL_INTERVAL_S = 3.0
 REQUEST_TIMEOUT_S = 300.0
@@ -172,7 +187,24 @@ def build_mix(burst: int) -> list[tuple[Path, str]]:
     sphere6.stl (81,920 tris) 152s, mmx.stl (64,288 tris) 91s -- comfortably
     inside the timeout, so a 5xx from either is a real failure, not a fixture.
     """
-    small = sorted(BENCH.glob("*.stl"))
+    # NEAR_LIMIT now lives INSIDE BENCH (the old layout had it outside), so it
+    # must be excluded from the filler pool or the heavy models get drawn twice.
+    # The second draw is the damaging one: it would be sent on `faceted`, and
+    # parts above MAX_INPUT_TRIANGLES = 120,000 are REFUSED 413 on that path.
+    # The test would then record fixture-caused refusals as admission-control
+    # behaviour, which is precisely the distinction it exists to make.
+    # ...and exclude oversize by PROPERTY, not by name. Hand-listing NEAR_LIMIT
+    # was not enough: mechparts/23 is 148,822 triangles, above the ceiling but
+    # not in that list, so it landed in the faceted pool and would have been
+    # refused 413 -- a fixture artefact scored as admission behaviour.
+    def _tris(p: Path) -> int:
+        with open(p, "rb") as fh:               # binary STL header count
+            fh.seek(80)
+            return int.from_bytes(fh.read(4), "little")
+
+    _heavy = {f.resolve() for f in NEAR_LIMIT}
+    small = sorted(p for p in BENCH.glob("*.stl")
+                   if p.resolve() not in _heavy and _tris(p) <= 120_000)
     if not small:
         sys.exit(f"no bench meshes under {BENCH}")
     small.sort(key=lambda p: p.stat().st_size)
