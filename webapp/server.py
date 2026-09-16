@@ -617,6 +617,18 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                     sewn["warnings"] = [f"the first build did not re-read as a solid ({res.get('error')}); "
                                         "rebuilt with --force-sew", *(sewn.get("warnings") or [])]
                     res = sewn
+                else:
+                    # sewing did not close it either: on mechparts/35 the UNIFY step is what opens the shell (measured:
+                    # unify 5.0 fails verification, unify 5.0 + --force-sew fails, --no-unify builds 1 valid solid in
+                    # 32 s; parts 36 and 9, also non-watertight, build fine with unify). Without this the whole
+                    # conversion is served as an error and neither the shape rebuild nor the feature pass ever runs
+                    plain = convert_native(stl_path, out_path, engine=native_engine, schema=schema,
+                                           unify_angle=native_unify, no_unify=True, timeout=CONVERT_TIMEOUT_S)
+                    if plain.get("ok"):
+                        plain["warnings"] = [f"the first build did not re-read as a solid ({res.get('error')}); "
+                                             "rebuilt without merging coplanar faces (--no-unify)",
+                                             *(plain.get("warnings") or [])]
+                        res = plain
         except NativeEngineError as e:          # NativeTimeout included
             # OPT-IN (MESH2STEP_ENGINE_FALLBACK=1): the documented contract is that a timeout answers 504 and explains
             # itself (test_a_timeout_explains_itself_and_cleans_up); serving a rebuilt shape instead changes that.
