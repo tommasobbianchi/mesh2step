@@ -85,6 +85,15 @@ APP_VERSION = _app_version()
 # at all: a limit above the cap does not fail, it THROTTLES, and a throttled
 # conversion never finishes at any timeout.
 MAX_INPUT_TRIANGLES = 120_000
+# ...but that ceiling is the ENGINE's, not the converter's. The feature path never loads the
+# mesh into the engine: it fits primitives and builds from those. Measured peak RSS 702 MB at
+# 164,996 triangles (mechparts/12) and 670 MB at 148,822 (/23) -- ~2.0 MB per 1k + 372 MB,
+# against the engine's 24.95 MB per 1k -- and each built one valid closed solid in ~85 s. So a
+# mesh the engine cannot take is still convertible, and refusing it outright threw away work
+# the service can do. Above MAX_INPUT_TRIANGLES the worker goes straight to the feature path;
+# the acceptance gate is unchanged. The ceiling below is EXTRAPOLATED from those two points
+# (1.5x the largest part measured): re-measure peak RSS before raising it.
+FEATURE_MAX_TRIANGLES = int(os.environ.get("MESH2STEP_FEATURE_MAX_TRIANGLES", "250000"))
 CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 
 # ---------------------------------------------------------------------------
@@ -577,7 +586,8 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
 
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
-                       n_in_tris, cut_before, cut_after, repair_info, feature=False) -> dict:
+                       n_in_tris, cut_before, cut_after, repair_info, feature=False,
+                       feature_only=False) -> dict:
     """The part that takes minutes. Runs on a worker so the request can let go.
 
     Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
@@ -596,8 +606,29 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         )
     t_convert = time.time()
     try:
+        # Too big for the engine, but not for the feature path (see FEATURE_MAX_TRIANGLES): it
+        # rebuilds from recognised surfaces and never loads the mesh into the engine at all.
+        # Nothing is relaxed -- the build is kept only if it passes the same gate as every other.
+        if feature_only:
+            res = _feature_upgrade(stl_path, out_path)
+            if res is None:
+                # same cleanup contract as the 504/502 handlers below: nothing is handed on,
+                # so the temp dir goes with the refusal
+                __import__("shutil").rmtree(workdir, ignore_errors=True)
+                raise HTTPException(413, (
+                    f"This model has {n_in_tris:,} triangles, above the {MAX_INPUT_TRIANGLES:,} "
+                    "the conversion engine can take. It was converted by recognising its shape "
+                    "directly instead, but that did not produce a usable solid for this model. "
+                    "Reduce the mesh (Simplify or Decimate in your CAD or slicer) and try again."
+                ))
+            res["warnings"] = [
+                f"{n_in_tris:,} triangles is above the {MAX_INPUT_TRIANGLES:,} the conversion "
+                "engine can take; the shape was rebuilt from recognised surfaces instead",
+                *(res.get("warnings") or []),
+            ]
         try:
-            res = convert_native(
+            # skipped entirely for an oversize mesh: the engine is what cannot take it
+            res = res if feature_only else convert_native(
                 stl_path, out_path,
                 engine=native_engine, schema=schema, unify_angle=native_unify,
                 no_unify=(engine == "faceted" and merge_coplanar_angle is None),
@@ -904,11 +935,17 @@ def convert(
             __import__("shutil").rmtree(workdir, ignore_errors=True)
             raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
         n_in_tris = len(tris)
-        if n_in_tris > MAX_INPUT_TRIANGLES:
+        # Over MAX_INPUT_TRIANGLES only the ENGINE is out of reach, not the conversion: the
+        # feature path fits primitives straight from the mesh at a fifth of the memory. Admit
+        # those up to FEATURE_MAX_TRIANGLES and let the worker skip the engine entirely.
+        feature_on = bool(feature) or os.environ.get("MESH2STEP_FEATURE") == "1"
+        feature_only = n_in_tris > MAX_INPUT_TRIANGLES and feature_on
+        _ceiling = FEATURE_MAX_TRIANGLES if feature_on else MAX_INPUT_TRIANGLES
+        if n_in_tris > _ceiling:
             __import__("shutil").rmtree(workdir, ignore_errors=True)
             raise HTTPException(413, (
                 f"This model has {n_in_tris:,} triangles. The converter handles up to "
-                f"{MAX_INPUT_TRIANGLES:,} — above that it needs more memory than the "
+                f"{_ceiling:,} — above that it needs more memory than the "
                 "server can give it. Reduce the mesh (Simplify or Decimate in your "
                 "CAD or slicer) and upload it again."
             ))
@@ -953,7 +990,7 @@ def convert(
             native_engine=native_engine, schema=schema, native_unify=native_unify,
             merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
             n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
-            repair_info=repair_info, feature=feature,
+            repair_info=repair_info, feature=feature, feature_only=feature_only,
         )
         handed_off = True  # the worker owns the admission slot from here on
         try:

@@ -1,5 +1,6 @@
 import sys
 import pathlib
+from pathlib import Path
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import io
@@ -625,6 +626,65 @@ def test_a_model_above_the_triangle_limit_is_refused_with_the_number(client, mon
     detail = resp.json()["detail"]
     assert "320" in detail and "100" in detail, detail
     assert "Simplify" in detail or "Decimate" in detail, detail
+
+
+def test_above_the_engine_limit_the_feature_path_is_tried_before_refusing(client, monkeypatch):
+    """MAX_INPUT_TRIANGLES is the ENGINE's ceiling, not the converter's.
+
+    Measured: the feature path peaks at 702 MB on 164,996 triangles against the engine's
+    ~24.95 MB per 1k, and mechparts/12 and /23 each build one valid closed solid in ~85 s.
+    So a mesh over the engine limit is handed to the feature path instead of refused, and
+    the engine is never called for it.
+    """
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "MAX_INPUT_TRIANGLES", 100)
+    monkeypatch.setattr(srv, "FEATURE_MAX_TRIANGLES", 100_000)
+    monkeypatch.setenv("MESH2STEP_FEATURE", "1")
+    called = []
+    monkeypatch.setattr(srv, "convert_native",
+                        lambda *a, **k: called.append("engine") or {"ok": False})
+    monkeypatch.setattr(srv, "_feature_upgrade", lambda stl, out: (
+        Path(out).write_bytes(b"ISO-10303-21;\nENDSEC;\nEND-ISO-10303-21;\n"),
+        {"ok": True, "solids": 1, "watertight": True, "freeEdges": 0, "featureMethod": "stepped",
+         "smoothBuiltCylinders": 43, "smoothBuiltPlanes": 31, "volumeDeltaPct": 0.02,
+         "output": str(out), "warnings": []},
+    )[1])
+
+    mesh = trimesh.creation.icosphere(subdivisions=2)      # 320 triangles
+    buf = io.BytesIO()
+    mesh.export(buf, file_type="stl")
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("big.stl", buf.getvalue(), "application/octet-stream")},
+        data={"engine": "trueform"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert called == [], "the engine must not be called for a mesh above its own limit"
+    got = resp.json()
+    # _native_stats renders the payload in snake_case and tags a validated feature build
+    assert got["ok"] and got["stats"]["backend"] == "feature"
+    assert got["stats"]["feature_method"] == "stepped"
+    assert any("recognised surfaces" in w for w in got["stats"]["warnings"]), got["stats"]
+
+
+def test_above_the_feature_ceiling_it_is_still_refused(client, monkeypatch):
+    """The new path raises the ceiling, it does not remove it."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "MAX_INPUT_TRIANGLES", 100)
+    monkeypatch.setattr(srv, "FEATURE_MAX_TRIANGLES", 200)
+    monkeypatch.setenv("MESH2STEP_FEATURE", "1")
+    mesh = trimesh.creation.icosphere(subdivisions=2)      # 320 triangles
+    buf = io.BytesIO()
+    mesh.export(buf, file_type="stl")
+    resp = client.post(
+        "/api/convert",
+        files={"file": ("big.stl", buf.getvalue(), "application/octet-stream")},
+        data={"engine": "trueform"},
+    )
+    assert resp.status_code == 413, resp.status_code
+    assert "320" in resp.json()["detail"] and "200" in resp.json()["detail"]
 
 
 def test_the_limit_is_published_so_the_page_can_say_it_first(client):
