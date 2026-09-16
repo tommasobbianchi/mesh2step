@@ -483,17 +483,22 @@ def axis_candidates():
     # one pass for every region's area: scanning all triangles once PER region was 9.8 s in a single call (mechparts/1)
     lab_ok = label >= 0
     area_by_label = np.bincount(label[lab_ok], weights=area[lab_ok], minlength=int(label.max()) + 1) if lab_ok.any() else np.zeros(1)
+    # the pure-Python scan of every region against every candidate so far was 76 of 236 s of mechparts/19 (21k facet-plane
+    # regions). A numpy product over all candidate directions only PRE-filters (looser threshold, so it can only admit
+    # more); each survivor is then decided by the original scalar test in insertion order, so the list is identical.
+    D_ = np.empty((max(16, len(S)), 3)); n_c = 0
     for L_, s_ in S.items():
         w_ = float(area_by_label[L_]) if 0 <= L_ < len(area_by_label) else 0.0
         d_, p_ = (s_["n"], None) if s_["kind"] == "plane" else (s_.get("a"), s_.get("o"))
         if d_ is None:
             continue
-        for c_ in cands:
+        for i_ in (np.nonzero(np.abs(D_[:n_c] @ d_) > 0.99998)[0] if n_c else ()):
+            c_ = cands[i_]
             if abs(c_[0] @ d_) > 0.99999 and (p_ is None) == (c_[1] is None) and (
                     p_ is None or np.linalg.norm(np.cross(p_ - c_[1], d_)) < 1e-6 * diag):
                 c_[2] += w_; break
         else:
-            cands.append([d_ / np.linalg.norm(d_), p_, w_])
+            cands.append([d_ / np.linalg.norm(d_), p_, w_]); D_[n_c] = cands[-1][0]; n_c += 1
     return sorted(cands, key=lambda c_: -c_[2])[:24]
 
 
