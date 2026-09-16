@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from slice import load, loops, dedupe
 from auto2d import section2d, loop_area, segment_loop, build_wire
+from radial_fillets import augment
 from OCP.gp import gp_Pnt, gp_Vec
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeVertex
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -107,6 +108,78 @@ def build_level(tri, ax, z_lo, z_hi, h_mid):
         solids.append(BRepPrimAPI_MakePrism(f, gp_Vec(*d)).Shape())
     return solids, len(Ls)
 
+def repair_step_shape(shape):
+    """Repair the sliver faces the level fuse leaves at its junctions after a STEP round trip.
+
+    Adjacent levels are prisms of outlines traced at different slice heights, so the fuse exposes
+    thin shelf faces bounded by two near-coincident arcs. The STEP reader reparametrises those
+    arcs by a few 1e-13, which is enough to tip BRepCheck_Wire::SelfIntersect (a domain-based
+    intersection on the periodic circle pcurves) into a false SelfIntersectingWire. Replacing each
+    conic arc with a non-periodic BSpline removes the periodic pcurve the test mis-reads;
+    SameParameter then rebuilds the pcurves and ShapeFix_Shape repairs the wires. The geometry is
+    unchanged (ApproxCurve tolerance 1e-9: volume shifts by <1e-6 %)."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepLib import BRepLib
+    from OCP.Geom import Geom_TrimmedCurve
+    from OCP.GeomAbs import GeomAbs_C1, GeomAbs_Line
+    from OCP.GeomConvert import GeomConvert_ApproxCurve
+    from OCP.ShapeFix import ShapeFix_Shape
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    b = BRep_Builder()
+    # Only the edges of the faces that actually came back invalid. Converting every conic in the
+    # shape also works, but it costs the thing this tool exists to produce: a circular edge is an
+    # editable parameter (select it, re-fillet it, read a hole off it), a BSpline through the same
+    # points is not. Measured on mechparts/39: 12 faces are broken, yet the blanket pass replaced
+    # 302 of 572 edges; on /6, 8 faces and 899 of 2458 edges. Scoped here to those faces only.
+    from OCP.BRepCheck import BRepCheck_Analyzer as _An
+    from OCP.TopAbs import TopAbs_FACE as _FACE
+    _an = _An(shape, True)
+    faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, _FACE, faces)
+    edges = TopTools_IndexedMapOfShape()
+    for fi in range(1, faces.Extent() + 1):
+        f_ = faces.FindKey(fi)
+        if not _an.IsValid(f_):
+            TopExp.MapShapes_s(f_, TopAbs_EDGE, edges)
+    for i in range(1, edges.Extent() + 1):
+        e = TopoDS.Edge_s(edges.FindKey(i))
+        ac = BRepAdaptor_Curve(e)
+        if ac.GetType() == GeomAbs_Line:
+            continue
+        t0, t1 = ac.FirstParameter(), ac.LastParameter()
+        try:
+            ap = GeomConvert_ApproxCurve(Geom_TrimmedCurve(BRep_Tool.Curve_s(e, 0.0, 0.0), t0, t1),
+                                         1e-9, GeomAbs_C1, 200, 14)
+        except Exception:  # noqa: BLE001 - a degenerate arc must not abort the whole repair
+            continue
+        if ap.IsDone():
+            b.UpdateEdge(e, ap.Curve(), BRep_Tool.Tolerance_s(e))
+    BRepLib.SameParameter_s(shape, 1e-7, True)
+    sfx = ShapeFix_Shape(shape)
+    sfx.SetPrecision(1e-6)
+    sfx.SetMaxTolerance(1.0)
+    sfx.SetMinTolerance(1e-7)
+    wt = sfx.FixWireTool()
+    wt.ModifyTopologyMode = True
+    wt.ModifyGeometryMode = True
+    wt.FixSelfIntersectionMode = 1
+    wt.FixSelfIntersectingEdgeMode = 1
+    wt.FixIntersectingEdgesMode = 1
+    wt.FixNonAdjacentIntersectingEdgesMode = 1
+    wt.FixReorderMode = 1
+    wt.FixConnectedMode = 1
+    wt.FixEdgeCurvesMode = 1
+    wt.FixSameParameterMode = 1
+    wt.FixSmallMode = 1
+    sfx.FixFaceTool().FixWireMode = 1
+    sfx.FixSolidMode = 1
+    sfx.FixShellTool().FixFaceMode = 1
+    sfx.Perform()
+    return sfx.Shape()
+
 def main():
     t0 = time.time()
     tri = load(sys.argv[1]); N = int(sys.argv[3]) if len(sys.argv) > 3 else 80
@@ -180,6 +253,7 @@ def main():
         from OCP.ShapeFix import ShapeFix_Shape
         sfx = ShapeFix_Shape(shape); sfx.Perform(); shape = sfx.Shape()
         print("final shape invalid -> ShapeFix_Shape: valid now %s" % BRepCheck_Analyzer(shape, True).IsValid(), flush=True)
+    shape = augment(shape, tri)   # radial fillets have no representation in this stepped builder
     census = {"plane": 0, "cylinder": 0, "torus": 0, "cone": 0, "other": 0}
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():
@@ -205,7 +279,19 @@ def main():
     Interface_Static.SetCVal_s("write.step.schema", "AP214")
     w = STEPControl_Writer(); w.Transfer(shape, STEPControl_AsIs); ok = w.Write(sys.argv[2]) == IFSelect_RetDone
     r = STEPControl_Reader(); r.ReadFile(sys.argv[2]); r.TransferRoots()
-    back = r.OneShape(); anb = BRepCheck_Analyzer(back, True); nbad = 0
+    back = r.OneShape(); anb = BRepCheck_Analyzer(back, True)
+    if not anb.IsValid():
+        back = repair_step_shape(back)
+        w = STEPControl_Writer()
+        w.Transfer(back, STEPControl_AsIs)
+        ok = w.Write(sys.argv[2]) == IFSelect_RetDone
+        r = STEPControl_Reader()
+        r.ReadFile(sys.argv[2])
+        r.TransferRoots()
+        back = r.OneShape()
+        anb = BRepCheck_Analyzer(back, True)
+        print("STEP re-read invalid -> repaired, now valid %s" % anb.IsValid(), flush=True)
+    nbad = 0
     exb = TopExp_Explorer(back, TopAbs_FACE)
     while exb.More():
         rb = anb.Result(exb.Current())

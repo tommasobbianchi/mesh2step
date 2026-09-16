@@ -11,6 +11,7 @@ import sys, math, struct, time, random
 import numpy as np
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from slice import load, loops, dedupe, fit_circle
+from radial_fillets import augment
 from OCP.gp import gp_Pnt, gp_Vec, gp_Dir, gp_Ax2, gp_Trsf, gp_Circ
 from OCP.GC import GC_MakeArcOfCircle, GC_MakeSegment
 from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace,
@@ -246,6 +247,7 @@ def main():
         if not nf:
             cha.Build(); print("chamfers done %s" % cha.IsDone(), flush=True)
             if cha.IsDone(): solid = cha.Shape()
+    solid = augment(solid, tri)   # radial fillets have no representation in this 2.5D builder
     # 5. validate
     census = {"plane": 0, "cylinder": 0, "torus": 0, "cone": 0, "other": 0}
     ex = TopExp_Explorer(solid, TopAbs_FACE)
