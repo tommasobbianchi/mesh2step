@@ -212,6 +212,9 @@ def native_payload(m: dict, stl, out, seconds: float) -> dict:
         "facesBeforeUnify": m["faces"], "facesAfterUnify": m["faces"],
         "facesAfterSmooth": m["faces"], "smooth": True, "smoothPlanes": m["planes"],
         "smoothCylinders": m["cylinders"], "seconds": seconds, "warnings": [],
+        # the webapp renders the BUILT counts (_native_stats reads smoothBuilt*); without them a served feature
+        # build shows no cylinders at all, while an edgebuild result shows its 46
+        "smoothBuiltPlanes": m["planes"], "smoothBuiltCylinders": m["cylinders"],
         "featureMethod": m["method"], "featureSupport": m["support"],
         "featureDistP95": m["dist_p95"],
     }
