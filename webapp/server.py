@@ -73,6 +73,15 @@ def _app_version() -> str:
         sha = subprocess.run(git, capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         sha = ""
+    if not sha:
+        # A worker provisioned by rsync has no .git, so `git describe` writes to stderr and
+        # leaves stdout empty -- the node then reports "unknown" and its journal lines cannot
+        # be attributed once traffic is split across nodes. provision_behemoth.sh drops a
+        # .version at the repo root for exactly this case.
+        try:
+            sha = (Path(__file__).parent.parent / ".version").read_text().strip()
+        except OSError:
+            sha = ""
     m = re.search(r"mesh2step-native-(v[\w.]+)", os.environ.get("MESH2STEP_NATIVE", ""))
     return " · ".join(p for p in (sha or "unknown", m and f"engine {m.group(1)}") if p)
 
