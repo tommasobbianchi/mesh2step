@@ -33,11 +33,27 @@ from OCP.Interface import Interface_Static
 
 def material_area(tri, ax, h):
     Ls = [dedupe(l) for l in loops(section2d(tri, ax, h)) if len(l) > 3]
-    areas = sorted((abs(loop_area(np.r_[l, l[:1]])) for l in Ls), reverse=True)
-    areas = [a for a in areas if a > 1e-3]
-    if not areas: return 0, 0.0, []
-    # material = outer loops minus holes; approximate by nesting order: largest positive, alternate by containment count
-    return len(areas), sum(areas), Ls
+    Ls = [l for l in Ls if abs(loop_area(np.r_[l, l[:1]])) > 1e-3]
+    if not Ls: return 0, 0.0, []
+    # material = outer loops MINUS holes. This used to return sum(areas), which added the holes
+    # instead: on mechparts/6 at z=30.58 that reported 10184 mm2 where the section really carries
+    # 4400, so a level whose bore opens up looks unchanged in area and is merged into the one
+    # below. The level then extrudes solid through the bore -- measured +11955 mm3 in the single
+    # band z 29.12..32.14, which was 107% of that part's whole volume error. Same odd-depth rule
+    # build_level() uses to pick its holes, so the signature and the build agree on what is solid.
+    order = sorted(range(len(Ls)), key=lambda i: -abs(loop_area(np.r_[Ls[i], Ls[i][:1]])))
+    def _inside(pt, L):
+        x, y = pt; c = False; n = len(L)
+        for i in range(n):
+            x1, y1 = L[i]; x2, y2 = L[(i + 1) % n]
+            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-300) + x1: c = not c
+        return c
+    signed = 0.0
+    for rank, i in enumerate(order):        # larger loops first, so depth counts only bigger ones
+        depth = sum(1 for j in order[:rank] if _inside(Ls[i][0], Ls[j]))
+        a = abs(loop_area(np.r_[Ls[i], Ls[i][:1]]))
+        signed += -a if depth % 2 else a
+    return len(Ls), signed, Ls
 
 def levels_for_axis(tri, ax, lo, hi, N):
     hs = lo[ax] + (np.arange(N) + 0.5) / N * (hi[ax] - lo[ax])

@@ -214,16 +214,21 @@ def _candidates(tri):
 
 
 def _apply(shape, corner, cyl, convex):
-    if convex:
-        add = BRepAlgoAPI_Common(corner, cyl).Shape()
-        rem = BRepAlgoAPI_Cut(corner, cyl).Shape()
-    else:
-        add = BRepAlgoAPI_Cut(corner, cyl).Shape()
-        rem = BRepAlgoAPI_Common(corner, cyl).Shape()
-    fused = BRepAlgoAPI_Fuse(shape, add).Shape()
-    if fused.IsNull():
+    # REMOVE THE WHOLE CORNER FIRST, THEN ADD BACK THE SECTOR THAT SURVIVES THE FILLET.
+    # The old order was Fuse(shape, add) then Cut(..., rem), i.e. add material and then carve the
+    # complement away. Same set algebra, but it needs one more intermediate shape, and where the
+    # corner is near-coincident with an existing level shelf the two-step boolean emits TWO sliver
+    # faces where one belongs. Measured on mechparts/39: a 0.1379 mm2 REVERSED plane and a 0.1165
+    # mm2 FORWARD plane sharing one 1.09 mm line with 4 faces on it -- a fold that
+    # BRepCheck_Analyzer passes in memory and that only serialization exposes, as a 2-face
+    # zero-volume shell and BRepCheck_EnclosedRegion on re-read. Bisecting the fillet loop put the
+    # first serialized-invalid state at applied #12 and the surviving non-manifold edge at #14.
+    # With this order part 39 re-reads valid, dV -0.004%, and gains cylinders (163 -> 169).
+    keep = BRepAlgoAPI_Cut(shape, corner).Shape()
+    if keep.IsNull():
         return None
-    out = BRepAlgoAPI_Cut(fused, rem).Shape()
+    add = (BRepAlgoAPI_Common(corner, cyl) if convex else BRepAlgoAPI_Cut(corner, cyl)).Shape()
+    out = BRepAlgoAPI_Fuse(keep, add).Shape()
     return None if out.IsNull() else out
 
 
