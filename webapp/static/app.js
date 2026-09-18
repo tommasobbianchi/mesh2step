@@ -374,16 +374,15 @@ document.getElementById('decimate').addEventListener('change', (e) => {
 // they are driven from the faceted viewer; disable those visibly, not hidden, and
 // surface the unify-angle input instead.
 const engineSelect = document.getElementById('engine');
-const TRUEFORM_ONLY_IDS = [
-  'cut-box-btn', 'cut-plane-btn', 'cut-lasso-btn', 'cut-components-btn',
-  'cut-apply-btn', 'cut-reset-btn', 'cut-keep-inside', 'cut-undo-btn', 'cut-redo-btn'];
 function applyEngine() {
   const isTrueform = engineSelect.value === 'trueform';
-  for (const id of TRUEFORM_ONLY_IDS) {
-    const el = document.getElementById(id);
-    if (el) el.disabled = isTrueform;
-  }
-  if (!isTrueform) _updateCutButtons();
+  // Cuts, like repair, are mesh surgery applied to verts/tris BEFORE the native engine
+  // runs, and the server has honoured them on TrueForm all along -- see
+  // tests/test_webapp_api.py::test_trueform_cuts_are_honoured ("cuts are mesh surgery
+  // too, and are likewise no longer refused"). Disabling the trim tools on TrueForm
+  // made trimming impossible on the recommended path for no reason. The buttons now
+  // follow the cut state only.
+  _updateCutButtons();
   document.getElementById('unify-angle-row').classList.toggle('hidden', !isTrueform);
   document.getElementById('feature-row').classList.toggle('hidden', !isTrueform);
   // Say out loud what Exact costs. Users reached for "Exact" expecting higher quality and
@@ -999,11 +998,10 @@ convertBtn.addEventListener('click', async () => {
   if (repairVal !== 'off') {
     fd.append('repair', repairVal);
   }
-  if (engine === 'faceted') {
-    if (cutOps.length) {
-      fd.append('cuts', JSON.stringify(cutOps));
-    }
-  } else {
+  if (cutOps.length) {
+    fd.append('cuts', JSON.stringify(cutOps));
+  }
+  if (engine !== 'faceted') {
     fd.append('unify_angle', document.getElementById('unify-angle-num').value);
     if (document.getElementById('feature-toggle').checked) fd.append('feature', 'true');
   }
