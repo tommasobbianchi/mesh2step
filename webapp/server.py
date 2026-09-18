@@ -596,7 +596,7 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info, feature=False,
-                       feature_only=False) -> dict:
+                       feature_only=False, decimate_info=None) -> dict:
     """The part that takes minutes. Runs on a worker so the request can let go.
 
     Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
@@ -724,6 +724,8 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         d["n_cut_tris_after"] = cut_after
     if repair_info is not None:
         d.update(repair_info)
+    if decimate_info is not None:
+        d.update(decimate_info)
     if engine == "faceted" and merge_coplanar_angle is not None:
         d["n_faces_before_merge"] = res.get("facesBeforeUnify")
         d["n_faces_after_merge"] = res.get("facesAfterUnify")
@@ -885,6 +887,8 @@ def convert(
     cuts: str | None = Form(None),
     unify_angle: float = Form(5.0),
     feature: bool = Form(False),
+    decimate: str | None = Form(None),
+    decimate_keep: float = Form(0.25),
 ):
     _purge_expired()
 
@@ -897,6 +901,10 @@ def convert(
         raise HTTPException(400, f"invalid schema {schema!r}")
     if repair not in (None, "weld", "fill", "solidify"):
         raise HTTPException(400, f"invalid repair {repair!r}; must be weld, fill, solidify, or omitted")
+    if decimate not in (None, "planar", "ratio"):
+        raise HTTPException(400, f"invalid decimate {decimate!r}; must be planar, ratio, or omitted")
+    if decimate == "ratio" and not (0.01 <= decimate_keep < 1.0):
+        raise HTTPException(400, f"invalid decimate_keep {decimate_keep!r}; must be >= 0.01 and < 1.0")
 
     parsed_cuts = _parse_cuts(cuts)
 
@@ -944,6 +952,27 @@ def convert(
             __import__("shutil").rmtree(workdir, ignore_errors=True)
             raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
         n_in_tris = len(tris)
+        decimate_info = None
+        # BEFORE the ceiling on purpose: decimation is how a mesh too dense to admit
+        # becomes admissible, so a model that would be refused below can be reduced
+        # and converted instead. It is also the only knob that caps the CPU cost of a
+        # dense curved part -- those run for hours and hold a conversion slot the
+        # whole time. Never automatic: "ratio" moves the surface, and an automatic
+        # decimation was measured and refused twice.
+        if decimate is not None:
+            from mesh2step.decimate import decimate_mesh
+
+            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep)
+            verts, tris = dr.verts, dr.tris
+            n_in_tris = len(tris)
+            decimate_info = {
+                "decimate_mode": dr.mode,
+                "n_decimate_faces_before": dr.n_faces_before,
+                "n_decimate_faces_after": dr.n_faces_after,
+                "decimate_dv_pct": round(dr.dv_pct, 4),
+            }
+            if decimate == "ratio":
+                decimate_info["decimate_keep"] = decimate_keep
         # Over MAX_INPUT_TRIANGLES only the ENGINE is out of reach, not the conversion: the
         # feature path fits primitives straight from the mesh at a fifth of the memory. Admit
         # those up to FEATURE_MAX_TRIANGLES and let the worker skip the engine entirely.
@@ -1000,6 +1029,7 @@ def convert(
             merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
             n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
             repair_info=repair_info, feature=feature, feature_only=feature_only,
+            decimate_info=decimate_info,
         )
         handed_off = True  # the worker owns the admission slot from here on
         try:

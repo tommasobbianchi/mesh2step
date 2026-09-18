@@ -192,6 +192,24 @@
         <p class="hint">Off = exact, geometry-preserving. Weld merges duplicate/split vertices, drops duplicate faces, and fixes winding. "Fill" also closes holes (best-effort via trimesh). Solidify forces a watertight solid by reconstruction (geometry changes; needs pymeshfix). Still-non-watertight meshes are reported honestly.</p>
       </section>
 <section class="panel-section">
+        <h2>Reduce mesh</h2>
+        <div class="form-row">
+          <select id="decimate">
+            <option value="off" selected>Off (use every triangle)</option>
+            <option value="planar">Flat areas only (geometry preserved)</option>
+            <option value="ratio">Aggressive — reduce to…</option>
+          </select>
+        </div>
+        <div id="decimate-controls" class="merge-controls hidden">
+          <div class="form-row slider-row">
+            <label>Keep (%)</label>
+            <input id="decimate-keep" type="range" min="1" max="99" step="1" value="25" />
+            <input id="decimate-keep-num" class="num" type="number" min="1" max="99" step="1" value="25" />
+          </div>
+        </div>
+        <p class="hint">Runs before the conversion, on the mesh. "Flat areas only" deletes triangles that already lie in their neighbours' plane — a flat face exported as a fan of hundreds of triangles becomes a handful, and the shape does not move. "Aggressive" collapses edges down to the percentage you pick: it is the only setting that reliably cuts the time of a dense curved part from hours to minutes, but it moves the surface, and cylinders and fillets are the first thing it spends error on — so it can cost you the analytic faces Smart/Feature would have rebuilt. The triangle counts and the volume change are reported with the result.</p>
+      </section>
+<section class="panel-section">
         <h2>Merge co-planar</h2>
         <div class="form-row">
           <label class="checkbox-label"><input id="merge-toggle" type="checkbox" /> Merge adjacent co-planar faces</label>

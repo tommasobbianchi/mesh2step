@@ -357,6 +357,11 @@ document.getElementById('merge-toggle').addEventListener('change', (e) => {
   document.getElementById('merge-controls').classList.toggle('hidden', !e.target.checked);
 });
 
+linkPair('decimate-keep', 'decimate-keep-num');
+document.getElementById('decimate').addEventListener('change', (e) => {
+  document.getElementById('decimate-controls').classList.toggle('hidden', e.target.value !== 'ratio');
+});
+
 // ---- engine selector ----
 // TrueForm cannot honour repair, tolerance dedup, or cuts; disable them (visibly,
 // not hidden) and surface the unify-angle input instead.
@@ -382,6 +387,9 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('merge-angle').value = document.getElementById('merge-angle-num').value = 5;
   document.getElementById('schema').value = 'ap214';
   document.getElementById('repair').value = 'off';
+  document.getElementById('decimate').value = 'off';
+  document.getElementById('decimate-controls').classList.add('hidden');
+  document.getElementById('decimate-keep').value = document.getElementById('decimate-keep-num').value = 25;
   document.getElementById('engine').value = 'faceted';
   document.getElementById('feature-toggle').checked = false;
   document.getElementById('unify-angle').value = document.getElementById('unify-angle-num').value = 5;
@@ -900,6 +908,15 @@ convertBtn.addEventListener('click', async () => {
   fd.append('file', selectedFile);
   fd.append('engine', engine);
   fd.append('schema', document.getElementById('schema').value);
+  // Mesh preprocessing: applies to BOTH engines, unlike repair/cuts -- the dense
+  // curved parts that make TrueForm run for hours are exactly what it is for.
+  const decimateVal = document.getElementById('decimate').value;
+  if (decimateVal !== 'off') {
+    fd.append('decimate', decimateVal);
+    if (decimateVal === 'ratio') {
+      fd.append('decimate_keep', String(document.getElementById('decimate-keep-num').value / 100));
+    }
+  }
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
   }
@@ -1030,6 +1047,11 @@ function renderStats(data) {
   html += row('faces', `${num(s.n_faces_built)} built`);
   html += row('watertight', flag(s.watertight));
   html += row('solid', flag(s.is_solid) + volumeCell(s));
+  if (s.decimate_mode) {
+    const pct = s.decimate_keep ? ` (keep ${Math.round(s.decimate_keep * 100)}%)` : '';
+    html += row(`reduce(${s.decimate_mode}${pct})`,
+      `${num(s.n_decimate_faces_before)} → ${num(s.n_decimate_faces_after)} triangles · volume ${s.decimate_dv_pct >= 0 ? '+' : ''}${s.decimate_dv_pct}%`);
+  }
   if (s.repair_level) {
     const extra = s.repair_level === 'solidify' ? ' (reconstructed)' : '';
     html += row(`repair(${s.repair_level}${extra})`, `${num(s.n_repair_faces_before)} → ${num(s.n_repair_faces_after)} faces · watertight_after: ${flag(s.repair_watertight_after)}`);
