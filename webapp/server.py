@@ -706,8 +706,18 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         # The queue is sized on how long conversions ACTUALLY take here, not on
         # how long they took on the machine the constants were written on. A
         # timed-out or failed run counts too: it held the slot just the same.
-        observe_convert_seconds(time.time() - t_convert)
+        conv_seconds = time.time() - t_convert
+        observe_convert_seconds(conv_seconds)
     d = _native_stats(res, engine, schema)
+    # `seconds` out of _native_stats is the ENGINE's own figure, and the engine is not
+    # what produced a feature build: on those it reports 0.0 while the conversion really
+    # took minutes. Measured 2026-09-18 on a 3,172-triangle part -- stats.seconds 0.0,
+    # the service's own SRVCONV timer 602.9 s, because the engine hung for its whole
+    # 600 s budget and edgebuild then rebuilt the shape in 1 s. Report the wall time of
+    # the conversion the user actually waited for, and keep the engine's own number
+    # under its own key rather than losing it.
+    d["engine_seconds"] = d.get("seconds")
+    d["seconds"] = round(conv_seconds, 2)
     d["backend"] = "native"
     if res.get("featureMethod"):
         # a validated feature build: the post-passes below audit ENGINE output only
