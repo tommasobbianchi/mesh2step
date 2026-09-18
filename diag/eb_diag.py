@@ -742,6 +742,20 @@ if os.environ.get("EB_ABSORB_FACETS") == "1":
             _absorbed += 1
     log(f"facet absorb: {_absorbed} of {len(_planes)} planes absorbed into {len(_curved)} curved surfaces")
 
+
+def _mindist(tag):
+    verts = np.unique(tri.reshape(-1, 3), axis=0)
+    pick = verts[np.linspace(0, len(verts) - 1, min(600, len(verts))).astype(int)]
+    dd = []
+    for p in pick:
+        dd.append(min(float(np.abs(sdist(s_, p)).min()) for s_ in S.values()))
+    log(f"[MINDIST {tag}] p95={np.percentile(dd, 95):.4f} max={max(dd):.4f} nverts={len(dd)} "
+        f"| surfaces {collections.Counter(s['kind'] for s in S.values())}")
+
+
+if os.environ.get("EB_ABSORB_FACETS") == "1":
+    _mindist("after-absorb")
+
 # unlabelled triangles join the neighbouring surface they lie on
 for _ in range(50):
     changed = False
@@ -937,6 +951,8 @@ while merged:
                 # circumscribed sphere (chamfered cube: all 26 faces "on" one sphere) does not
                 hugs = np.abs(sdist(s2, tri[tp].mean(1))).max() < 2e-3 * diag
                 if facing and hugs and np.abs(sdist(s2, Pu)).max() < 1e-5 * diag:
+                    if os.environ.get("EB_MERGE_LOG"):
+                        log(f"  [merge-absorb] S{P_}({S[P_]['kind']}) -> S{C_}({S[C_]['kind']}) res {float(np.abs(sdist(s2, Pu)).max()):.2e}")
                     label[label == P_] = C_; del S[P_]
                     S[C_] = s2; merged = True; break
             # a pair that failed stays failed until one of its regions grows: the loop restarts after every
@@ -981,6 +997,8 @@ while merged:
                 if os.environ.get("EB_UNION_STATS"):
                     union_stats[("axis", S[L]["kind"], S[M]["kind"], b_ax is not None)] += 1
                 if b_ax is not None:
+                    if os.environ.get("EB_MERGE_LOG"):
+                        log(f"  [merge-union-axis] S{L}({S[L]['kind']})+S{M}({S[M]['kind']}) -> {b_ax['kind']}")
                     label[label == M] = L; kinds[L] = b_ax["kind"]; del S[M]; S[L] = b_ax
                     merged = True; break
                 best_u = None
@@ -1010,11 +1028,15 @@ while merged:
                     union_stats[("kinds4", S[L]["kind"], S[M]["kind"],
                                  best_u is not None and best_u[1] not in (S[L]["kind"], S[M]["kind"]))] += 1
                 if best_u is not None and best_u[1] not in (S[L]["kind"], S[M]["kind"]):
+                    if os.environ.get("EB_MERGE_LOG"):
+                        log(f"  [merge-union-kinds4] S{L}({S[L]['kind']})+S{M}({S[M]['kind']}) -> {best_u[1]} res {best_u[0]:.2e}")
                     label[label == M] = L; kinds[L] = best_u[1]; del S[M]; S[L] = best_u[2]
                     merged = True; break
             if M > L and S[L]["kind"] == S[M]["kind"]:
                 if (np.abs(sdist(S[L], region_verts(M))).max() < TOLM
                         and np.abs(sdist(S[M], region_verts(L))).max() < TOLM):
+                    if os.environ.get("EB_MERGE_LOG"):
+                        log(f"  [merge-same-TOLM] S{L}+S{M} ({S[L]['kind']})")
                     label[label == M] = L; del S[M]
                     S[L] = S[L] if S[L]["kind"] == "plane" else refit_keep(S[L], region_verts(L))
                     merged = True; break
@@ -1030,10 +1052,15 @@ while merged:
                             ts_u = np.where(np.isin(label, [L, M]))[0]
                             s_u = refine(S[C_], V[np.unique(F[ts_u])])
                             if surface_ok(s_u, ts_u)[0]:
+                                if os.environ.get("EB_MERGE_LOG"):
+                                    log(f"  [merge-same-joint] S{C_}+S{P_} ({S[C_]['kind']}) -> res {float(np.abs(sdist(s_u, V[np.unique(F[ts_u])])).max()):.2e}")
                                 label[label == P_] = C_; del S[P_]; S[C_] = s_u
                                 merged = True; break
         if merged:
             break
+
+if os.environ.get("EB_ABSORB_FACETS") == "1":
+    _mindist("after-merge")
 
 if os.environ.get("EB_UNION_STATS"):
     for k_s, v_s in sorted(union_stats.items(), key=lambda kv: -kv[1]):
@@ -1072,6 +1099,8 @@ if n_mixed:
         if (label == L).sum() >= 3:
             S[L] = refit_keep(S[L], region_verts(L))
     log(f"{n_mixed} triangles of mixed curved regions moved to the surface they lie on; surfaces now {collections.Counter(s['kind'] for s in S.values())}")
+    if os.environ.get("EB_ABSORB_FACETS") == "1":
+        _mindist("after-mixed")
 
 if os.environ.get("EB_SPLIT_MIXED"):
     # A region whose own fit does not hug and face its triangles (surface_ok false) can still fit its VERTICES within
@@ -1827,6 +1856,85 @@ def iso_torus_snap(surfs, A, B, pts, VA, VB):
 
 
 TOLC = 1e-7 * diag
+
+
+def _surf_geom(s):
+    from OCP.Geom import (Geom_ConicalSurface, Geom_CylindricalSurface, Geom_Plane,  # noqa: F401
+                          Geom_SphericalSurface, Geom_ToroidalSurface)
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+    if s["kind"] == "plane":
+        c = np.zeros(3); c = c - (c @ s["n"] - s["d"]) * s["n"]
+        return Geom_Plane(gp_Ax3(gp_Pnt(*map(float, c)), gdir(s["n"]), gdir(frame(s["n"])[0])))
+    if s["kind"] == "sphere":
+        return Geom_SphericalSurface(gp_Ax3(pnt(s["c"]), gdir([0, 0, 1.0]), gdir([1.0, 0, 0])), s["R"])
+    if s["kind"] == "cylinder":
+        return Geom_CylindricalSurface(gp_Ax3(pnt(s["o"]), gdir(s["a"]), gdir(s.get("u", frame(s["a"])[0]))), s["R"])
+    if s["kind"] == "cone":
+        href = s["k1"] / s["k0"] if abs(s["k0"]) > 1e-9 else 0.0
+        return Geom_ConicalSurface(gp_Ax3(pnt(s["o"] + s["a"] * href), gdir(s["a"]), gdir(s.get("u", frame(s["a"])[0]))),
+                                   math.atan(s["k0"]), s["k0"] * href + s["k1"])
+    return Geom_ToroidalSurface(gp_Ax3(pnt(s["o"] + s["a"] * s["hc"]), gdir(s["a"]), gdir(s.get("u", frame(s["a"])[0]))),
+                                s["major"], s["minor"])
+
+
+def _near_param(c, P):
+    u0, u1 = c.FirstParameter(), c.LastParameter()
+    best_u, best_d = u0, float("inf")
+    for u in np.linspace(u0, u1, 200):
+        d = c.Value(float(u)).Distance(pnt(P))
+        if d < best_d:
+            best_d, best_u = d, float(u)
+    for _ in range(30):
+        h = 1e-4 * max(1.0, abs(u1 - u0))
+        for du in (-h, h):
+            u = best_u + du
+            if u0 <= u <= u1:
+                d = c.Value(u).Distance(pnt(P))
+                if d < best_d:
+                    best_d, best_u = d, u
+        h *= 0.5
+    return best_u, best_d
+
+
+def intss_edge(surfs, A, B, VA, VB):
+    from OCP.GeomAPI import GeomAPI_IntSS
+    g1, g2 = _surf_geom(surfs[0]), _surf_geom(surfs[1])
+    if g1 is None or g2 is None:
+        return None
+    iss = GeomAPI_IntSS(); iss.Perform(g1, g2, 1e-9)
+    if iss.NbLines() == 0:
+        return None
+    best = None
+    for i in range(1, iss.NbLines() + 1):
+        c = iss.Line(i)
+        ua, da = _near_param(c, A)
+        ub, db = _near_param(c, B)
+        score = da + db
+        if best is None or score < best[0]:
+            best = (score, c, ua, ub)
+    score, c, ua, ub = best
+    if os.environ.get("EB_DEBUG"):
+        log(f"      intss {surfs[0]['kind']}-{surfs[1]['kind']}: {iss.NbLines()} curves, best score {score:.3e} (limit {1e-3*diag:.3e}), A {np.round(A,3).tolist()} B {np.round(B,3).tolist()}")
+    if score > 1e-3 * diag:
+        return None
+    from OCP.BRep import BRep_Tool
+    def _make(V1, V2, p1, p2):
+        me = BRepBuilderAPI_MakeEdge(c, V1, V2, p1, p2)
+        if not me.IsDone():
+            for vx, u in ((V1, p1), (V2, p2)):
+                gap = c.Value(u).Distance(BRep_Tool.Pnt_s(vx))
+                if gap >= BRep_Tool.Tolerance_s(vx):
+                    BRep_Builder().UpdateVertex(vx, 2 * gap)
+            me = BRepBuilderAPI_MakeEdge(c, V1, V2, p1, p2)
+        return me
+    me = _make(VA, VB, ua, ub)
+    if not me.IsDone():
+        me = _make(VB, VA, ub, ua)
+    if me.IsDone():
+        return (me.Edge(), "intss")
+    return None
+
+
 ctypes = collections.Counter()
 edges = {}
 for cid, ch in enumerate(chains):
@@ -1967,10 +2075,21 @@ for cid, ch in enumerate(chains):
             crv = ip.Curve(); u0, u1 = crv.FirstParameter(), crv.LastParameter()
             samp = np.array([[crv.Value(u).X(), crv.Value(u).Y(), crv.Value(u).Z()] for u in np.linspace(u0, u1, 6 * len(use))])
             dev = max(float(np.abs(sdist(s_, samp)).max()) for s_ in surfs)
+            if os.environ.get("EB_DEBUG") and surfs[0]["kind"] == "torus" and surfs[1]["kind"] == "cylinder":
+                log(f"    bspline chain {cid} S{ch['labs'][0]}-S{ch['labs'][1]} iter {_}: dev {dev:.2e} npts {len(use)} (limit {1e-6*diag:.2e})")
             if dev < 1e-6 * diag:
                 break
             pts = densify(pts, surfs)
-        made = (mk_edge(crv, VA, VB, u0, u1), "bspline")
+        if dev >= 1e-5 * diag and not closed:
+            # an oblique curved-curved intersection the point-projection + interpolation cannot reach (dev plateau):
+            # take OCCT's exact surface-surface intersection instead
+            _ie = intss_edge(surfs, A, B, VA, VB)
+            if _ie is not None:
+                if os.environ.get("EB_DEBUG"):
+                    log(f"    INTSYS chain {cid} S{ch['labs'][0]}-S{ch['labs'][1]}: dev {dev:.2e} -> exact intersection")
+                made = _ie
+        if made is None:
+            made = (mk_edge(crv, VA, VB, u0, u1), "bspline")
     edges[cid] = made[0]; ctypes[made[1]] += 1
     if os.environ.get("EB_DUMP_REGION") and any(str(l_) in os.environ["EB_DUMP_REGION"].split(",") for l_ in ch["labs"]):
         from OCP.BRepAdaptor import BRepAdaptor_Curve as _ACd
