@@ -418,10 +418,13 @@ function applyPreset() {
 presetSelect.addEventListener('change', applyPreset);
 applyPreset();
 
-// ---- size guidance, stated in time rather than in triangles ---------------
-// Measured on this service: 272 tris -> 4 s, 1304 -> 45 s, 5224 -> 95 s. Cost climbs
-// far faster than size, so a big mesh is the single most common reason a conversion
-// takes forever or times out. Halving it usually costs nothing in the CAD result.
+// ---- size guidance -------------------------------------------------------
+// Triangle count is a WEAK predictor of cost, measured cleanly on this service:
+//   3,172 tris -> 603 s     21,028 tris -> 41 s
+// What actually costs time is fine tessellation around SMALL curved features (a
+// 1.5 mm hole, a 4 mm fillet), not the triangle total. So this callout must not
+// promise a duration from the count -- it offers the one lever that reliably helps
+// when a conversion is slow, and says so honestly.
 const BIG_TRIS = 20000;
 function updateSizeGuidance(triCount) {
   const box = document.getElementById('model-size');
@@ -433,8 +436,9 @@ function updateSizeGuidance(triCount) {
   callout.classList.toggle('hidden', !big);
   if (big) {
     document.getElementById('reduce-why').textContent =
-      `Finding shapes in ${triCount.toLocaleString()} triangles can take many minutes. `
-      + `Using half of them usually gives the same CAD result far sooner.`;
+      `Detailed models can take several minutes — especially with small holes and `
+      + `rounded edges. If it is slow, using half the triangles usually gives the `
+      + `same CAD result much sooner.`;
   }
 }
 document.getElementById('reduce-apply').addEventListener('click', () => {
