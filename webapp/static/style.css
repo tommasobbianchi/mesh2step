@@ -359,3 +359,29 @@ select {
 .modal-brand .nr-mark { height: 34px; }
 
 #view-select { min-width: 6.5em; }
+
+/* ---- KISS flow: one visible decision, plus size guidance ---------------- */
+.model-size {
+  font-size: 11px; color: var(--muted, #8a8a8a);
+  margin: -4px 0 8px;
+}
+.choice-row { margin: 10px 0 6px; }
+.choice-label {
+  display: block; font-size: 12px; font-weight: 600;
+  margin-bottom: 4px;
+}
+.choice-row select { width: 100%; }
+.choice-row .hint { margin-top: 6px; }
+.reduce-callout {
+  border: 1px solid var(--warning, #f59e0b); border-radius: 6px;
+  padding: 8px 10px; margin: 8px 0; font-size: 11px; line-height: 1.45;
+}
+.reduce-callout b { display: block; margin-bottom: 2px; }
+.reduce-callout .secondary-btn { margin-top: 8px; width: 100%; }
+.reduce-state { display: block; margin-top: 6px; color: var(--warning, #f59e0b); }
+/* splash: the two things that actually decide whether a user gets a good result */
+.modal-keypoints { display: grid; gap: 10px; margin: 14px 0 6px; }
+.keypoint { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; line-height: 1.5; }
+.keypoint-icon { font-size: 18px; line-height: 1.2; }
+.keypoint b { display: block; margin-bottom: 2px; }
+.keypoint span { display: block; color: var(--muted, #8a8a8a); }
