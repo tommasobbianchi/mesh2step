@@ -363,10 +363,14 @@ document.getElementById('decimate').addEventListener('change', (e) => {
 });
 
 // ---- engine selector ----
-// TrueForm cannot honour repair, tolerance dedup, or cuts; disable them (visibly,
-// not hidden) and surface the unify-angle input instead.
+// Repair is NOT engine-specific: the server applies it to verts/tris before the native
+// engine runs (server.py:1005-1016), exactly like decimate, and it was measured to leave
+// recognition untouched on TrueForm (and to RESCUE a holed mesh -- solidify moved
+// broken_block from the `block` fallback to `edgebuild`). Cuts stay faceted-only because
+// they are driven from the faceted viewer; disable those visibly, not hidden, and
+// surface the unify-angle input instead.
 const engineSelect = document.getElementById('engine');
-const TRUEFORM_ONLY_IDS = ['repair',
+const TRUEFORM_ONLY_IDS = [
   'cut-box-btn', 'cut-plane-btn', 'cut-lasso-btn', 'cut-components-btn',
   'cut-apply-btn', 'cut-reset-btn', 'cut-keep-inside', 'cut-undo-btn', 'cut-redo-btn'];
 function applyEngine() {
@@ -378,6 +382,10 @@ function applyEngine() {
   if (!isTrueform) _updateCutButtons();
   document.getElementById('unify-angle-row').classList.toggle('hidden', !isTrueform);
   document.getElementById('feature-row').classList.toggle('hidden', !isTrueform);
+  // Say out loud what Exact costs. Users reached for "Exact" expecting higher quality and
+  // got one planar face per triangle with zero cylinders -- the single most confusing
+  // thing in this UI.
+  document.getElementById('engine-warning').classList.toggle('hidden', isTrueform);
 }
 engineSelect.addEventListener('change', applyEngine);
 
@@ -908,7 +916,7 @@ convertBtn.addEventListener('click', async () => {
   fd.append('file', selectedFile);
   fd.append('engine', engine);
   fd.append('schema', document.getElementById('schema').value);
-  // Mesh preprocessing: applies to BOTH engines, unlike repair/cuts -- the dense
+  // Mesh preprocessing: applies to BOTH engines, unlike cuts -- the dense
   // curved parts that make TrueForm run for hours are exactly what it is for.
   const decimateVal = document.getElementById('decimate').value;
   if (decimateVal !== 'off') {
@@ -920,11 +928,13 @@ convertBtn.addEventListener('click', async () => {
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
   }
+  // Repair applies to BOTH engines, like decimate: it is mesh surgery that happens
+  // before the engine, so withholding it from TrueForm only denied users the fix.
+  const repairVal = document.getElementById('repair').value;
+  if (repairVal !== 'off') {
+    fd.append('repair', repairVal);
+  }
   if (engine === 'faceted') {
-    const repairVal = document.getElementById('repair').value;
-    if (repairVal !== 'off') {
-      fd.append('repair', repairVal);
-    }
     if (cutOps.length) {
       fd.append('cuts', JSON.stringify(cutOps));
     }
