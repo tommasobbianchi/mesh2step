@@ -142,9 +142,28 @@
         <label class="upload-btn">Choose a model…<input id="file-input-2" type="file" accept=".stl,.obj,.3mf,.ply" hidden /></label>
         <div id="input-name" class="active-map-name">No file chosen</div>
 
+        <div id="model-size" class="model-size hidden"></div>
+
+        <div class="choice-row">
+          <label class="choice-label" for="preset">What should we do with it?</label>
+          <select id="preset">
+            <option value="cad" selected>Rebuild it as real CAD — recommended</option>
+            <option value="quick">Quick rebuild — faster, finds fewer round shapes</option>
+            <option value="exact">Keep every triangle — no round shapes at all</option>
+          </select>
+          <p id="preset-hint" class="hint"></p>
+        </div>
+
+        <div id="reduce-callout" class="reduce-callout hidden">
+          <b>This model is big.</b>
+          <span id="reduce-why"></span>
+          <button id="reduce-apply" type="button" class="secondary-btn">Use half the triangles</button>
+          <span id="reduce-state" class="reduce-state"></span>
+        </div>
+
         <button id="trim-enter" class="secondary-btn hidden">Trim away parts…</button>
         <button id="convert-btn" class="export-btn" disabled>Convert to CAD</button>
-        <p class="primary-hint">Circles and flat faces are rebuilt as real CAD geometry. Models up to 120k triangles.</p>
+        <p class="primary-hint">Holes, round edges and flat walls come back as real CAD shapes you can measure and edit.</p>
 
         <div id="convert-status" class="convert-status hidden"></div>
         <div id="result-card" class="result-card hidden"></div>
@@ -179,7 +198,7 @@
           recovered. Measured on a plain cylinder: Smart gives 1 cylindrical face, Exact gives
           396 planes. Use Smart unless you specifically need the triangles preserved.</p>
         <div id="feature-row" class="form-row">
-          <label class="checkbox-label"><input id="feature-toggle" type="checkbox" /> Feature pass (experimental)</label>
+          <label class="checkbox-label"><input id="feature-toggle" type="checkbox" checked /> Feature pass — find cylinders, holes and fillets</label>
         </div>
         <p class="hint">Faceted = one CAD face per triangle (exact). TrueForm detects planes and cylinders and rebuilds analytic faces — slower on large meshes. Feature pass (Smart only — the checkbox is hidden in Exact mode because nothing would run) also tries rebuilding the part as extrusions, turned or stepped solids, and keeps that build only when it matches the mesh and recovers more cylinders; it can take several minutes.</p>
       </section>
@@ -253,7 +272,7 @@
         <img class="nr-mark" src="assets/native-research.svg" alt="Native Research" />
         <div>
           <h2 id="welcome-title" class="modal-title">Welcome to mesh<span>2</span>step</h2>
-          <p class="modal-tagline">Turn a 3D model into real CAD geometry you can open, measure and edit.</p>
+          <p class="modal-tagline">Turn a mesh of triangles back into real CAD shapes you can open, measure and edit.</p>
         </div>
       </div>
 
@@ -265,7 +284,7 @@
         <li class="flow-arrow">→</li>
         <li class="flow-step">
           <span class="flow-icon">✨</span>
-          <div><b>Convert</b><span>Holes become real circles, walls become real surfaces — not thousands of triangles.</span></div>
+          <div><b>Press Convert</b><span>Everything is already set the way you want it. One button.</span></div>
         </li>
         <li class="flow-arrow">→</li>
         <li class="flow-step">
@@ -274,7 +293,26 @@
         </li>
       </ol>
 
-      <p class="modal-hint">Need to trim the model, repair a messy scan, or pick a STEP version? They are under <b>Options</b>. Uploads are deleted after an hour.</p>
+      <div class="modal-keypoints">
+        <div class="keypoint">
+          <span class="keypoint-icon">🔎</span>
+          <div><b>What makes this different</b>
+            <span>A 3D model is just thousands of flat triangles. This app looks at them and works out
+            the real shapes underneath — <b>this hole is a 6&nbsp;mm cylinder, this edge is a rounded
+            fillet</b> — and rebuilds them as true CAD geometry. That is the whole point of the tool,
+            and it is on by default.</span></div>
+        </div>
+        <div class="keypoint">
+          <span class="keypoint-icon">⏱️</span>
+          <div><b>If your model is big, shrink it first</b>
+            <span>Detailed models have a lot of triangles, and finding shapes in all of them can take
+            many minutes. Dropping to <b>half the triangles</b> usually gives the same CAD result in a
+            fraction of the time — and on very detailed parts it is the difference between a result
+            and no result. We tell you when your model needs it and do it in one click.</span></div>
+        </div>
+      </div>
+
+      <p class="modal-hint">Messy scan, unwanted parts, a specific STEP version? All under <b>Options</b>. Uploads are deleted after an hour.</p>
       <p class="modal-hint">New here? <a href="guide" target="_blank" rel="noopener">Read the step-by-step guide</a> — what you need, what to click, what you get back.</p>
       <button id="welcome-start" class="export-btn">Get started</button>
 

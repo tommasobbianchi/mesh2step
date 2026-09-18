@@ -88,7 +88,8 @@ fetch('api/limits').then((r) => r.json()).then((l) => {
   const hint = document.querySelector('.primary-hint');
   const k = `${(l.max_triangles / 1000).toFixed(0)}k triangles`;
   if (hint && !hint.textContent.includes(k)) {
-    hint.textContent = `Circles and flat faces are rebuilt as real CAD geometry. Models up to ${k}.`;
+    hint.textContent = `Holes, round edges and flat walls come back as real CAD shapes you can `
+      + `measure and edit. Models up to ${k}.`;
   }
 }).catch(() => {});
 let lastTriCount = 0;
@@ -161,6 +162,7 @@ async function loadFile(file) {
     currentMesh = obj;
     const { size } = frameObject(obj);
     lastTriCount = triCount;
+    updateSizeGuidance(triCount);
     meshInfo.textContent = `${file.name} · ${triCount.toLocaleString()} triangles · ${size.x.toFixed(1)}×${size.y.toFixed(1)}×${size.z.toFixed(1)} mm`;
     dropHint.classList.add('hidden');
 
@@ -168,6 +170,8 @@ async function loadFile(file) {
     // the tolerance control is gone: the native engine does its own welding
   }
   inputName.textContent = file.name;
+  document.getElementById('reduce-apply').disabled = false;
+  document.getElementById('reduce-state').textContent = '';
   const tooBig = maxTriangles && triCount > maxTriangles;
   convertBtn.disabled = tooBig;
   document.getElementById('trim-enter').classList.remove('hidden');
@@ -389,6 +393,59 @@ function applyEngine() {
 }
 engineSelect.addEventListener('change', applyEngine);
 
+// ---- the one decision a non-expert should have to make --------------------
+// The engine/feature/repair controls stay exactly as they are, under Options, for
+// anyone who wants them. This just sets them from a single plain-language choice,
+// so the default path is the one the app exists for: rebuild real CAD shapes.
+// Measured: on trueform+feature, seven cylinder/fillet parts came back with their
+// cylindrical area matching the CAD solid exactly; on faceted, zero cylinders.
+const PRESETS = {
+  cad:   { engine: 'trueform', feature: true,
+           hint: 'Finds the real shapes — cylinders, holes, rounded edges — and rebuilds them as CAD geometry. Slower on detailed models, and worth it.' },
+  quick: { engine: 'trueform', feature: false,
+           hint: 'Rebuilds flat walls and simple circles only. Finishes sooner, but misses fillets and awkward round shapes.' },
+  exact: { engine: 'faceted', feature: false,
+           hint: 'Copies the mesh as-is: every triangle becomes its own flat CAD face. No cylinders, no round edges. Pick this only if you specifically need the triangles kept.' },
+};
+const presetSelect = document.getElementById('preset');
+function applyPreset() {
+  const p = PRESETS[presetSelect.value] || PRESETS.cad;
+  engineSelect.value = p.engine;
+  document.getElementById('feature-toggle').checked = p.feature;
+  applyEngine();
+  document.getElementById('preset-hint').textContent = p.hint;
+}
+presetSelect.addEventListener('change', applyPreset);
+applyPreset();
+
+// ---- size guidance, stated in time rather than in triangles ---------------
+// Measured on this service: 272 tris -> 4 s, 1304 -> 45 s, 5224 -> 95 s. Cost climbs
+// far faster than size, so a big mesh is the single most common reason a conversion
+// takes forever or times out. Halving it usually costs nothing in the CAD result.
+const BIG_TRIS = 20000;
+function updateSizeGuidance(triCount) {
+  const box = document.getElementById('model-size');
+  const callout = document.getElementById('reduce-callout');
+  if (!triCount) { box.classList.add('hidden'); callout.classList.add('hidden'); return; }
+  box.textContent = `${triCount.toLocaleString()} triangles`;
+  box.classList.remove('hidden');
+  const big = triCount > BIG_TRIS;
+  callout.classList.toggle('hidden', !big);
+  if (big) {
+    document.getElementById('reduce-why').textContent =
+      `Finding shapes in ${triCount.toLocaleString()} triangles can take many minutes. `
+      + `Using half of them usually gives the same CAD result far sooner.`;
+  }
+}
+document.getElementById('reduce-apply').addEventListener('click', () => {
+  document.getElementById('decimate').value = 'ratio';
+  document.getElementById('decimate').dispatchEvent(new Event('change'));
+  document.getElementById('decimate-keep').value = 50;
+  document.getElementById('decimate-keep-num').value = 50;
+  document.getElementById('reduce-state').textContent = '✓ will use half the triangles';
+  document.getElementById('reduce-apply').disabled = true;
+});
+
 document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('merge-toggle').checked = false;
   document.getElementById('merge-controls').classList.add('hidden');
@@ -398,10 +455,14 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('decimate').value = 'off';
   document.getElementById('decimate-controls').classList.add('hidden');
   document.getElementById('decimate-keep').value = document.getElementById('decimate-keep-num').value = 25;
-  document.getElementById('engine').value = 'faceted';
-  document.getElementById('feature-toggle').checked = false;
   document.getElementById('unify-angle').value = document.getElementById('unify-angle-num').value = 5;
-  applyEngine();
+  // Reset means "back to the recommended setup", not "back to the engine that finds
+  // nothing". It used to select faceted + no feature pass, i.e. the one combination
+  // that cannot recover a single cylinder.
+  document.getElementById('reduce-apply').disabled = false;
+  document.getElementById('reduce-state').textContent = '';
+  presetSelect.value = 'cad';
+  applyPreset();
 });
 
 // ---- cut helpers ----
