@@ -369,6 +369,7 @@ if n_moved:
 
 # a curved region must hug and face its surface; flat facets that merely have their vertices on one sphere
 # (chamfered cube: 20 chamfer faces on the circumscribed sphere) are split back into planes
+_split_facets = set()             # plane labels born from a split, absorbable later
 for L in list(S):
     s = S[L]
     if s["kind"] == "plane":
@@ -470,6 +471,11 @@ for L in list(S):
             continue
         newL = len(kinds); kinds.append("plane"); label[grp] = newL
         S[newL] = fit(newL)
+        # these planes are ORPHANS -- facets of a curved surface whose identity was just
+        # deleted, not flat faces of the part. Only they may be absorbed later
+        # (EB_ABSORB_FACETS); absorbing every plane instead ate the part's genuine flat
+        # faces and left 13 surfaces with dist_p95 6.86 mm.
+        _split_facets.add(newL)
     log(f"region {L} ({s['kind']}) is flat facets, split into planes" + (f" and {n_rounds} small rounds" if n_rounds else ""))
 
 # surfaces of revolution about a KNOWN machining axis: a face normal or the axis of a fitted cylinder/cone.
@@ -683,6 +689,58 @@ for s0_ in sorted(free_t):
     if b is not None:
         newL = len(kinds); kinds.append(b["kind"]); label[comp] = newL; S[newL] = b; n_new += 1
 log(f"axis fits: {n_axis_refit} regions refit about a known axis, {n_new} unlabelled components became surfaces")
+
+# ---- post-axis-refit facet absorb (EB_ABSORB_FACETS=1, default OFF) -------------------
+# The flat-facet split (:372-402) dissolves a curved region into one plane per coplanar facet
+# group. Those facets are orphans: they carry no surface identity, so the corner solve later
+# sees N planes where ONE curved face belongs -- part 16's failing corner is torus S136 plus
+# 3 facet planes of S63, i.e. 4 surface equations in 3 unknowns (project(), :1527-1541).
+#
+# A better per-region fit cannot fix this, and that is the measured part: S63 is 53 triangles
+# spanning 2.188 mm of a 10 mm-radius meridian, and an arc that short cannot determine its own
+# major radius -- best_axis_fit returns major 146.19 against a true 43.97, residual 2.86e-2 vs
+# the 2.59e-3 surface_ok allows. The information is CROSS-region, so the absorb must be too.
+#
+# By here the identity exists: the axis-refit rung above recovers the torus from the large
+# surviving patches (measured on 16: major 43.977, minor 9.999), and 2994 of 3041 facet planes
+# lie on it within 1e-5*diag -- exactly the residual surface_ok accepts.
+#
+# The existing absorb (:851+) cannot reach these: it requires ADJACENCY, and it runs inside the
+# merge loop, which has already welded the small facets into larger planar patches by then.
+if os.environ.get("EB_ABSORB_FACETS") == "1":
+    _curved = [L for L in all_labels() if S[L]["kind"] in ("cylinder", "cone", "sphere", "torus")]
+    # ONLY the split's orphans. Absorbing every plane instead absorbed 7033 of 7069 on part 16,
+    # including the part's genuine flat faces: the corner solve was fixed (28/28 at 4.2e-05,
+    # against a baseline of 1 corner failing at 2.50e-03) but the model collapsed to 13 surfaces
+    # and dist_p95 6.86 mm against an allowed 1.30.
+    _planes = [L for L in all_labels() if S[L]["kind"] == "plane" and L in _split_facets]
+    _absorbed = 0
+    for _P in _planes:
+        _tp = region_tris(_P)
+        _Pv = region_verts(_P)
+        _cen = tri[_tp].mean(1)
+        _best = None
+        for _C in _curved:
+            # cheap gate first: the facet's MIDDLE must sit within the tessellation deflection of
+            # the surface. Without it this pass is 7069 planes x 252 surfaces of full vertex work.
+            if float(np.abs(sdist(S[_C], _cen)).max()) > 2e-3 * diag:
+                continue
+            _r = float(np.abs(sdist(S[_C], _Pv)).max())
+            if _r >= 1e-5 * diag:
+                continue
+            # vertices alone are not enough -- a cylinder's end disk has every vertex on the rim
+            # circle. The facet must also FACE the surface, the same test surface_ok applies.
+            _g = sgrad(S[_C], _cen)
+            _g /= np.maximum(np.linalg.norm(_g, axis=1, keepdims=True), 1e-300)
+            if float(np.abs(np.einsum("ij,ij->i", _g, nt[_tp])).min()) <= math.cos(math.radians(20)):
+                continue
+            if _best is None or _r < _best[1]:
+                _best = (_C, _r)
+        if _best is not None:
+            label[label == _P] = _best[0]
+            del S[_P]
+            _absorbed += 1
+    log(f"facet absorb: {_absorbed} of {len(_planes)} planes absorbed into {len(_curved)} curved surfaces")
 
 # unlabelled triangles join the neighbouring surface they lie on
 for _ in range(50):
