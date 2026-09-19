@@ -47,7 +47,7 @@ _CONVERT_SLOTS = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
 _POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS + 2,
                            thread_name_prefix="convert")
 _PENDING: dict[str, dict] = {}
-SYNC_WAIT_S = 20.0    # hold the request this long; past it, hand back a job id
+SYNC_WAIT_S = float(os.environ.get("MESH2STEP_SYNC_WAIT_S", "20"))    # hold the request this long; past it, hand back a job id
 QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
 # With conversion behind a job, nobody is holding a connection open, so the only
 # real limit is how long the work deserves. Measured on this host: a
@@ -422,7 +422,7 @@ def _sweep_orphans(now: float) -> None:
             pass
 
 
-def _feature_upgrade(stl_path, out_path) -> dict | None:
+def _feature_upgrade(stl_path, out_path, progress: dict | None = None) -> dict | None:
     """Replace the engine STEP with a feature-level build when one qualifies (MESH2STEP_FEATURE=1).
 
     Runs in its own process group so an OCCT crash or hang in a prototype builder costs the
@@ -432,11 +432,17 @@ def _feature_upgrade(stl_path, out_path) -> dict | None:
     import subprocess
 
     cand = Path(out_path).with_name("feature.step")
+    # A file, not a pipe: communicate() already owns stdout, and a second reader thread would
+    # buy nothing but a deadlock to debug. The child appends, /api/job reads the last line.
+    phase_file = Path(out_path).with_name("phases.jsonl")
+    if progress is not None:
+        progress["phase_file"] = str(phase_file)
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", "mesh2step.feature", str(stl_path), "-o", str(cand),
              "--no-fallback", "--engine-step", str(out_path)],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+            env=dict(os.environ, MESH2STEP_PHASE_LOG=str(phase_file)),
         )
         stdout, _ = proc.communicate(timeout=FEATURE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -596,7 +602,7 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info, feature=False,
-                       feature_only=False, decimate_info=None) -> dict:
+                       feature_only=False, decimate_info=None, progress=None) -> dict:
     """The part that takes minutes. Runs on a worker so the request can let go.
 
     Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
@@ -619,7 +625,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         # rebuilds from recognised surfaces and never loads the mesh into the engine at all.
         # Nothing is relaxed -- the build is kept only if it passes the same gate as every other.
         if feature_only:
-            res = _feature_upgrade(stl_path, out_path)
+            res = _feature_upgrade(stl_path, out_path, progress)
             if res is None:
                 # same cleanup contract as the 504/502 handlers below: nothing is handed on,
                 # so the temp dir goes with the refusal
@@ -637,6 +643,8 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             ]
         try:
             # skipped entirely for an oversize mesh: the engine is what cannot take it
+            if progress is not None:
+                progress["stage"] = "engine"
             res = res if feature_only else convert_native(
                 stl_path, out_path,
                 engine=native_engine, schema=schema, unify_angle=native_unify,
@@ -688,7 +696,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             res = _edgebuild_upgrade(stl_path, out_path, res)
         if (engine == "trueform" and res.get("ok") and not res.get("featureMethod")
                 and (feature or os.environ.get("MESH2STEP_FEATURE") == "1")):
-            res = _feature_upgrade(stl_path, out_path) or res
+            res = _feature_upgrade(stl_path, out_path, progress) or res
     except NativeTimeout:
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(504, (
@@ -723,6 +731,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         # a validated feature build: the post-passes below audit ENGINE output only
         d["backend"] = "feature"
         d["feature_method"] = res["featureMethod"]
+        # per-candidate wall times: the profile a staged ETA is fitted on, and the only way the
+        # SRVCONV line can say WHERE a slow conversion spent its minutes
+        d["feature_phases"] = res.get("featurePhases") or []
     trueform_post = engine == "trueform" and "feature_method" not in d
     # Triangle count comes from BEFORE the native step, because the binary only
     # ever sees the already-cut, already-repaired mesh. Vertices do NOT: our STL
@@ -865,6 +876,50 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     return {"ok": True, "stats": d, "download_token": token}
 
 
+# What the client may be told before the result exists. The count is exact (the candidate list
+# is fixed); the duration is not, so only the CEILING is promised -- the two timeouts are the
+# only honest numbers available up front.
+FEATURE_CEILING_S = NATIVE_TIMEOUT_S + FEATURE_TIMEOUT_S
+
+
+def _n_phases() -> int:
+    """Step 1 is the engine, then one per candidate builder. Counted from the code, never
+    hardcoded: a builder added to _candidates must not silently turn "5 of 7" into a lie."""
+    from mesh2step.feature import _candidates
+
+    return 1 + len(_candidates(Path("x.stl"), Path(tempfile.gettempdir())))
+
+
+def _read_progress(progress: dict | None) -> dict:
+    """What the user is waiting for right now. Never raises -- progress must not cost a result."""
+    progress = progress or {}
+    n = _n_phases()
+    path = progress.get("phase_file")
+    # The engine runs first and is where a slow conversion usually spends its 600 s. Without
+    # this branch the longest waits are exactly the ones that show no progress at all.
+    if not path or not os.path.exists(path):
+        if progress.get("stage") == "engine":
+            return {"phase": "engine", "phase_i": 1, "phase_n": n,
+                    "ceiling_s": FEATURE_CEILING_S}
+        return {}
+    try:
+        with open(path) as fh:
+            last = None
+            for line in fh:
+                if line.strip():
+                    last = line
+        if not last:
+            return {"phase": "engine", "phase_i": 1, "phase_n": n,
+                    "ceiling_s": FEATURE_CEILING_S}
+        rec = json.loads(last)
+    except (OSError, ValueError):
+        return {}
+    # a finished phase means the NEXT one is what the user is waiting for now
+    i = rec["i"] + 1 if rec.get("state") in ("done", "timeout") else rec["i"]
+    return {"phase": rec.get("label"), "phase_i": 1 + min(i, rec.get("n", i)),
+            "phase_n": 1 + rec.get("n", n - 1), "ceiling_s": FEATURE_CEILING_S}
+
+
 def _convert_job(*, t_admit: float, **kw) -> dict:
     """Own the admission slot for the whole life of the conversion.
 
@@ -873,15 +928,26 @@ def _convert_job(*, t_admit: float, **kw) -> dict:
     failure, timeout, or an exception nobody predicted. A leaked slot is
     permanent: the queue shrinks by one for the life of the process.
     """
+    res = None
     try:
-        return _convert_in_worker(**kw)
+        res = _convert_in_worker(**kw)
+        return res
     finally:
         _release_admission()
         # The service's OWN per-conversion cost: admission granted (before the
         # upload is even written) to result ready. The client's figure also
         # carries the upload, the poll interval and the download, so the two
         # are not the same number and only this one is a capacity gate.
-        print(f"SRVCONV {time.time() - t_admit:.3f} tris={kw.get('n_in_tris')}",
+        # Seconds and triangles alone cannot be conditioned on: over 351 logged conversions the
+        # same mesh at the same triangle count spans 3 s to 900 s, because this one line mixes the
+        # native path with the feature path and its 7 candidates. Log what separates them -- the
+        # backend actually taken, the engine asked for, and each candidate's own wall time -- and
+        # the corpus becomes something an ETA can be fitted to.
+        st = (res or {}).get("stats") or {}
+        phases = ";".join(f"{lab}:{sec}" for lab, sec, _s in (st.get("feature_phases") or []))
+        print(f"SRVCONV {time.time() - t_admit:.3f} tris={kw.get('n_in_tris')} "
+              f"engine={kw.get('engine')} backend={st.get('backend') or 'error'}"
+              + (f" phases={phases}" if phases else ""),
               file=sys.stderr, flush=True)
 
 
@@ -1031,9 +1097,11 @@ def convert(
         native_unify = unify_angle if engine == "trueform" else merge_coplanar_angle
         # Faceted with no merge requested must keep one face per triangle, which is
         # what the client already contracts for.
+        # shared with the worker by reference: it fills in the phase file once it knows the path
+        prog: dict = {}
         fut = _POOL.submit(
             _convert_job,
-            t_admit=t_admit,
+            t_admit=t_admit, progress=prog,
             stl_path=stl_path, out_path=out_path, workdir=workdir, engine=engine,
             native_engine=native_engine, schema=schema, native_unify=native_unify,
             merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
@@ -1050,7 +1118,8 @@ def convert(
             # needs 91s on an idle host and far longer on a busy one; no browser, proxy
             # or patience survives holding a request open that long.
             job = uuid.uuid4().hex
-            _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step"}
+            _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step",
+                             "progress": prog}
             return {"ok": True, "pending": True, "job": job,
                     "message": "Still converting — this model is large."}
     finally:
@@ -1078,7 +1147,8 @@ def job_status(job: str):
     fut = entry["future"]
     if not fut.done():
         return {"ok": True, "pending": True, "job": job,
-                "elapsed": round(time.time() - entry["ts"], 1)}
+                "elapsed": round(time.time() - entry["ts"], 1),
+                **_read_progress(entry.get("progress"))}
     # kept until the TTL purge or the MAX_PENDING_JOBS cap: a client whose connection dropped
     # on the response carrying the result polls again and must get the same answer, not a 404
     try:

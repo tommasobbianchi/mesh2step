@@ -41,6 +41,24 @@ MAX_DIST_P95_REL = 0.005
 MIN_SUPPORT = 0.35
 CANDIDATE_TIMEOUT_S = 1800.0
 
+# Progress, not prediction. The candidate list is FIXED, so "step 4 of 8" is exact even though
+# the duration is not: measured on 351 real conversions, the same mesh at the same triangle
+# count spans 3 s to 900 s (webapp/server.py SRVCONV log), so no up-front number is honest.
+# One JSON line per phase transition into $MESH2STEP_PHASE_LOG; the server tails the last line
+# for /api/job and keeps the finished timings as the profile a future ETA can be fitted on.
+def _phase(i: int, n: int, label: str, state: str, seconds: float | None = None) -> None:
+    path = os.environ.get("MESH2STEP_PHASE_LOG")
+    if not path:
+        return
+    rec = {"i": i, "n": n, "label": label, "state": state, "t": time.time()}
+    if seconds is not None:
+        rec["seconds"] = round(seconds, 3)
+    try:
+        with open(path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass  # progress reporting must never cost the conversion
+
 
 def _candidates(stl: Path, wd: Path):
     """(label, argv, env, output). The turned cut consumes the envelope, so order matters."""
@@ -178,15 +196,25 @@ def reconstruct(stl, out, *, min_cylinders: int = 0, timeout: float = CANDIDATE_
     tri = _mesh(stl)
     mesh_radii = None
     best = None
+    phases: list[list] = []
     with tempfile.TemporaryDirectory(prefix="m2s_feature_") as td:
         wd = Path(td)
-        for label, argv, env, produced in _candidates(stl, wd):
+        cands = _candidates(stl, wd)
+        for i, (label, argv, env, produced) in enumerate(cands, 1):
+            _phase(i, len(cands), label, "start")
+            t_c = time.time()
             try:
                 subprocess.run([str(a) for a in argv], capture_output=True, timeout=timeout,
                                env=dict(os.environ, **env), cwd=td)
             except subprocess.TimeoutExpired:
+                _phase(i, len(cands), label, "timeout", time.time() - t_c)
+                phases.append([label, round(time.time() - t_c, 3), "timeout"])
                 continue
             m = measure(produced, tri) if produced.exists() else None
+            # closed AFTER measure(): the phase must account for every second the user waits,
+            # or the elapsed times never add up to the wall clock an ETA is fitted against
+            _phase(i, len(cands), label, "done", time.time() - t_c)
+            phases.append([label, round(time.time() - t_c, 3), "done"])
             if acceptable(m) and m["cylinders"] > min_cylinders:
                 if mesh_radii is None:
                     mesh_radii = mesh_cylinder_radii(tri)
@@ -200,6 +228,8 @@ def reconstruct(stl, out, *, min_cylinders: int = 0, timeout: float = CANDIDATE_
                 shutil.copyfile(produced, wd / "best.step")
         if best:
             shutil.copyfile(wd / "best.step", out)
+    if best is not None:
+        best["phases"] = phases
     return best
 
 
@@ -217,6 +247,8 @@ def native_payload(m: dict, stl, out, seconds: float) -> dict:
         "smoothBuiltPlanes": m["planes"], "smoothBuiltCylinders": m["cylinders"],
         "featureMethod": m["method"], "featureSupport": m["support"],
         "featureDistP95": m["dist_p95"],
+        # per-candidate wall time: the only data that can ever calibrate an ETA
+        "featurePhases": m.get("phases", []),
     }
 
 

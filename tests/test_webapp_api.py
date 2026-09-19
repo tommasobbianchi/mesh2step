@@ -644,7 +644,7 @@ def test_above_the_engine_limit_the_feature_path_is_tried_before_refusing(client
     called = []
     monkeypatch.setattr(srv, "convert_native",
                         lambda *a, **k: called.append("engine") or {"ok": False})
-    monkeypatch.setattr(srv, "_feature_upgrade", lambda stl, out: (
+    monkeypatch.setattr(srv, "_feature_upgrade", lambda stl, out, progress=None: (
         Path(out).write_bytes(b"ISO-10303-21;\nENDSEC;\nEND-ISO-10303-21;\n"),
         {"ok": True, "solids": 1, "watertight": True, "freeEdges": 0, "featureMethod": "stepped",
          "smoothBuiltCylinders": 43, "smoothBuiltPlanes": 31, "volumeDeltaPct": 0.02,
