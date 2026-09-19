@@ -56,6 +56,19 @@ def test_progress_is_absent_rather_than_wrong(tmp_path):
     assert server._read_progress({"phase_file": str(bad)}) == {}
 
 
+def test_every_pre_feature_stage_says_what_it_is(tmp_path):
+    """Measured on bucket.stl: the engine finished in seconds and the edge rebuild then ran
+    13+ minutes. Reporting that as "engine" is the longest stage lying about itself."""
+    for stage in ("prepare", "engine", "retry", "edgebuild"):
+        p = server._read_progress({"stage": stage})
+        assert p["phase"] == stage and p["phase_i"] == 1, stage
+    # the child's file exists but is still empty: the pre-feature label must win, not "engine"
+    empty = tmp_path / "phases.jsonl"
+    empty.write_text("")
+    assert server._read_progress({"stage": "edgebuild",
+                                  "phase_file": str(empty)})["phase"] == "edgebuild"
+
+
 def test_the_engine_stage_is_step_one(tmp_path):
     """The longest waits are spent in the engine, before any candidate exists. A run that
     reported nothing until the feature pass would stay silent through exactly those."""
@@ -92,7 +105,7 @@ def test_every_candidate_has_words_for_the_user():
     # the labels the builder loop emits must all be nameable in the UI, or a waiting user
     # sees a raw internal identifier at exactly the moment they are least patient
     app_js = (Path(__file__).resolve().parents[1] / "webapp" / "static" / "app.js").read_text()
-    labels = ["engine"] + [c[0] for c in feature._candidates(Path("x.stl"), Path(os.sep + "tmp"))]
+    labels = ["prepare", "engine", "retry", "edgebuild"] + [c[0] for c in feature._candidates(Path("x.stl"), Path(os.sep + "tmp"))]
     missing = [l for l in labels if f"'{l}'" not in app_js and f"\n  {l}:" not in app_js]
     assert not missing, f"no user-facing wording for {missing}"
 

@@ -621,6 +621,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
         )
     t_convert = time.time()
     try:
+        # before anything names itself -- and on the feature-only path, where there is no engine
+        # stage at all -- a poll must still get an answer, or the first seconds show nothing
+        _stage(progress, "prepare")
         # Too big for the engine, but not for the feature path (see FEATURE_MAX_TRIANGLES): it
         # rebuilds from recognised surfaces and never loads the mesh into the engine at all.
         # Nothing is relaxed -- the build is kept only if it passes the same gate as every other.
@@ -643,8 +646,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             ]
         try:
             # skipped entirely for an oversize mesh: the engine is what cannot take it
-            if progress is not None:
-                progress["stage"] = "engine"
+            _stage(progress, "engine")
             res = res if feature_only else convert_native(
                 stl_path, out_path,
                 engine=native_engine, schema=schema, unify_angle=native_unify,
@@ -684,6 +686,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                 raise
             # the engine hung or failed: the rebuild does not need its output, only the mesh. Served only if it passes
             # the same gate; otherwise the engine's error stands.
+            _stage(progress, "edgebuild")
             res = _edgebuild_upgrade(stl_path, out_path, {
                 "ok": True, "triangles": n_in_tris, "smoothBuiltCylinders": 0,
                 "warnings": [f"the conversion engine did not finish ({type(e).__name__}); the shape was rebuilt without it"],
@@ -691,8 +694,10 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             if res.get("featureMethod") != "edgebuild":
                 raise
         if engine == "trueform" and res.get("ok") and not res.get("featureMethod"):
+            _stage(progress, "retry")
             res = _retry_broken_trueform(stl_path, out_path, res, schema=schema,
                                          unify_angle=native_unify)
+            _stage(progress, "edgebuild")
             res = _edgebuild_upgrade(stl_path, out_path, res)
         if (engine == "trueform" and res.get("ok") and not res.get("featureMethod")
                 and (feature or os.environ.get("MESH2STEP_FEATURE") == "1")):
@@ -882,6 +887,15 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
 FEATURE_CEILING_S = NATIVE_TIMEOUT_S + FEATURE_TIMEOUT_S
 
 
+def _stage(progress: dict | None, name: str) -> None:
+    """Name the pre-feature stage the user is waiting on. Measured 2026-09-19 on bucket.stl:
+    the engine finished in seconds and _edgebuild_upgrade then ran for over 13 minutes -- all
+    of it reported as "engine" until this existed, which is the longest stage lying about
+    itself. These stages are conditional, so they share step 1 and differ only in wording."""
+    if progress is not None:
+        progress["stage"] = name
+
+
 def _n_phases() -> int:
     """Step 1 is the engine, then one per candidate builder. Counted from the code, never
     hardcoded: a builder added to _candidates must not silently turn "5 of 7" into a lie."""
@@ -898,8 +912,8 @@ def _read_progress(progress: dict | None) -> dict:
     # The engine runs first and is where a slow conversion usually spends its 600 s. Without
     # this branch the longest waits are exactly the ones that show no progress at all.
     if not path or not os.path.exists(path):
-        if progress.get("stage") == "engine":
-            return {"phase": "engine", "phase_i": 1, "phase_n": n,
+        if progress.get("stage"):
+            return {"phase": progress["stage"], "phase_i": 1, "phase_n": n,
                     "ceiling_s": FEATURE_CEILING_S}
         return {}
     try:
@@ -909,7 +923,7 @@ def _read_progress(progress: dict | None) -> dict:
                 if line.strip():
                     last = line
         if not last:
-            return {"phase": "engine", "phase_i": 1, "phase_n": n,
+            return {"phase": progress.get("stage") or "engine", "phase_i": 1, "phase_n": n,
                     "ceiling_s": FEATURE_CEILING_S}
         rec = json.loads(last)
     except (OSError, ValueError):

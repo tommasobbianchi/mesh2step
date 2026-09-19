@@ -1027,7 +1027,10 @@ convertBtn.addEventListener('click', async () => {
 // on is exact, and the timeouts give a worst case that is actually guaranteed. Say those two
 // things and nothing else.
 const PHASE_WORDS = {
+  prepare: 'reading the mesh',
   engine: 'building surfaces from the mesh',
+  retry: 'rebuilding a face that did not survive the first write',
+  edgebuild: 'rebuilding the shape from its edges',
   'extrude-x': 'looking for an extruded profile (X)',
   'extrude-y': 'looking for an extruded profile (Y)',
   'extrude-z': 'looking for an extruded profile (Z)',
