@@ -1022,6 +1022,32 @@ convertBtn.addEventListener('click', async () => {
   }
 });
 
+// A duration cannot be promised -- 351 logged conversions put the same mesh anywhere between
+// 3 s and 900 s -- but the work is a FIXED sequence of candidate builders, so which step we are
+// on is exact, and the timeouts give a worst case that is actually guaranteed. Say those two
+// things and nothing else.
+const PHASE_WORDS = {
+  prepare: 'reading the mesh',
+  engine: 'building surfaces from the mesh',
+  retry: 'rebuilding a face that did not survive the first write',
+  edgebuild: 'rebuilding the shape from its edges',
+  'extrude-x': 'looking for an extruded profile (X)',
+  'extrude-y': 'looking for an extruded profile (Y)',
+  'extrude-z': 'looking for an extruded profile (Z)',
+  stepped: 'looking for stepped levels',
+  'turned-envelope': 'looking for a turned shape',
+  turned: 'cutting the turned shape',
+  block: 'rebuilding as a block with features',
+};
+
+function describeProgress(data, secs) {
+  if (!data.phase_n) return `Still converting — ${secs}s. Large models take a few minutes.`;
+  const what = PHASE_WORDS[data.phase] || data.phase;
+  const ceiling = Math.round((data.ceiling_s || 0) / 60);
+  return `Step ${data.phase_i} of ${data.phase_n} — ${what} (${secs}s)`
+       + (ceiling ? `. It stops by itself after ${ceiling} min.` : '');
+}
+
 async function waitForJob(job) {
   const started = Date.now();
   // A dropped connection or a proxy 5xx mid-poll is not a failed conversion: the server keeps
@@ -1045,7 +1071,7 @@ async function waitForJob(job) {
       continue;
     }
     misses = 0;
-    statusEl.textContent = `Still converting — ${secs}s. Large models take a few minutes.`;
+    statusEl.textContent = describeProgress(data, secs);
     if (!res.ok) throw new Error(data.detail || 'server error');
     if (!data.pending) return data;
   }
