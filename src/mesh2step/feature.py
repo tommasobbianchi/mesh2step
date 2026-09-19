@@ -89,7 +89,12 @@ def _read(step: Path):
     if r.ReadFile(str(step)) != 1:
         return None
     r.TransferRoots()
-    return r.OneShape()
+    sh = r.OneShape()
+    # A builder that writes a STEP carrying no transferable root leaves OneShape() NULL, not
+    # empty: every OCCT call on it throws Standard_NullObject rather than returning nothing.
+    # Measured 2026-09-19 on L10_idler_bracket, where that throw escaped reconstruct() and
+    # destroyed an already-qualifying build that had recovered all 6 cylinders (bd projects-3md).
+    return None if sh.IsNull() else sh
 
 
 def cylinder_radii(shape) -> list[float]:
@@ -112,6 +117,29 @@ def mesh_cylinder_radii(tri: np.ndarray) -> list[float]:
     from quads import classify
 
     return [o[2] for o in classify(tri)[2] if o[0] == "cylinder"]
+
+
+# Radius tolerance for calling a built cylinder the same cylinder as a reference one. Kept
+# equal to scripts/radius_audit.py so the two never disagree about what "the same radius" means.
+RADIUS_REL, RADIUS_ABS = 0.005, 1e-4
+
+
+def pair_radii(built: list[float], want: list[float]) -> int:
+    """Greedy ONE-TO-ONE matches between two radius multisets, largest first.
+
+    Multiplicity is the whole point: four M3 holes are four cylinders, and a build that recovers
+    one of them must not score four by matching the same radius over and over. A matched radius
+    is still only an upper bound on recall -- the right radius in the wrong place counts.
+    """
+    pool = sorted(want, reverse=True)
+    n = 0
+    for r in sorted(built, reverse=True):
+        for i, t in enumerate(pool):
+            if abs(r - t) <= max(RADIUS_REL * t, RADIUS_ABS):
+                pool.pop(i)
+                n += 1
+                break
+    return n
 
 
 def support(built: list[float], mesh_radii: list[float]) -> float:
@@ -210,7 +238,16 @@ def reconstruct(stl, out, *, min_cylinders: int = 0, timeout: float = CANDIDATE_
                 _phase(i, len(cands), label, "timeout", time.time() - t_c)
                 phases.append([label, round(time.time() - t_c, 3), "timeout"])
                 continue
-            m = measure(produced, tri) if produced.exists() else None
+            try:
+                m = measure(produced, tri) if produced.exists() else None
+            except Exception as exc:  # noqa: BLE001
+                # The contract at the top of this file: an OCCT crash costs THAT CANDIDATE,
+                # never the conversion. It held for the subprocess builders and not for the
+                # in-process read of what they wrote, which is the half that actually threw.
+                if log:
+                    print(f"feature {label}: measure failed: {type(exc).__name__}: {exc}",
+                          file=log, flush=True)
+                m = None
             # closed AFTER measure(): the phase must account for every second the user waits,
             # or the elapsed times never add up to the wall clock an ETA is fitted against
             _phase(i, len(cands), label, "done", time.time() - t_c)
