@@ -95,7 +95,7 @@ fails — never "note it and continue".
 
 | IP | Station | Characteristic | Instrument | Acceptance | Reaction |
 |---|---|---|---|---|---|
-| **IP0** | Upload | Facet angle adequate for the seed band | triangle count, bbox diagonal | advisory | Warn before, not after, a long conversion (§4.A.1) |
+| **IP0** | Upload, **before conversion starts** | Feature inventory + tessellation adequacy — the pre-flight (§2.4) | mesh-side census (`quads.classify`) + facet-angle distribution | proportional budget, ~10% of expected conversion (§2.4) | Tell the user **now**, not after a 400 s wait; refuse or re-route where the conversion cannot succeed |
 | **IP1** | Decimation | Evidence survives reduction | mesh cylinder patch count before vs after | **no patch lost** | Refuse silently-destructive presets; require user confirmation (`bd projects-qqf`) |
 | **IP2** | Engine output | Cylinders the engine formed | `stats.smooth_cylinders` | record | If 0 and patches > 0 → suspect `AC-B1`, run §3 |
 | **IP3** | Rim/band rebuild | Bands located vs patches present | `find_circles` count, `find_bands` count, `quads.classify` count | bands ≥ patches, else `AC-B1` | Seed from mesh (§4.B.1) |
@@ -127,6 +127,62 @@ Every IP above is a counter the pipeline can afford; the expensive instruments a
 Against a pipeline whose median conversion is seconds and whose tail is minutes (351 logged runs
 span 3.3 s to 900 s), ≤1.6 s of counting is inside the noise. **If a proposed control cannot be
 stated in this table with a measured cost, it does not go in the runtime path.**
+
+**2.4 Pre-flight inspection (IP0). Prevention is cheaper than cure, and it is affordable.**
+
+Group A defects cannot be cured downstream at any price: a widened facet angle is lost evidence,
+and every organ after it is inferring from something that is no longer there. The only treatment
+is to catch them at the door. Measured cost of the full mesh-side census, 2026-09-19:
+
+| part | triangles | census |
+|---|---|---|
+| `mechparts/11` | 46 674 | 2.26 s |
+| `mechparts/9` | 46 104 | 1.97 s |
+| `mechparts/25` | 107 608 | 5.51 s |
+| `mechparts/23` | 148 822 | **7.61 s** |
+
+7.6 s above the 120k input cap, against conversions that run 3.3 s to 900 s.
+
+**The budget is proportional, not a constant.** An inspection earns its seconds when both hold:
+it can **change the decision** (route, refuse, warn, or reduce), and it is **small against the
+conversion it gates**. Ten seconds or two minutes are equally right answers depending on what is
+being gated — 120 s spent to avoid a 900 s conversion that could only ever deliver a faceted block
+is a good trade, and 10 s spent on a part that converts in 4 s is not. The working rule:
+**the pre-flight may cost up to ~10% of the expected conversion time, and is skipped when the part
+is small enough that the conversion is cheaper than the inspection.** The 7.6 s above is simply
+what today's census costs on the largest part; it is a measurement, not a target to design to.
+
+An inspection that cannot change any decision is waste at any price, however cheap — that is the
+test to apply before adding one, not the clock.
+
+Inside that budget the service can know, before committing the user to the wait:
+
+1. **Feature inventory** — how many cylindrical, conical and other curved patches the mesh
+   contains, with their radii. This is what the part *has*, measured from the part, not assumed.
+2. **Tessellation adequacy** (`AC-A2`) — the facet-angle distribution in curved regions against the
+   engine's seed band. A mesh too coarse to hold a band cannot produce cylinders, and the honest
+   answer is "re-export at a finer chord tolerance", delivered at upload.
+3. **Designed prisms** (`AC-A3`) — sagitta ratio, so a flat-by-design polygon is announced as such
+   and never later reported as a missing cylinder.
+4. **Decimation forecast** (`AC-A1`) — run the census again on the reduced mesh and state the patch
+   loss *before* reducing. This is what turns the UI's silent `keep=50%` into informed consent.
+
+**The four verdicts and their reaction plans:**
+
+| Verdict | Condition | Reaction |
+|---|---|---|
+| **Proceed** | curved patches present, tessellation adequate | convert; declare the inventory (§2.5) |
+| **Proceed, no feature pass** | zero curved patches and no prism flags | skip the feature organ entirely — it can only invent. Saves minutes |
+| **Warn** | prisms flagged, or patches present but tessellation marginal | convert, and say in advance which features may not survive |
+| **Refuse politely** | tessellation cannot hold a band anywhere | do not spend 400 s to deliver a faceted block; ask for a finer export |
+
+**2.5 The inventory is a contract, and it is the honest per-conversion number.**
+There is no truth denominator on a user upload (§5.2), which is why IP5 reports counts and not a
+ratio. The pre-flight fixes that: the inventory measured at IP0 is declared up front — *"this part
+shows N cylindrical features"* — and the result is reported against it: *"recovered M of N"*.
+Both numbers come from the same instrument, so the comparison is sound even though the instrument
+undercounts (375 of 706 on the corpus). **It is declared as a lower bound, in those words**, and it
+is never dressed up as coverage.
 
 ---
 
