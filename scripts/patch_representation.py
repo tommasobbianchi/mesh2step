@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mesh2step.feature import RECON, _mesh  # noqa: E402
 
 TOL_REL = 0.01          # a patch is "on" the model within 1% of the part diagonal
+ANALYTIC = ("cylinder", "cone", "torus", "sphere")   # the only face kinds that count (see represent)
 
 
 def mesh_patches(tri: np.ndarray):
@@ -92,9 +93,18 @@ def represent(stl: Path, step: Path, samples: int = 12) -> dict:
     tol = TOL_REL * diag
     _, groups = model_faces(step)
     if not groups:
-        return {"patches": 0, "curved": 0, "plane": 0, "far": 0, "diag": diag}
-    curved = {k: v for k, v in groups.items() if k != "plane"}
-    n_curved = n_plane = n_far = 0
+        return {"patches": 0, "curved": 0, "plane": 0, "other": 0, "far": 0, "diag": diag}
+    # STRICT. "curved" means an ANALYTIC quadric that a CAD kernel will treat as a real cylinder,
+    # cone, torus or sphere -- nothing else. Everything unrecognised (B-spline, surface of
+    # revolution, offset, an approximation fitted through the facets) lands in `other` and is
+    # scored as NOT represented. Counting `other` as curved would let a spline patch or a
+    # polyline-derived surface be reported as a recovered cylinder, which is precisely the false
+    # number this metric exists to prevent (Tommaso, 2026-09-19: "real cylinders, no polylines,
+    # facets. The first object you score as not cylinder --> polyline circle and facets we close
+    # all this project"). If it is not a quadric, it does not count.
+    curved = {k: v for k, v in groups.items() if k in ANALYTIC}
+    nonanalytic = {k: v for k, v in groups.items() if k not in ANALYTIC and k != "plane"}
+    n_curved = n_plane = n_far = n_other = 0
     patches = mesh_patches(tri)
     for _radius, idx in patches:
         # CENTROIDS, not vertices: a hole wall's rim vertices lie on the flat face as exactly as
@@ -106,14 +116,34 @@ def represent(stl: Path, step: Path, samples: int = 12) -> dict:
                  default=float("inf"))
         dp = (np.percentile([_dist(p, groups["plane"]) for p in pick], 95)
               if "plane" in groups else float("inf"))
-        if dc <= tol and dc <= dp:
+        do = min((np.percentile([_dist(p, c) for p in pick], 95) for c in nonanalytic.values()),
+                 default=float("inf"))
+        if dc <= tol and dc <= dp and dc <= do:
             n_curved += 1
+        elif do <= tol and do <= dp:
+            n_other += 1          # sits on a NON-analytic surface: not a recovered cylinder
         elif dp <= tol:
             n_plane += 1
         else:
             n_far += 1
-    return {"patches": len(patches), "curved": n_curved, "plane": n_plane, "far": n_far,
-            "diag": diag}
+    return {"patches": len(patches), "curved": n_curved, "plane": n_plane, "other": n_other,
+            "far": n_far, "diag": diag}
+
+
+def step_entity_census(data: bytes) -> dict:
+    """Count the ISO-10303 entities in the delivered file, as TEXT.
+
+    An independent witness. Everything else here goes through OCCT, so if OCCT reported a face
+    type wrongly the metric and the check would be wrong together. The STEP file itself cannot
+    lie about this: a real cylinder is a CYLINDRICAL_SURFACE record, a polyline circle is not a
+    surface at all, and a faceted wall is a pile of PLANE records. If `cyl_ents` is 0 the part
+    has no cylinders, whatever any distance measurement says.
+    """
+    import re
+    txt = data.decode("latin-1", errors="ignore")
+    want = ("CYLINDRICAL_SURFACE", "CONICAL_SURFACE", "TOROIDAL_SURFACE", "SPHERICAL_SURFACE",
+            "PLANE", "B_SPLINE_SURFACE", "SURFACE_OF_REVOLUTION", "CIRCLE", "POLYLINE")
+    return {w: len(re.findall(r"=\s*" + w + r"\s*\(", txt)) for w in want}
 
 
 def convert(url: str, stl: Path, timeout: float) -> tuple[dict, bytes | None]:
@@ -142,8 +172,8 @@ def convert(url: str, stl: Path, timeout: float) -> tuple[dict, bytes | None]:
 
 
 def one(url: str, stl: Path, timeout: float) -> dict:
-    row = {"model": stl.stem, "patches": 0, "curved": 0, "plane": 0, "far": 0,
-           "backend": "", "status": "OK", "s": 0.0}
+    row = {"model": stl.stem, "patches": 0, "curved": 0, "plane": 0, "other": 0, "far": 0,
+           "cyl_faces": 0, "spline_faces": 0, "backend": "", "status": "OK", "s": 0.0}
     t0 = time.time()
     try:
         res, data = convert(url, stl, timeout)
@@ -155,6 +185,10 @@ def one(url: str, stl: Path, timeout: float) -> dict:
         row["status"] = res.get("status", "NO_OUTPUT")
         return row
     row["backend"] = (res.get("stats") or {}).get("backend", "")
+    ents = step_entity_census(data)
+    row["cyl_faces"] = ents["CYLINDRICAL_SURFACE"]
+    row["spline_faces"] = ents["B_SPLINE_SURFACE"] + ents["SURFACE_OF_REVOLUTION"]
+    row["ents"] = ents
     with tempfile.NamedTemporaryFile(suffix=".step", delete=False) as fh:
         fh.write(data)
         step = Path(fh.name)
@@ -188,13 +222,24 @@ def main() -> int:
             row = r.result()
             rows.append(row)
             print(f"  {row['model']:20} patches={row['patches']:4} curved={row['curved']:4} "
-                  f"plane={row['plane']:4} far={row['far']:4} {row['backend']:8} "
+                  f"plane={row['plane']:4} other={row['other']:4} far={row['far']:4} "
+                  f"cyl_ents={row['cyl_faces']:4} spline_ents={row['spline_faces']:4} {row['backend']:8} "
                   f"{row['status']} {row['s']}s", flush=True)
 
     rows.sort(key=lambda r: r["model"])
-    cols = ["model", "patches", "curved", "plane", "far", "backend", "status", "s"]
+    cols = ["model", "patches", "curved", "plane", "other", "far", "cyl_faces", "spline_faces",
+            "backend", "status", "s"]
     Path(a.out).write_text("\t".join(cols) + "\n"
                            + "\n".join("\t".join(str(r[c]) for c in cols) for r in rows) + "\n")
+    # THE CROSS-CHECK. If any part is scored as having recovered cylinders while the file itself
+    # contains no cylindrical surface entity, the metric is lying and the run is void.
+    liars = [r for r in rows if r["curved"] > 0 and r.get("cyl_faces", 0) == 0]
+    if liars:
+        print("\n*** METRIC FAILURE: scored curved with no CYLINDRICAL_SURFACE in the file ***")
+        for r in liars:
+            print(f"    {r['model']}: curved={r['curved']} cyl_ents={r['cyl_faces']}")
+        print("    The run is void. Do not report these numbers.")
+
     ok = [r for r in rows if r["status"] == "OK" and r["patches"]]
     tp = sum(r["patches"] for r in ok)
     tc = sum(r["curved"] for r in ok)
@@ -202,7 +247,10 @@ def main() -> int:
     print(f"  mesh cylinder patches on an ANALYTIC CURVED face: {tc}/{tp} = "
           f"{100.0*tc/tp if tp else 0:.1f}%")
     print(f"  on a PLANE (still faceted): {sum(r['plane'] for r in ok)}   "
+          f"on a NON-analytic surface: {sum(r.get('other', 0) for r in ok)}   "
           f"not represented at all: {sum(r['far'] for r in ok)}")
+    print(f"  file entities: CYLINDRICAL_SURFACE {sum(r.get('cyl_faces', 0) for r in ok)}   "
+          f"spline/revolution {sum(r.get('spline_faces', 0) for r in ok)}")
     print(f"  parts with every patch curved: {sum(1 for r in ok if r['curved'] == r['patches'])}"
           f"  parts with none: {sum(1 for r in ok if r['curved'] == 0)}")
     return 0
