@@ -1,5 +1,7 @@
 """Grouping rims into the cylinder bands a rebuild can replace."""
 
+from pathlib import Path
+
 import numpy as np
 import trimesh
 
@@ -122,3 +124,65 @@ def test_a_part_with_no_cylinder_is_left_alone(tmp_path):
     out = tmp_path / "box_rebuilt.step"
     res = rebuild_cylinders(step, out)
     assert res["bands"] == 0 and res["ok"] is False
+
+
+def _quads_classify(tri):
+    import importlib.util
+
+    quads_path = Path(__file__).resolve().parents[1] / "tools" / "feature_recon" / "quads.py"
+    spec = importlib.util.spec_from_file_location("quads", quads_path)
+    quads = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(quads)
+    return quads.classify(tri)
+
+
+def test_a_mesh_seeded_band_rebuilds_a_clean_bore(tmp_path):
+    """The seeded path must accept a patch whose extent ends verify as closed rims
+    and rebuild it to a valid solid."""
+    from mesh2step.feature import _mesh
+    from mesh2step.rebuild import rebuild_cylinders
+
+    box = trimesh.creation.box((40, 20, 20))
+    drill = trimesh.creation.cylinder(radius=2.5, height=80, sections=64)
+    drill.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    part = trimesh.boolean.difference([box, drill])
+    stl = tmp_path / "bore.stl"
+    part.export(str(stl))
+    tri = _mesh(stl)
+    patches = [(o[2], o[3], tri[list(o[4])].reshape(-1, 3))
+               for o in _quads_classify(tri)[2] if o[0] == "cylinder"]
+    step = tmp_path / "bore.step"
+    convert_native(stl, step, engine="verbatim", no_unify=True)
+    res = rebuild_cylinders(step, tmp_path / "out.step", patches=patches)
+    assert res["bands"] == 1, res
+    assert res["valid"] is True
+    assert res["ok"] is True
+
+
+def test_mesh_seeded_bands_over_cross_holes_are_rejected(tmp_path):
+    """A wall breached by a cross-hole must not be seeded into a band. Both extent
+    ends can verify as closed rims while the middle is open -- measured on a 30mm
+    box with three crossing 2mm holes and on L09_valve_body
+    (diag/FINDINGS-mesh-seeded-bands.md): the rebuild closed a 360-degree face
+    over the breach, the junction wires broke, and the shell sewed open (invalid
+    solid, alone and together)."""
+    from mesh2step.rebuild import rebuild_cylinders
+
+    box = trimesh.creation.box((30, 30, 30))
+    drills = [trimesh.creation.cylinder(radius=2, height=80, sections=48)]
+    for ax in ((0, 1, 0), (1, 0, 0)):
+        d = drills[0].copy()
+        d.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, ax))
+        drills.append(d)
+    part = trimesh.boolean.difference([box] + drills)
+    stl = tmp_path / "cross.stl"
+    part.export(str(stl))
+    step = tmp_path / "cross.step"
+    convert_native(stl, step, engine="verbatim", no_unify=True)
+    # hand-built patch: full-circle rings sampled on the true Z-hole cylinder
+    th = np.linspace(0, 2 * np.pi, 49)[:-1]
+    pts = np.vstack([np.c_[2 * np.cos(th), 2 * np.sin(th), np.full_like(th, z)]
+                     for z in np.linspace(-15, 15, 10)])
+    res = rebuild_cylinders(step, tmp_path / "out.step",
+                            patches=[(2.0, (0.0, 0.0, 1.0), pts)])
+    assert res["bands"] == 0, res
