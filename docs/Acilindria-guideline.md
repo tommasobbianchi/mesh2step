@@ -16,6 +16,21 @@ whether a treatment worked). Clauses are numbered so a review can cite them.
 
 ## 0. Scope and principles
 
+**0.0 Two clocks, and nothing here slows a conversion.** This document governs two different
+activities and they must not be confused.
+
+| | **Runtime controls** (§2) | **Engineering protocol** (§3, §5, §6) |
+|---|---|---|
+| Who runs it | the service, on every conversion | a person or agent investigating a defect, or validating a change |
+| How often | per upload | once per investigation, or once per candidate change |
+| Cost budget | **≤ 1 s added, and only cheap counters** (§2.3) | minutes to hours, off the hot path |
+| If it is slow | it is out of process — cut it | expected |
+
+**No user upload waits for a diagnosis.** §3's protocol is a bench procedure for whoever is
+holding the defect; §5 and §6 apply to a proposed change before it merges. The only thing the
+product does per conversion is record a handful of counters it is already most of the way to
+having (§2.3).
+
 **0.1 Scope.** Any change touching cylinder or plane recovery: the native engine's invocation,
 `canonize`, `rebuild`, `intent`, `feature`, the builders in `tools/feature_recon`, decimation, or
 the acceptance gates of any of them.
@@ -72,9 +87,10 @@ defect cites its code.
 
 ---
 
-## 2. Control plan
+## 2. Control plan — runtime
 
-The inspection points, in pipeline order. **Reaction plan** is what must happen when the criterion
+The inspection points, in pipeline order. These are **in the product** and run per conversion,
+under the cost budget of §2.3. **Reaction plan** is what must happen when the criterion
 fails — never "note it and continue".
 
 | IP | Station | Characteristic | Instrument | Acceptance | Reaction |
@@ -84,7 +100,8 @@ fails — never "note it and continue".
 | **IP2** | Engine output | Cylinders the engine formed | `stats.smooth_cylinders` | record | If 0 and patches > 0 → suspect `AC-B1`, run §3 |
 | **IP3** | Rim/band rebuild | Bands located vs patches present | `find_circles` count, `find_bands` count, `quads.classify` count | bands ≥ patches, else `AC-B1` | Seed from mesh (§4.B.1) |
 | **IP4** | Feature acceptance | Which clause rejected each candidate | `feature` log line per candidate | every rejection attributable to one named clause | Classify as `AC-B2/B3/B4/B5`; never "it didn't qualify" |
-| **IP5** | Delivered STEP | Recovered / invented / represented | `cylinder_coverage.py`, `patch_representation.py` | §6 gates | Non-conformance record (§8) |
+| **IP5** | Delivered STEP | Cylinders built, patches the mesh shows, how many match | counters already in hand (§2.3) | record, no ratio (§5.2) | Counts in the result; a user upload has no truth to score against |
+| **IP6** | Bench only | Recovered / invented / represented | `cylinder_coverage.py`, `patch_representation.py` | §6 gates | Non-conformance record (§8) — **never in the conversion path** |
 
 **2.1 IP4 is mandatory and currently partial.** A rejection that cannot be attributed to a named
 clause is itself a non-conformance: it makes the next session guess. The attribution logic exists
@@ -95,11 +112,29 @@ of 351 logged conversions once sat at a cap, making every mean meaningless. A ti
 reported as a failed part and counted in the denominator. Where a run is censored, report
 quantiles and the censored count, never a mean.
 
+**2.3 Runtime cost budget — measured, and the reason these controls are affordable.**
+Every IP above is a counter the pipeline can afford; the expensive instruments are bench-only.
+
+| Control | Cost | Basis |
+|---|---|---|
+| mesh cylinder patch count (`quads.classify`) | 0.03 s @2.8k tris · 0.35 s @14k · **0.82 s @62k** | measured 2026-09-19; roughly linear, so ~1.6 s at the 120k input cap |
+| built cylinder count | free | the STEP is already read for the existing stats |
+| rim count (`find_circles`) | ~0.27 s/MB, already size-capped at 25 MB | `CANONIZE_MAX_BYTES`, already in the product |
+| per-candidate rejection clause (IP4) | free | the measurements already exist; only the log line is missing |
+| **`patch_representation.py`** | **seconds to minutes per part** | BRepExtrema per sample point — **bench only, never runtime** |
+| **`cylinder_coverage.py`** | whole-corpus runs | needs CAD truth, which a user upload does not have — **bench only** |
+
+Against a pipeline whose median conversion is seconds and whose tail is minutes (351 logged runs
+span 3.3 s to 900 s), ≤1.6 s of counting is inside the noise. **If a proposed control cannot be
+stated in this table with a measured cost, it does not go in the runtime path.**
+
 ---
 
-## 3. Diagnostic protocol
+## 3. Diagnostic protocol — bench, not runtime
 
-Deterministic, ~10 minutes, run **before** proposing any change. Output is a defect code.
+**Run by an engineer or agent holding a defect, once per investigation. NOT part of a conversion:
+no upload ever waits for this.** Deterministic, ~10 minutes of bench time, run **before** writing
+a fix. Output is a defect code.
 
 ```
 STEP 1  Is there evidence?
