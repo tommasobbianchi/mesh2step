@@ -154,6 +154,101 @@ def find_bands(step_path, *, tol_mm: float = DEFAULT_TOL_MM) -> list[CylinderBan
     return sorted(bands, key=lambda b: -b.radius)
 
 
+def bands_from_patches(step_path, patches, *, tol_mm: float = DEFAULT_TOL_MM,
+                       known: list[CylinderBand] | None = None) -> list[CylinderBand]:
+    """Locate, on a faceted STEP, the cylinders the MESH shows -- the ones find_bands cannot see.
+
+    find_bands works from circle rims inside the STEP and needs two equal-radius coaxial ones to
+    call a wall a cylinder. Measured 2026-09-19 on L09_valve_body: the STEP yields 2 circles of
+    different radii and therefore 0 bands, while quads.classify finds 14 cylinder patches in the
+    mesh the STEP was made from. The mesh still knows what the conversion has already lost, so the
+    band search is seeded from it instead (bd projects-3md).
+
+    Each patch is accepted or rejected ON ITS OWN, which is the point: a part keeps every cylinder
+    that can be proved, rather than the whole rebuild being discarded because one feature failed.
+
+    patches: one (radius, axis, points) per mesh cylinder patch -- axis a unit vector, points the
+    vertices of the patch's own triangles, in model coordinates.
+    """
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(str(step_path)) != 1:
+        return []
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    if shape.IsNull():
+        return []
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    faces = [(i, _face_points(TopoDS.Face_s(fmap.FindKey(i))))
+             for i in range(1, fmap.Extent() + 1)]
+
+    out: list[CylinderBand] = []
+    for radius, axis, points in patches:
+        axis = np.asarray(axis, dtype=float)
+        n = np.linalg.norm(axis)
+        if n < 1e-12 or radius <= 0 or len(points) < 4:
+            continue
+        axis = axis / n
+        pts = np.asarray(points, dtype=float)
+        # The patch's own axis line: fit a circle to the points seen ALONG the axis. The mesh
+        # vertices of a faceted wall lie exactly on the true cylinder, so this is the CAD radius,
+        # not the inscribed one -- the facet interiors are what sit inside it.
+        u = np.array([1.0, 0.0, 0.0])
+        if abs(u @ axis) > 0.9:
+            u = np.array([0.0, 1.0, 0.0])
+        u = u - (u @ axis) * axis
+        u /= np.linalg.norm(u)
+        v = np.cross(axis, u)
+        o = pts.mean(0)
+        d = pts - o
+        centre2d, r_fit, dev = _fit_circle_2d(np.c_[d @ u, d @ v])
+        tol = max(tol_mm, 0.02 * r_fit)
+        if dev > tol or abs(r_fit - radius) > tol:
+            continue  # not the cylinder the classifier claimed; do not guess
+        base_pt = o + centre2d[0] * u + centre2d[1] * v
+        z = d @ axis - (centre2d[0] * (u @ axis) + centre2d[1] * (v @ axis))
+        z0, z1 = float(z.min()), float(z.max())
+        height = z1 - z0
+        if height <= tol:
+            continue
+        if known and any(abs(b.radius - r_fit) <= tol
+                         and abs(abs(np.asarray(b.axis) @ axis) - 1.0) < 1e-3
+                         for b in known):
+            continue  # find_bands already has this one
+        members = []
+        for idx, fp in faces:
+            if len(fp) < 3:
+                continue
+            dd = fp - base_pt
+            zz = dd @ axis
+            rr = np.linalg.norm(dd - np.outer(zz, axis), axis=1)
+            if (np.abs(rr - r_fit) <= tol).all() and (zz >= z0 - tol).all() and (zz <= z1 + tol).all():
+                members.append(idx)
+        # A wall is several strips. One face at this radius is a rim fillet or a coincidence, and
+        # rebuilding on that evidence invents geometry -- the failure mode MIN_SUPPORT exists for.
+        if len(members) < 3:
+            continue
+        out.append(CylinderBand(float(r_fit), tuple(base_pt + z0 * axis), tuple(axis),
+                                float(height), members))
+    return sorted(out, key=lambda b: -b.radius)
+
+
+def _fit_circle_2d(P):
+    """Least-squares circle through 2D points: centre, radius, worst residual."""
+    A = np.c_[2 * P[:, 0], 2 * P[:, 1], np.ones(len(P))]
+    b = (P ** 2).sum(1)
+    x, *_ = np.linalg.lstsq(A, b, rcond=None)
+    c = x[:2]
+    r = math.sqrt(max(x[2] + c @ c, 0.0))
+    return c, float(r), float(np.abs(np.linalg.norm(P - c, axis=1) - r).max())
+
+
 ARC_VERTEX_TOL_MM = 1e-6   # rim vertices sit on the fitted circle to ~2e-7mm but carry
                            # a tighter tolerance of their own, and MakeEdge then refuses
 
@@ -172,7 +267,8 @@ def _is_rim_chord(p1, p2, base, axis, radius, tol):
     return z1
 
 
-def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM) -> dict:
+def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM,
+                      patches=None) -> dict:
     """Replace faceted cylinder bands with one analytic cylindrical face each.
 
     The band's strips are dropped and replaced by a single seamed 360 face built
@@ -221,6 +317,11 @@ def rebuild_cylinders(step_in, step_out, *, tol_mm: float = DEFAULT_TOL_MM) -> d
     w0.Write(str(merged))
 
     bands = find_bands(merged, tol_mm=tol_mm)
+    # Everything the STEP still remembers, plus everything only the mesh does. Seeding is
+    # additive on purpose: it can only ever ADD a cylinder that the rim search missed, and each
+    # added band goes through the same intent check below as any other (bd projects-3md).
+    if patches:
+        bands = bands + bands_from_patches(merged, patches, tol_mm=tol_mm, known=bands)
 
     # Decide INTENT before touching geometry: a band whose chord error disagrees
     # with the rest of the model is a designed polygon, and rebuilding it as its
