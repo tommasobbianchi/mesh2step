@@ -154,6 +154,102 @@ def find_bands(step_path, *, tol_mm: float = DEFAULT_TOL_MM) -> list[CylinderBan
     return sorted(bands, key=lambda b: -b.radius)
 
 
+def _rim_chord_levels(fmap, face_indices, base, axis, radius, tol) -> list[float]:
+    """Axial levels at which the member faces carry a rim chord — the planes the neighbours agree
+    on. `_is_rim_chord` already defines the predicate; this collects where it fires."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    levels: list[float] = []
+    for idx in face_indices:
+        em = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(fmap.FindKey(idx), TopAbs_VERTEX, em)
+        pts = []
+        for i in range(1, em.Extent() + 1):
+            pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(em.FindKey(i)))
+            pts.append(np.array([pnt.X(), pnt.Y(), pnt.Z()]))
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                z = _is_rim_chord(pts[i], pts[j], base, axis, radius, tol)
+                if z is not None:
+                    levels.append(z)
+    if not levels:
+        return []
+    # cluster to distinct planes: a wall has two, a stepped bore more
+    levels.sort()
+    out = [levels[0]]
+    for z in levels[1:]:
+        if z - out[-1] > tol:
+            out.append(z)
+    return out
+
+
+def _rim_chord_graph(fmap, base, axis, radius, level, tol_mm) -> dict:
+    """Adjacency (vertex point -> neighbouring points) of every edge in the shape that
+    rebuild_cylinders would swap for the band's circular rim edge at `level`: straight
+    edges whose endpoints both satisfy the `_is_rim_chord` predicate at that level, with
+    the same tolerance the rebuild swaps at."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    adj: dict[tuple, set] = {}
+    for i in range(1, fmap.Extent() + 1):
+        exp = TopExp_Explorer(fmap.FindKey(i), TopAbs_EDGE)
+        while exp.More():
+            edge = TopoDS.Edge_s(exp.Current())
+            v1, v2 = TopExp.FirstVertex_s(edge), TopExp.LastVertex_s(edge)
+            p1 = BRep_Tool.Pnt_s(v1)
+            p2 = BRep_Tool.Pnt_s(v2)
+            z = _is_rim_chord(np.array([p1.X(), p1.Y(), p1.Z()]),
+                              np.array([p2.X(), p2.Y(), p2.Z()]),
+                              base, axis, radius, tol_mm)
+            if z is not None and abs(z - level) <= tol_mm:
+                k1 = (round(p1.X(), 6), round(p1.Y(), 6), round(p1.Z(), 6))
+                k2 = (round(p2.X(), 6), round(p2.Y(), 6), round(p2.Z(), 6))
+                adj.setdefault(k1, set()).add(k2)
+                adj.setdefault(k2, set()).add(k1)
+            exp.Next()
+    return adj
+
+
+def _is_single_loop(adj: dict) -> bool:
+    """One closed chain: every vertex of degree exactly 2 (an open arc has degree-1
+    ends), and exactly one connected component (two disjoint chains at one level would
+    mean two holes on one cylinder, which a single rebuilt face cannot represent)."""
+    if not adj:
+        return False
+    if any(len(nbrs) != 2 for nbrs in adj.values()):
+        return False
+    seen, stack = set(), [next(iter(adj))]
+    while stack:
+        k = stack.pop()
+        if k not in seen:
+            seen.add(k)
+            stack.extend(adj[k] - seen)
+    return len(seen) == len(adj)
+
+
+def _closed_rim(fmap, base, axis, radius, level, tol_mm) -> bool:
+    """Does every rim chord of this band at `level` chain into a single closed loop?
+
+    This is the guarantee a rim-derived band gets for free: find_bands only builds bands
+    from circles find_circles fitted to CLOSED edge chains, so at each band end the
+    neighbouring faces meet the wall along a complete chord chain and the rebuild's
+    chain->circle swap (rebuild_cylinders) leaves every wire closed. A mesh-seeded extent
+    must prove the same thing, with the exact predicate the rebuild swaps on: measured on
+    L09_valve_body (diag/FINDINGS-mesh-seeded-bands.md), a cross-hole breaches 270 of the
+    360 degrees at both snapped levels of a seeded band, and swapping the remaining 90
+    degree arc's chords for the full circle breaks the junction triangles' wires
+    (MakeWire fails, the face is kept, the shell sews open).
+    """
+    return _is_single_loop(_rim_chord_graph(fmap, base, axis, radius, level, tol_mm))
+
+
 def bands_from_patches(step_path, patches, *, tol_mm: float = DEFAULT_TOL_MM,
                        known: list[CylinderBand] | None = None) -> list[CylinderBand]:
     """Locate, on a faceted STEP, the cylinders the MESH shows -- the ones find_bands cannot see.
@@ -185,7 +281,8 @@ def bands_from_patches(step_path, patches, *, tol_mm: float = DEFAULT_TOL_MM,
         return []
     fmap = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
-    faces = [(i, _face_points(TopoDS.Face_s(fmap.FindKey(i))))
+    faces = [(i, _face_points(TopoDS.Face_s(fmap.FindKey(i))),
+              _plane_normal(TopoDS.Face_s(fmap.FindKey(i))))
              for i in range(1, fmap.Extent() + 1)]
 
     out: list[CylinderBand] = []
@@ -222,14 +319,68 @@ def bands_from_patches(step_path, patches, *, tol_mm: float = DEFAULT_TOL_MM,
                          for b in known):
             continue  # find_bands already has this one
         members = []
-        for idx, fp in faces:
+        for idx, fp, normal in faces:
             if len(fp) < 3:
+                continue
+            # same membership semantics as find_bands (rebuild.py:120-128): only planar
+            # wall strips parallel to the axis. The radial test alone admits junction
+            # triangles where a cross-hole breaches the rim (measured: |normal @ axis|
+            # = 0.111 on exactly the triangles whose chords break the rebuild).
+            if normal is None or abs(float(normal @ axis)) > 1e-3:
                 continue
             dd = fp - base_pt
             zz = dd @ axis
             rr = np.linalg.norm(dd - np.outer(zz, axis), axis=1)
             if (np.abs(rr - r_fit) <= tol).all() and (zz >= z0 - tol).all() and (zz <= z1 + tol).all():
                 members.append(idx)
+        # SNAP the extent to the rim chords the member faces actually carry. A rim-derived band
+        # gets this for free -- its ends ARE two fitted circles, so the rebuilt face's circular
+        # edges land exactly on the neighbours' chord chains and sewing has nothing to bridge. A
+        # mesh-derived extent is the min/max of the patch's triangles, which is close but not
+        # coincident, and the rebuilt solid then fails to close (measured: all 14 bands on
+        # L09_valve_body invalid, alone and together, at dV -0.28%..-1.67% -- right place, open
+        # topology). The chord planes are what the neighbours agree on, so snap to them.
+        rim_z = _rim_chord_levels(fmap, members, base_pt, axis, r_fit, tol)
+        # ...but chord LEVELS alone are not rims. A rim-derived band's ends are closed chains
+        # of circle edges (find_circles), meaning the wall's boundary at each end is a complete
+        # circle; a cross-hole can leave 90 deg of wall arc carrying chords at the same level
+        # (measured on L09_valve_body, diag/FINDINGS-mesh-seeded-bands.md), and rebuilding that
+        # as a 360 deg face swaps the arc's chords for a full circle inside junction triangles
+        # whose other edges leave the circle -- their wires no longer close, the faces are kept
+        # unchanged, and the shell sews open. Requiring each end to verify as a closed rim, with
+        # the exact predicate rebuild_cylinders swaps on, restores the find_bands guarantee.
+        if len(rim_z) < 2:
+            continue  # extent end(s) unverifiable: no chord plane to check closure on
+        z0, z1 = min(rim_z), max(rim_z)
+        height = z1 - z0
+        if height <= tol:
+            continue
+        rims = [_rim_chord_graph(fmap, base_pt, axis, r_fit, z, tol_mm) for z in (z0, z1)]
+        if not all(_is_single_loop(g) for g in rims):
+            continue  # an end is an open arc (cross-hole breach), not a rim: not rebuildable
+        # Wall continuity, the third guarantee a rim-derived band gets from its rim pair
+        # (find_bands, lines below the membership loop): the member strips must bridge the
+        # snapped extent with no mid-wall gap. A cross-hole can breach the MIDDLE of an
+        # otherwise rim-to-rim wall -- measured on a 30mm box with three crossing 2mm
+        # holes (diag/FINDINGS-mesh-seeded-bands.md): the strips cover [-15,-1.9] and
+        # [1.9,15], both ends verify as closed rims, and rebuilding would close a 360 deg
+        # face over the breach and sew against the cross-hole walls. The rim chain length
+        # stands in for find_bands' min(a.segments, b.segments).
+        gap_tol = _axial_gap_tol(r_fit, max(3, min(len(g) for g in rims)))
+        covered = []
+        for idx in members:
+            fp = next(fp for i2, fp, _ in faces if i2 == idx)
+            zz = (fp - base_pt) @ axis
+            covered.append((float(zz.min() - z0), float(zz.max() - z0)))
+        covered.sort()
+        reach = covered[0][1]
+        for lo, hi in covered[1:]:
+            if lo - reach > gap_tol:
+                reach = None
+                break
+            reach = max(reach, hi)
+        if reach is None or covered[0][0] > gap_tol or height - reach > gap_tol:
+            continue  # mid-wall gap: the wall does not bridge rim to rim
         # A wall is several strips. One face at this radius is a rim fillet or a coincidence, and
         # rebuilding on that evidence invents geometry -- the failure mode MIN_SUPPORT exists for.
         if len(members) < 3:
