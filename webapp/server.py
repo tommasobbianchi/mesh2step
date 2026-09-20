@@ -963,6 +963,13 @@ def _convert_job(*, t_admit: float, **kw) -> dict:
               f"engine={kw.get('engine')} backend={st.get('backend') or 'error'}"
               + (f" phases={phases}" if phases else ""),
               file=sys.stderr, flush=True)
+        # IP4 for the engine: features detected and then not built. On the 2026-09-21 hotend
+        # upload that was 36 cylinders and 126 fillets, and nothing in the log said so. Free:
+        # counters the engine already returned.
+        from mesh2step.attribution import engine_analytic_loss_note
+        note = engine_analytic_loss_note({**st, "warnings": (res or {}).get("warnings") or []})
+        if note:
+            print(note, file=sys.stderr, flush=True)
 
 
 @app.post("/api/convert")

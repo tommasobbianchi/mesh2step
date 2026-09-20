@@ -40,6 +40,94 @@ MAX_DV_PCT = 1.0
 MAX_DIST_P95_REL = 0.005
 MIN_SUPPORT = 0.35
 CANDIDATE_TIMEOUT_S = 1800.0
+# The agent loop: a rejected candidate is repaired and re-measured rather than discarded.
+# Bounded on both axes because runtime is already a product problem (mechparts/6 converts in
+# 1968 s). Two attempts per candidate is enough for the only chain that exists -- drop the
+# debris, then close the shell -- and the budget is wall clock for the WHOLE pass, checked
+# before each repair so a long builder cannot be followed by an unbounded repair tail.
+LOOP_MAX_ATTEMPTS = 2
+LOOP_BUDGET_S = float(os.environ.get("MESH2STEP_LOOP_BUDGET_S", "240"))
+
+
+# Backflip's "Thinking mode", with the same intent: when the shape is nearly right, spend more
+# on the SAME construction instead of throwing it away. The knob is the builder's own sampling
+# density -- `stepped` slices N heights to find its levels, `turned-envelope` takes N stations
+# along the axis -- so a finer run is a better-measured build of the same kind, never a looser
+# gate. The other builders expose no such knob and are not retried.
+# label -> (index of the output path in argv, index of the density argument, denser value)
+REFINE = {"stepped": (3, 4, "180"), "turned-envelope": (3, 4, "1200")}
+
+
+def _refine_argv(label: str, argv: list, out):
+    """argv for a denser re-run of this builder into `out`, or None if it has no knob."""
+    spec = REFINE.get(label)
+    if spec is None or len(argv) <= spec[1] or str(argv[spec[1]]) == spec[2]:
+        return None
+    a = list(argv)
+    a[spec[0]], a[spec[1]] = out, spec[2]
+    return a
+
+
+def _worth_refining(m: dict | None, fails: list[str], min_cylinders: int) -> bool:
+    """A shape near-miss on a build that actually recovered something.
+
+    NOT a relaxation: the candidate is still rejected. It buys a second, denser attempt at the
+    same construction, which must then pass the identical gate. Bounded to a near-miss because a
+    build that is 500% out on volume is not nearly right, it is wrong.
+    """
+    return bool(m and fails and set(fails) <= {"dv_pct", "dist_p95"}
+                and m["cylinders"] > min_cylinders
+                and m["dist_p95"] <= 2.0 * MAX_DIST_P95_REL * m["diag"]
+                and abs(m["dv_pct"]) <= 2.0 * MAX_DV_PCT)
+
+
+# The immune system's SECOND opinion, for a rejection that names `support` and nothing else.
+# `support` is a radius question -- does the mesh show a cylinder of this radius ANYWHERE -- and
+# on mechparts/19 it scores 0.21 on a build that puts 17 of 17 mesh cylinder patches on analytic
+# faces at 0.018 mm p95. `backing.backed_fraction` asks the location question instead: is there
+# mesh wall at THIS face's axis, radius and extent, with a radial normal. It is not a looser
+# test -- measured on the canonical confabulators it is far harsher than the radius test
+# (L09_valve_body stepped 0.16, mechparts/19 stepped 0.13, mechparts/16 stepped 0.09, against a
+# radius support of 0.19/0.01/0.05) -- and it is the positive evidence guideline 4.B.5 asks for.
+# MIN_SUPPORT is unchanged and the shape gate must already have passed. `MESH2STEP_LOOP_BACKING=0`
+# disables it independently of the rest of the loop.
+def _second_opinion(m: dict, produced: Path, tri, log=None) -> float | None:
+    """Backed fraction for a support-only rejection, or None if the check is off or throws."""
+    if os.environ.get("MESH2STEP_LOOP_BACKING", "1") == "0":
+        return None
+    from .backing import backed_fraction
+
+    try:
+        sh = _read(produced)
+        if sh is None:
+            return None
+        frac, n_backed, n_total = backed_fraction(sh, tri)
+    except Exception as exc:  # noqa: BLE001
+        if log:
+            print(f"feature: backing check failed: {type(exc).__name__}: {exc}",
+                  file=log, flush=True)
+        return None
+    if log:
+        print(f"feature: backing {n_backed}/{n_total} = {frac:.2f} "
+              f"(radius support {m['support']:.2f})", file=log, flush=True)
+    return frac
+
+
+def _repair_for(fails: list[str]):
+    """(name, fn) for the first failed clause that names a repair of the SOLID, else None.
+
+    `dv_pct` and `dist_p95` are deliberately absent: they are statements about the shape the
+    builder chose, and the only honest repair is a different build, not a post-hoc edit. A
+    candidate that fails only those is reported and dropped.
+    """
+    from . import solidfix
+
+    for c in fails:
+        if c == "solids":
+            return ("largest", solidfix.largest_solid)
+        if c in ("valid", "free_edges"):
+            return ("sew", solidfix.sew_fix)
+    return None
 
 # Progress, not prediction. The candidate list is FIXED, so "step 4 of 8" is exact even though
 # the duration is not: measured on 351 real conversions, the same mesh at the same triangle
@@ -217,14 +305,120 @@ def acceptable(m: dict | None) -> bool:
                 and m["dist_p95"] <= MAX_DIST_P95_REL * m["diag"])
 
 
+# --- IP4: every candidate rejection names ONE clause -------------------------------------
+# Acilindria-guideline.md 2.1: "A rejection that cannot be attributed to a named clause is
+# itself a non-conformance: it makes the next session guess." The measurements already exist;
+# only the naming was missing. Clause order is SEVERITY order, not gate order: the clause
+# reported is the one whose repair is a prerequisite for the others (a build with 4 solids has
+# a meaningless dv), so a reader can act on the first name without re-deriving the rest.
+CLAUSES = ("no_output", "unreadable", "solids", "valid", "free_edges", "dv_pct", "dist_p95",
+           "no_gain", "support")
+
+
+def failures(m: dict | None, min_cylinders: int, sup: float | None) -> list[str]:
+    """Every clause this candidate fails, in severity order. [] means it qualifies."""
+    if m is None:
+        return ["unreadable"]
+    f = []
+    if m["solids"] != 1:
+        f.append("solids")
+    if not m["valid"]:
+        f.append("valid")
+    if m["free_edges"]:
+        f.append("free_edges")
+    if abs(m["dv_pct"]) > MAX_DV_PCT:
+        f.append("dv_pct")
+    if m["dist_p95"] > MAX_DIST_P95_REL * m["diag"]:
+        f.append("dist_p95")
+    if m["cylinders"] <= min_cylinders:
+        f.append("no_gain")
+    if sup is not None and sup < MIN_SUPPORT:
+        f.append("support")
+    return f
+
+
+def defect_code(m: dict | None, fails: list[str], sup: float | None,
+                mesh_radii: list[float] | None) -> str:
+    """The Acilindria defect code for this rejection (physiopathologia section 2).
+
+    Coded from the FIRST failed clause, because that is the one whose repair the others wait on:
+    a build with four solids has a meaningless volume, so calling it a support failure because
+    support also failed would send the next session to the immune system for a carpentry defect.
+    `AC-B4` therefore means what the text says -- passed every shape gate, refused for inventing.
+    """
+    if not fails:
+        return "OK"
+    if fails and fails[0] == "no_output":
+        return "AC-NOBUILD"                  # this builder cannot model this part; not a defect
+    if m is None:
+        return "AC-C1"                       # wrote a file nothing can read
+    head = fails[0]
+    if head == "no_gain":
+        return "AC-NOGAIN"                   # healthy: the engine already did better
+    if head == "support":
+        if mesh_radii is not None and not mesh_radii:
+            return "AC-B5"                   # support undefined, not failed
+        return "AC-B4"                       # correct immune rejection
+    if head == "dist_p95" and m["dist_p95"] <= 2.0 * MAX_DIST_P95_REL * m["diag"]:
+        return "AC-B3"                       # near-miss on a shape threshold
+    return "AC-B2"                           # whole-build rejection over a defect of the solid
+
+
 def reconstruct(stl, out, *, min_cylinders: int = 0, timeout: float = CANDIDATE_TIMEOUT_S,
                 log=None) -> dict | None:
-    """Try every builder; keep the qualifying build closest to the mesh volume."""
+    """Try every builder; keep the qualifying build closest to the mesh volume.
+
+    Two things happen here beyond the original one-shot pass, both new:
+
+    * **IP4 attribution** (guideline 2.1). Every candidate, accepted or not, logs the clauses it
+      failed and the Acilindria defect code. A rejection nobody can name is a non-conformance.
+    * **The repair loop** (`MESH2STEP_LOOP=0` disables). When the named clause is a defect of the
+      SOLID, the candidate is repaired and re-measured against the SAME gate, instead of being
+      discarded with everything it recovered. Bounded by `LOOP_MAX_ATTEMPTS` per candidate and
+      `LOOP_BUDGET_S` of wall clock for the whole pass, because runtime is already a product
+      problem. The gate is never relaxed: `MIN_SUPPORT` and the mesh-backed radius test are
+      applied to the repaired build exactly as to the original.
+    """
     stl, out = Path(stl), Path(out)
+    loop_on = os.environ.get("MESH2STEP_LOOP", "1") != "0"
     tri = _mesh(stl)
-    mesh_radii = None
+    cache: dict = {"mesh_radii": None}
     best = None
     phases: list[list] = []
+    t_pass = time.time()
+
+    def mesh_radii():
+        if cache["mesh_radii"] is None:
+            cache["mesh_radii"] = mesh_cylinder_radii(tri)
+        return cache["mesh_radii"]
+
+    def evaluate(produced: Path, label: str):
+        """(measurement, failed clauses, support) for one written STEP. Never raises."""
+        try:
+            m = measure(produced, tri) if produced.exists() else None
+        except Exception as exc:  # noqa: BLE001
+            # The contract at the top of this file: an OCCT crash costs THAT CANDIDATE,
+            # never the conversion. It held for the subprocess builders and not for the
+            # in-process read of what they wrote, which is the half that actually threw.
+            if log:
+                print(f"feature {label}: measure failed: {type(exc).__name__}: {exc}",
+                      file=log, flush=True)
+            return None, ["unreadable"], None
+        if m is None:
+            return None, ["no_output" if not produced.exists() else "unreadable"], None
+        sup = support(m["radii"], mesh_radii()) if m["cylinders"] else None
+        m["support"] = 1.0 if sup is None else sup
+        return m, failures(m, min_cylinders, sup), sup
+
+    def report(label: str, m, fails, sup):
+        if not log:
+            return
+        brief = {k: v for k, v in (m or {}).items() if k != "radii"}
+        code = defect_code(m, fails, sup, cache["mesh_radii"])
+        verdict = "ACCEPT" if not fails else f"REJECT {fails[0]} [{code}]"
+        extra = f" also={fails[1:]}" if len(fails) > 1 else ""
+        print(f"feature {label}: {verdict}{extra} {brief}", file=log, flush=True)
+
     with tempfile.TemporaryDirectory(prefix="m2s_feature_") as td:
         wd = Path(td)
         cands = _candidates(stl, wd)
@@ -237,32 +431,90 @@ def reconstruct(stl, out, *, min_cylinders: int = 0, timeout: float = CANDIDATE_
             except subprocess.TimeoutExpired:
                 _phase(i, len(cands), label, "timeout", time.time() - t_c)
                 phases.append([label, round(time.time() - t_c, 3), "timeout"])
-                continue
-            try:
-                m = measure(produced, tri) if produced.exists() else None
-            except Exception as exc:  # noqa: BLE001
-                # The contract at the top of this file: an OCCT crash costs THAT CANDIDATE,
-                # never the conversion. It held for the subprocess builders and not for the
-                # in-process read of what they wrote, which is the half that actually threw.
                 if log:
-                    print(f"feature {label}: measure failed: {type(exc).__name__}: {exc}",
-                          file=log, flush=True)
-                m = None
+                    print(f"feature {label}: REJECT timeout [AC-TIMEOUT]", file=log, flush=True)
+                continue
+            m, fails, sup = evaluate(produced, label)
             # closed AFTER measure(): the phase must account for every second the user waits,
             # or the elapsed times never add up to the wall clock an ETA is fitted against
             _phase(i, len(cands), label, "done", time.time() - t_c)
             phases.append([label, round(time.time() - t_c, 3), "done"])
-            if acceptable(m) and m["cylinders"] > min_cylinders:
-                if mesh_radii is None:
-                    mesh_radii = mesh_cylinder_radii(tri)
-                m["support"] = support(m["radii"], mesh_radii)
-            if log:
-                brief = {k: v for k, v in (m or {}).items() if k != "radii"}
-                print(f"feature {label}: {brief}", file=log, flush=True)
-            if (m and m.get("support", 0.0) >= MIN_SUPPORT
-                    and (best is None or abs(m["dv_pct"]) < abs(best["dv_pct"]))):
-                best = dict(m, method=label)
-                shutil.copyfile(produced, wd / "best.step")
+            report(label, m, fails, sup)
+
+            if loop_on and fails == ["support"]:
+                # Shape is already sound; only the radius-based invention test says no. Ask the
+                # mesh where the faces actually are before throwing the build away.
+                frac = _second_opinion(m, produced, tri, log)
+                if frac is not None and frac >= MIN_SUPPORT:
+                    m["support"], m["support_kind"] = frac, "backed"
+                    fails = []
+                    report(f"{label}+backed", m, fails, frac)
+
+            attempt, src, refined = 0, produced, False
+            while (loop_on and fails and attempt < LOOP_MAX_ATTEMPTS
+                   and time.time() - t_pass < LOOP_BUDGET_S):
+                action = _repair_for(fails)
+                if action is None:
+                    # No repair of the carrier applies. If the shape is only a near-miss, buy
+                    # one denser re-run of the same builder; otherwise this candidate is done.
+                    rout = wd / f"{label}.refine.step"
+                    rargv = (None if refined or not _worth_refining(m, fails, min_cylinders)
+                             else _refine_argv(label.split("+")[0], argv, rout))
+                    if rargv is None:
+                        break
+                    refined, attempt = True, attempt + 1
+                    left = LOOP_BUDGET_S - (time.time() - t_pass)
+                    t_r = time.time()
+                    try:
+                        subprocess.run([str(a) for a in rargv], capture_output=True,
+                                       timeout=min(timeout, max(left, 30.0)),
+                                       env=dict(os.environ, **env), cwd=td)
+                    except subprocess.TimeoutExpired:
+                        if log:
+                            print(f"feature {label}+refine: timeout", file=log, flush=True)
+                        break
+                    rlabel = f"{label}+refine"
+                    m, fails, sup = evaluate(rout, rlabel)
+                    phases.append([rlabel, round(time.time() - t_r, 3), "refine"])
+                    report(rlabel, m, fails, sup)
+                    src, label = rout, rlabel
+                    continue
+                attempt += 1
+                fixed = wd / f"{label}.fix{attempt}.step"
+                t_r = time.time()
+                try:
+                    done = action[1](src, fixed)
+                except Exception as exc:  # noqa: BLE001
+                    if log:
+                        print(f"feature {label}: repair {action[0]} threw "
+                              f"{type(exc).__name__}: {exc}", file=log, flush=True)
+                    break
+                if not done:
+                    if log:
+                        print(f"feature {label}: repair {action[0]} no-op", file=log, flush=True)
+                    break
+                rlabel = f"{label}+{action[0]}"
+                m, fails, sup = evaluate(fixed, rlabel)
+                phases.append([rlabel, round(time.time() - t_r, 3), "repair"])
+                report(rlabel, m, fails, sup)
+                src, label = fixed, rlabel
+
+            if not fails and m is not None and "+" in label and "+backed" not in label:
+                # A candidate the BASE arm would have thrown away is admitted only if the mesh
+                # carries wall at each built face, not merely a matching radius somewhere.
+                # Measured on mechparts/4: the denser `stepped` re-run passes the radius test at
+                # 0.35+ and puts 4 of 28 patches on curved faces while building 46 cylinders of
+                # which the mesh backs 7. That is the confabulation the guideline ranks worse
+                # than the disease (0.3.1), so the loop refuses its own win.
+                frac = _second_opinion(m, src, tri, log)
+                if frac is not None and frac < MIN_SUPPORT:
+                    fails = ["support"]
+                    report(f"{label}+unbacked", m, fails, frac)
+
+            if not fails and m is not None:
+                if best is None or abs(m["dv_pct"]) < abs(best["dv_pct"]):
+                    best = dict(m, method=label)
+                    shutil.copyfile(src, wd / "best.step")
         if best:
             shutil.copyfile(wd / "best.step", out)
     if best is not None:
