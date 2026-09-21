@@ -150,8 +150,28 @@ def ask_model(prompt, claude, model, wd, renders=()):
         name = model.split(":", 1)[1] if model.startswith("claude:") else model
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
                "--output-format", "text", prompt]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=str(wd))
+    t = float(os.environ.get("RECON_CALL_TIMEOUT_S", "1800"))
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=t, cwd=str(wd))
+    except subprocess.TimeoutExpired:            # a hung call costs its round, never the run
+        return 124, f"model call timed out after {t:.0f} s"
     return p.returncode, ((p.stdout or "") + (p.stderr or ""))[-2000:]
+
+
+def write_best(history, diag, wd):
+    """(Re)write best.step/best.json from the history so far; None when no round is valid."""
+    best = select_best(history, diag)
+    if best is None:
+        return None
+    import shutil
+    src = Path(best["py"]).with_suffix(".step")
+    if best["report"].get("repaired"):          # the round's measurements are the repaired solid's
+        src = src.with_name(src.stem + ".repaired.step")
+    shutil.copy(src, wd / "best.step.tmp"); os.replace(wd / "best.step.tmp", wd / "best.step")
+    json.dump({"best": best["py"], "report": best["report"], "represent": best["report"]["features"]},
+              open(wd / "best.json.tmp", "w"), indent=1)
+    os.replace(wd / "best.json.tmp", wd / "best.json")
+    return best
 
 
 def main():
@@ -310,6 +330,8 @@ def main():
         print(f"iter {it}: " + (json.dumps({k: v for k, v in rep.items() if k != 'where_wrong'}) if rep else "FAILED TO RUN: " + err[-300:]), flush=True)
         if rep:
             print(f"      features {rep['features']}", flush=True)
+            json.dump(history, open(WD / "history.json", "w"), indent=1)
+            write_best(history, diag, WD)          # a loop killed from outside keeps its best so far
             for w in rep["where_wrong"][:3] + rep["feature_misses"][:3]:
                 print("      " + w, flush=True)
             fz = rep["features"]
@@ -318,17 +340,10 @@ def main():
                 print(f"converged at iteration {it}"); break
     json.dump(history, open(WD / "history.json", "w"), indent=1)
 
-    best = select_best(history, diag)
+    best = write_best(history, diag, WD)
     if best is None:
         return 2
-    import shutil
-    src = Path(best["py"]).with_suffix(".step")
-    if best["report"].get("repaired"):          # the round's measurements are the repaired solid's
-        src = src.with_name(src.stem + ".repaired.step")
-    shutil.copy(src, WD / "best.step")
     score = best["report"]["features"]
-    json.dump({"best": best["py"], "report": best["report"], "represent": score},
-              open(WD / "best.json", "w"), indent=1)
     print("BEST", best["py"], json.dumps({k: v for k, v in best["report"].items() if k != "where_wrong"}))
     print("REPRESENT", json.dumps(score))
     return 0
