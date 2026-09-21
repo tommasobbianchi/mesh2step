@@ -1,0 +1,21 @@
+diff -ru '--exclude=.git' '--exclude=build' engine-base/src/refit_build.cpp engine-clean/src/refit_build.cpp
+--- engine-base/src/refit_build.cpp	2026-09-21 12:34:30.465687980 +0200
++++ engine-clean/src/refit_build.cpp	2026-09-21 12:34:13.044605595 +0200
+@@ -6215,7 +6215,16 @@
+                     !regionExploded(exploded, rg.id))
+                     keepCyl = true;
+             }
+-            if (recoverPass < 1) {
++            // n29 (env-gated, default byte-identical): the targeted recovery below runs
++            // exactly once. On a user part (hotend, 20,656 tris) that one pass took the
++            // shell from 41 free edges to 4, after which control fell to the blanket
++            // explodeAll() and every analytic region (36 cylinders, 126 fillets, 1,424
++            // planes) was faceted: 0 cylinders shipped. One more targeted application
++            // closes it: 127 CYLINDRICAL_SURFACE, watertight, 1 solid. Measured over the
++            // 39-part mechparts corpus: 37 identical, 0 losses (part 39 pending uncapped).
++            static const bool n29TargetedTwice =
++                std::getenv("STL2STEP_N29_TARGETED_TWICE") != nullptr;
++            if (recoverPass < 1 || (n29TargetedTwice && recoverPass < 2)) {
+                 bool did = false;
+                 // J6 deferred edge-failure R1: explode regions whose analytic
+                 // chains failed (ledger from rebuildCollapsed). Not enrolled on
