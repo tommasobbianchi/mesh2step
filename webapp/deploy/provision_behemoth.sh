@@ -16,7 +16,7 @@
 set -euo pipefail
 
 HOST="${HOST:-tommaso@100.103.234.2}"
-ENGINE="mesh2step-native-v1.8.1-a27ab996012a"   # pinned: must match nativedev exactly
+ENGINE="mesh2step-native-v1.8.2-fcaee701f2db"   # pinned: must match nativedev's native.conf exactly
 PORT="${PORT:-8000}"
 SRC="/home/tommaso/projects/mesh2step"
 
@@ -40,8 +40,13 @@ esac
 
 say "1. repo"
 ssh -o BatchMode=yes "$HOST" 'mkdir -p ~/projects'
+# tools/recon/runs holds user uploads and model transcripts: never ship them.
 rsync -a --delete --exclude .git --exclude '.worktrees' --exclude '__pycache__' \
+      --exclude 'tools/recon/runs' \
       "$SRC/" "$HOST:~/projects/mesh2step/"
+# No .git on the worker, so _app_version() reads .version -- the only node label a client sees.
+# --delete above removes it (nativedev has none), so write it after every sync.
+echo "$(git -C "$SRC" describe --tags)-behemoth" | ssh -o BatchMode=yes "$HOST" 'cat > ~/projects/mesh2step/.version'
 
 say "2. native engine ($ENGINE, 59 MB, pinned build)"
 ssh -o BatchMode=yes "$HOST" 'mkdir -p ~/.local/share'
