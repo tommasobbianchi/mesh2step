@@ -349,7 +349,13 @@ def main():
                 history.append({"py": str(py), "report": None, "error": out}); continue
         step = WD / f"recon_{it}.step"
         ok, err = run_script(py, step)
-        rep = gate(step) if ok else None
+        rep = None
+        if ok:
+            try:
+                rep = gate(step)
+            except Exception as e:                  # e.g. a solid that tessellates to nothing
+                ok, err = False, f"your program ran, but measuring its solid failed ({type(e).__name__}: {e}); " \
+                                 "the result is probably empty or degenerate"
         history.append({"py": str(py), "report": rep, "error": err if not ok else ""})
         print(f"iter {it}: " + (json.dumps({k: v for k, v in rep.items() if k != 'where_wrong'}) if rep else "FAILED TO RUN: " + err[-300:]), flush=True)
         if rep:

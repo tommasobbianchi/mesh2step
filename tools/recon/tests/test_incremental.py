@@ -62,3 +62,21 @@ def test_a_killed_loop_leaves_the_best_round_so_far(tmp_path):
     wd = tmp_path / "wd"
     assert (wd / "best.step").exists()
     assert json.loads((wd / "best.json").read_text())["best"].endswith("recon_1.py")
+
+
+EMPTY_THEN_BOX = r'''#!/usr/bin/env python3
+import os, re, sys
+n = len(open(os.environ["FAKE_COUNTER"]).read()); open(os.environ["FAKE_COUNTER"], "a").write("x")
+body = 'result = cq.Workplane("XY")\n' if n == 0 else 'result = cq.Workplane("XY").box(10, 10, 9.5)\n'
+m = re.findall(r"(\S+recon_\d+\.py)", sys.argv[-1]); open(m[-1], "w").write(body); print("done")
+'''
+
+
+def test_an_empty_solid_is_round_feedback_not_a_crash(tmp_path):
+    cmd, env = _setup(tmp_path)
+    (tmp_path / "fake").write_text(EMPTY_THEN_BOX)      # muse, part 6: a STEP with 0 faces crashed the gate
+    p = subprocess.run(cmd + ["2"], env=env, capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-1500:]
+    hist = json.loads((tmp_path / "wd" / "history.json").read_text())
+    assert hist[0]["report"] is None and hist[0]["error"]
+    assert hist[1]["report"]["valid"]
