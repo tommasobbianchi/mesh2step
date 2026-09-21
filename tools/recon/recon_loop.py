@@ -138,10 +138,19 @@ def run_script(py, step):
     return p.returncode == 0 and Path(step).exists(), (p.stderr or "")[-1500:]
 
 
-def ask_model(prompt, claude, model, wd):
-    p = subprocess.run([claude, "-p", "--model", model, "--allowedTools", "Read,Write",
-                        "--output-format", "text", prompt],
-                       capture_output=True, text=True, timeout=1800, cwd=str(wd))
+def ask_model(prompt, claude, model, wd, renders=()):
+    if model.startswith("opencode:"):
+        name = model.split(":", 1)[1]
+        cmd = [os.environ.get("OPENCODE_BIN", "opencode"), "run", "-m", name]
+        if "vision" in name:                       # only a vision model can see the renders
+            for r in renders:
+                cmd += ["-f", r]
+        cmd.append(prompt)
+    else:
+        name = model.split(":", 1)[1] if model.startswith("claude:") else model
+        cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
+               "--output-format", "text", prompt]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=str(wd))
     return p.returncode, ((p.stdout or "") + (p.stderr or ""))[-2000:]
 
 
@@ -229,10 +238,19 @@ def main():
         rep["invalid_faces"] = invalid_face_report(sh)
         return rep
 
+    if MODEL.startswith("opencode:"):
+        _name = MODEL.split(":", 1)[1]
+        if "vision" in _name:
+            look = "First LOOK at the renders (they are attached to this message):\n" + "\n".join(renders)
+        else:
+            look = ("The renders are unavailable to you; the measured facts are complete and are "
+                    "your only input.")
+    else:
+        look = "First LOOK at the renders (use the Read tool on each):\n" + "\n".join(renders)
+
     BRIEF = textwrap.dedent(f"""
     You are reverse-engineering a mechanical part from its mesh into parametric CAD, the way an
-    experienced engineer would. First LOOK at the renders (use the Read tool on each):
-    {chr(10).join(renders)}
+    experienced engineer would. {look}
     Then read the measured facts (Read tool): {FACTS}
     The facts are measured from the mesh and are the ONLY source of dimensions: slice levels along
     the axis, each loop fitted to exact lines and arcs with absolute coordinates, and the draft angle
@@ -269,12 +287,12 @@ def main():
             cylinder/cone/torus face (with its radius and location). If 'valid' is false, 'invalid_faces' lists the faces that make your solid invalid (type, area,
             location): rebuild those features so every face is valid. Every feature counts. Keep what is right. Write the
             corrected program to {py} with the Write tool. Reply only 'done'.""")
-        _, out = ask_model(prompt, CLAUDE, MODEL, WD)
+        _, out = ask_model(prompt, CLAUDE, MODEL, WD, renders)
         if not py.exists():
             if _is_limit(out):
                 for _ in range(QUOTA_RETRIES):      # retries do not consume a round
                     time.sleep(BACKOFF)
-                    _, out = ask_model(prompt, CLAUDE, MODEL, WD)
+                    _, out = ask_model(prompt, CLAUDE, MODEL, WD, renders)
                     if py.exists():
                         break
                 if not py.exists():
