@@ -18,7 +18,9 @@ CLI: `recon_part.py <stl> <workdir> --models M1 [M2 ...] [--rounds N=5] [--timeo
    `python3 <here>/recon_loop.py <stl> <workdir>/facts.json <workdir>/vis <workdir>/m<i>_<slug> <model> <rounds>`
    (slug = model string with every non-alphanumeric char replaced by `_`; `i` starts at 1), with
    the remaining share of `--timeout` as the subprocess timeout (a timeout counts as a non-accepted
-   run). Environment is inherited (CLAUDE_BIN, OPENCODE_BIN, RECON_* pass through).
+   run; start each loop with `start_new_session=True` and on timeout `os.killpg` its group with
+   SIGKILL -- the loop keeps its model call in its own group, so this is what stops a hung call).
+   Environment is inherited (CLAUDE_BIN, OPENCODE_BIN, RECON_* pass through).
    Record `{"model", "exit", "accepted"}` in `models_tried`.
 3. ACCEPTED means: `<modeldir>/best.json` exists, its `report.valid` is true,
    `max(report.p95_mesh_to_solid, report.p95_solid_to_mesh) <= 0.005 * diag` (diag = the mesh's

@@ -8,7 +8,8 @@ for m in $MODELS; do
   W="$SD/runs/bench_$slug"; mkdir -p "$W"
   ln -sfn "$SD/runs/vis" "$W/vis"; ln -sfn "$SD/runs/uploads" "$W/uploads"
   for p in $PARTS; do
-    [ -f "$W/recon2_$p/best.json" ] && continue
-    RECON_WORKDIR="$W" RECON_MODEL="$m" RECON_BACKOFF_S=300 RECON_QUOTA_RETRIES=6 "$SD/one_part.sh" "$p"
+    H="$W/recon2_$p/history.json"                       # skip only parts that used all their rounds
+    [ -f "$H" ] && [ "$(python3 -c "import json;print(len(json.load(open('$H'))))")" -ge "${RECON_ROUNDS:-3}" ] && continue
+    RECON_ROUNDS="${RECON_ROUNDS:-3}" RECON_CALL_TIMEOUT_S="${RECON_CALL_TIMEOUT_S:-900}" RECON_WORKDIR="$W" RECON_MODEL="$m" RECON_BACKOFF_S=300 RECON_QUOTA_RETRIES=6 "$SD/one_part.sh" "$p"
   done
 done

@@ -138,6 +138,22 @@ def run_script(py, step):
     return p.returncode == 0 and Path(step).exists(), (p.stderr or "")[-1500:]
 
 
+def _descendants(root):
+    kids = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                ppid = int(open(f"/proc/{d}/stat").read().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            kids.setdefault(ppid, []).append(int(d))
+    out, todo = [], [root]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            out.append(c); todo.append(c)
+    return out
+
+
 def ask_model(prompt, claude, model, wd, renders=()):
     if model.startswith("opencode:"):
         name = model.split(":", 1)[1]
@@ -151,11 +167,19 @@ def ask_model(prompt, claude, model, wd, renders=()):
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
                "--output-format", "text", prompt]
     t = float(os.environ.get("RECON_CALL_TIMEOUT_S", "1800"))
+    # same process group as the loop, so a caller killing the loop's group reaches the model call too
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(wd))
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=t, cwd=str(wd))
+        out, _ = p.communicate(timeout=t)
     except subprocess.TimeoutExpired:            # a hung call costs its round, never the run
+        for pid in _descendants(p.pid) + [p.pid]:   # snap opencode escapes its cgroup: kill the tree
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+        p.wait()
         return 124, f"model call timed out after {t:.0f} s"
-    return p.returncode, ((p.stdout or "") + (p.stderr or ""))[-2000:]
+    return p.returncode, (out or "")[-2000:]
 
 
 def write_best(history, diag, wd):
