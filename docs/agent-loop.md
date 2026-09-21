@@ -127,4 +127,99 @@ does, so every number is the score of the file a user would download.
 path, so these absolute numbers are NOT comparable with `mechparts-baseline.tsv`; only arm
 against arm is.
 
-<!-- RESULTS -->
+## 5. Results
+
+Two arms, `MESH2STEP_LOOP=0` vs `1`, from this worktree, 2026-09-21, on `~/corpora/mechparts`
+plus the hotend upload. Per-part table: `docs/agent-loop-results.txt`. Where the loop took no
+action the two arms execute the same instructions, so one run serves both columns; every part
+where it acted was run twice.
+
+```
+36 of 39 mechparts + hotend measured
+mesh cylinder patches on an analytic curved face:  891 -> 908  of 1184
+parts better: 1        parts worse: 0
+FAILURES (not missing data): parts 12, 30, 39 -- the ENGINE exceeded the 3600 s cap under the
+  five-way contention of this sweep itself. Arm-independent: the same binary runs in both arms
+  and the loop never executes. They are excluded from the totals above and counted here.
+```
+
+**The whole movement is one part.**
+
+| part | patches | off | on | what happened |
+|---|---|---|---|---|
+| **19** | 17 | **0** | **17** | `extrude-z` -- 1 solid, valid, dv -0.217%, p95 0.018 vs a 2.30 limit -- was refused at radius support 0.21. The mesh backs 42 of its 42 cylindrical faces at their own locations. Accepted. 42 `CYLINDRICAL_SURFACE` in the delivered file. Runtime 109.7 s -> 110.2 s |
+| 4 | 28 | 0 | 0 | the denser `stepped` re-run PASSES the shape gate and the radius test and is refused by the loop's own backing rule: 46 cylinders, 7 backed, 4 of 28 patches. Cost 51 s -> 194 s for nothing. See §5.3 |
+| 16 | 8 | 0 | 0 | no candidate is both sound and honest: `extrude-z` misses `dv` by 1.170% against 1.0% and carries 2 of 8 patches anyway; `stepped` builds 148 cylinders the mesh backs 14 of |
+| 6 | 52 | 14 | 14 | `stepped` is ACCEPTED outright, so there is no rejection for a loop to react to. The 38 missing patches are a builder gap |
+| 33 | 121 | 81 | 81 | same: two candidates accepted outright |
+| hotend | 52 | 0 | 0 | no candidate within reach: `stepped` models a quarter of the volume (dv -72%, repaired to one solid and still -75%), `turned` +433%, `block` +39.5%. Front: builders, and the engine (§3b) |
+
+**5.1 Runtime.** Unchanged everywhere the loop does not act (identical to the second on 26 of 28
+parts). The backing second opinion costs 0.15-0.8 s. The refine costs a full builder re-run:
++143 s on part 4, +6 s on the hotend, and it bought nothing on either.
+
+**5.2 Two-sided (guideline 0.3.1, 5.4).** The one part that changed ships 42 cylindrical faces
+for 17 mesh patches, and the mesh backs **42 of 42** at their own axis, radius and extent. No
+part ships a face the mesh does not carry that it did not ship before. The backing instrument
+was validated against five cases whose answer is known independently before it judged anything
+(guideline 5.1):
+
+| case | radius support | backing | truth |
+|---|---|---|---|
+| mechparts/19 `extrude-z` | 0.21 (refuse) | **1.00** | 17/17 patches represented -- refusing it was the defect |
+| mechparts/19 `stepped` | 0.01 | 0.13 | 94 cylinders, 8/17 -- confabulation |
+| mechparts/16 `stepped` | 0.05 | 0.09 | 148 cylinders, 6/8 -- confabulation |
+| L09_valve_body `stepped` | 0.19 | 0.16 | the canonical 15-real-plus-65-invented case -- still refused |
+| L04_puck `extrude-z` | 0.00 (`AC-B5`) | 1.00 | the blind-spot case guideline 4.B.5 says should be accepted |
+
+**5.3 The repair ladder measured zero.** `largest_solid` fired on `L08_angle_bracket` (4 solids,
+18 cylinders) and produced a 12-face solid with 2 cylinders still 238% out on volume -- the
+cylinders were in the debris, not in the big solid -- and on the hotend, where it made one solid
+out of two and changed no verdict. `sew_fix` never fired: no candidate in the corpus failed
+`valid` or `free_edges` alone. The refine fired twice on mechparts and won nothing; its only win
+is `clamp_half_a` (cadbench: 0/9 -> 7/9 patches, `dist_p95` 0.443 -> 0.108, 22 cylinders), and a
+cadbench win is not a win (guideline 5.5.2).
+
+**5.4 Which front each number belongs to.** Parts 19, 4, 16 are `feature.py` (candidate gate).
+Parts 6 and 33 are the builders. The hotend is the engine (§3b) plus the builders, and nothing in
+this branch can move it.
+
+## 6. Per-feature salvage (fix spot #2): not reachable from `feature.py`
+
+The brief's strategic prize is keeping a rejected build's recovered faces and merging them into
+the winner. The measurements say it is not an operation this module can perform.
+
+* **Into the engine's solid** -- the carrier guideline 4.B.2 names -- means replacing a fan of
+  planar facets with one analytic face and rewiring its neighbours' edges. That is exactly
+  `rebuild.rebuild_cylinders`, driven by a located band, and that path is fix spot #1, recorded
+  as producing `valid=False` alone and together. Salvage inherits an unsolved problem.
+* **Into another candidate's solid** means a boolean, which means re-cutting the feature rather
+  than transplanting a face -- that is what `autoblock2` already does, so the work is a better
+  feature list for a builder, not a merge in `feature.py`.
+* And the case that motivates it does not survive contact: on mechparts/16 the build holding the
+  cylinders (`stepped`, 148 of them, backed 14) is the one that must not ship, and the sound
+  carrier (`extrude-z`) has 2 of 8 patches. Grafting 14 backed faces onto it would be the one
+  honest version, and it needs the face-swap machinery above.
+
+**Verdict: blocked on fix spot #1, not on this loop.**
+
+## 7. Verdict
+
+Ship the attribution and the second opinion. Do not ship the repair ladder.
+
+* **IP4 attribution** closes an open non-conformance (guideline 9, "Partial: exists in
+  diagnostics, not in `feature.reconstruct`"), costs nothing, and produced every finding above.
+  It is what turned "part 19 declines" into "part 19 is refused by one clause on a build that is
+  right".
+* **The backing second opinion** is the only mechanism that moved the product characteristic:
+  +17 patches on a named user part, 0 worse, no runtime cost, and it is harsher than the test it
+  supplements on all four confabulation cases. It also closes `AC-B5` (`L04_puck`).
+* **The repair ladder and the refine** measure 0 better / 0 worse on mechparts and cost up to
+  +143 s on a single part. By guideline 5.5.5 that does not ship: risk surface with no return.
+  Keep them on this branch with this measurement recorded.
+
+Not verified: G6 (live). These numbers come from the feature pass driven directly, not through
+the webapp, which adds weld/fix, the force-sew retry and edgebuild -- which is why parts 1, 2, 3,
+5, 22 and 27 score lower here than in `mechparts-baseline.tsv` while 6, 9, 11, 23, 33 and 37
+match it exactly. Part 19 ships faceted through the WHOLE live pipeline today, so its gain is new
+to the product, but it must be confirmed on a service instance before anyone believes it.
