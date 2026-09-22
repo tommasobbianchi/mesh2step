@@ -214,7 +214,18 @@ def reverse(stl):
 
 
 def program(R):
-    lines = ["# reverse.py: silhouette sketch -> extrude -> edge rounds (design history, not final faces)"]
+    lines = ["# reverse.py: silhouette sketch -> extrude -> edge rounds (design history, not final faces)",
+             "def _round(solid, edges, r):",
+             "    # OCCT refuses some fillets (a round that would consume a whole face): try slightly smaller, else",
+             "    # keep the sharp edge so the sketch and extrude still stand",
+             "    for f in (1.0, 0.97, 0.9, 0.75):",
+             "        try:",
+             "            out = solid.newObject(edges(solid)).fillet(r * f)",
+             "            if out.val().isValid():",
+             "                return out",
+             "        except Exception:",
+             "            pass",
+             "    return solid"]
     ax, z0, H = R["axis"], R["z0"], R["height"]
     # workplane normal must point along +axis; XZ's normal is -Y, so extrude negative there
     sign = -1.0 if R["plane"] == "XZ" else 1.0
@@ -229,12 +240,11 @@ def program(R):
     for cap, rr in ((">", R["r_top"]), ("<", R["r_bottom"])):
         r = min(rr["outer"], H / 2 - 0.05)
         if r > 0:                                               # the outer boundary of the cap face
-            lines.append(f"result = result.newObject(result.faces('{cap}{ax}').val().outerWire().Edges())"
-                         f".fillet({r:.4f})")
+            lines.append(f"result = _round(result, lambda s: s.faces('{cap}{ax}').val().outerWire().Edges(), {r:.4f})")
         r = min(rr["holes"], H / 2 - 0.05)
         if r > 0:                                               # the hole mouths on that cap
-            lines.append(f"result = result.newObject([e for w in result.faces('{cap}{ax}').val().innerWires() "
-                         f"for e in w.Edges()]).fillet({r:.4f})")
+            lines.append(f"result = _round(result, lambda s: [e for w in s.faces('{cap}{ax}').val().innerWires() "
+                         f"for e in w.Edges()], {r:.4f})")
     return "\n".join(lines) + "\n", kinds
 
 
