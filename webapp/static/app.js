@@ -961,8 +961,69 @@ document.getElementById('component-keep-btn').addEventListener('click', async ()
   _updateCutButtons();
 });
 
+// ---- processing dialog: a conversion can run for minutes; a one-line status under the button left
+// people unsure whether anything was happening. The dialog says it plainly and can be hidden. ----
+const workDialog = document.getElementById('work-dialog');
+const workFill = document.getElementById('work-fill');
+const workBar = document.getElementById('work-bar');
+const workStep = document.getElementById('work-step');
+const workTime = document.getElementById('work-time');
+let working = false;
+let workStarted = 0, workData = null, workTick = null;
+
+function fmtTime(secs) {
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m ? `${m} min ${String(s).padStart(2, '0')} s` : `${s} s`;
+}
+
+function openWork() {
+  working = true; workStarted = Date.now(); workData = null;
+  workBar.classList.add('indeterminate'); workFill.style.width = '';
+  workStep.textContent = 'Uploading your model…'; workTime.textContent = '';
+  // small parts answer only when done (no progress polls), so the clock and the wording must move on their own
+  clearInterval(workTick);
+  workTick = setInterval(() => {
+    const secs = Math.round((Date.now() - workStarted) / 1000);
+    if (!workData && secs >= 2) workStep.textContent = 'Working on your model on the server…';
+    showTime(secs);
+  }, 1000);
+  if (!workDialog.open) workDialog.showModal();
+}
+
+function showTime(secs) {
+  const ceiling = workData && workData.ceiling_s ? Math.round(workData.ceiling_s / 60) : 0;
+  workTime.textContent = `${fmtTime(secs)} so far` + (ceiling ? ` · it finishes or stops by itself within ${ceiling} min` : '');
+}
+
+function updateWork(data, secs, note) {
+  if (data) workData = data;
+  if (note) { workStep.textContent = note; }
+  else if (data && data.phase_n) {
+    workBar.classList.remove('indeterminate');
+    workFill.style.width = `${Math.round(100 * (data.phase_i - 0.5) / data.phase_n)}%`;
+    workStep.textContent = `Step ${data.phase_i} of ${data.phase_n}: ${PHASE_WORDS[data.phase] || data.phase}`;
+  } else {
+    workBar.classList.add('indeterminate');
+    workStep.textContent = 'Working on your model…';
+  }
+  showTime(Math.round((Date.now() - workStarted) / 1000));
+}
+
+function closeWork() {
+  working = false;
+  clearInterval(workTick);
+  if (workDialog.open) workDialog.close();
+}
+
+document.getElementById('work-hide').addEventListener('click', () => workDialog.close());
+workDialog.addEventListener('close', () => {
+  if (working) statusEl.textContent += '  (click to show progress)';
+});
+workDialog.addEventListener('cancel', () => {});          // Esc just hides it, like the button
+
 // ---- convert ----
 const statusEl = document.getElementById('convert-status');
+statusEl.addEventListener('click', () => { if (working && !workDialog.open) workDialog.showModal(); });
 const statsEl = document.getElementById('stats-panel');
 const resultEl = document.getElementById('result-card');
 const warningsEl = document.getElementById('warnings');
@@ -972,6 +1033,7 @@ convertBtn.addEventListener('click', async () => {
   convertBtn.disabled = true;
   statusEl.className = 'convert-status busy';
   statusEl.textContent = 'Converting on server…';
+  openWork();
   statsEl.classList.add('hidden');
   warningsEl.innerHTML = '';
 
@@ -1013,11 +1075,14 @@ convertBtn.addEventListener('click', async () => {
     // A big model comes back as a ticket instead of a result: a 64k-triangle part
     // needs minutes, and no browser or proxy holds a request open that long.
     if (data.pending) data = await waitForJob(data.job);
+    closeWork();
     renderResult(data);
   } catch (e) {
+    closeWork();
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Failed: ' + e.message;
   } finally {
+    closeWork();
     convertBtn.disabled = false;
   }
 });
@@ -1068,10 +1133,12 @@ async function waitForJob(job) {
     if (!data) {
       if (++misses >= 60) throw new Error('lost contact with the server while converting');
       statusEl.textContent = `Connection interrupted — retrying (${secs}s). The server keeps converting.`;
+      updateWork(null, secs, 'Connection interrupted — reconnecting. The server keeps working on your model.');
       continue;
     }
     misses = 0;
-    statusEl.textContent = describeProgress(data, secs);
+    statusEl.textContent = describeProgress(data, secs) + (working && !workDialog.open ? '  (click to show progress)' : '');
+    updateWork(data, secs);
     if (!res.ok) throw new Error(data.detail || 'server error');
     if (!data.pending) return data;
   }

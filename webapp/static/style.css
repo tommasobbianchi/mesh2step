@@ -385,3 +385,18 @@ select {
 .keypoint-icon { font-size: 18px; line-height: 1.2; }
 .keypoint b { display: block; margin-bottom: 2px; }
 .keypoint span { display: block; color: var(--muted, #8a8a8a); }
+
+/* ---- processing dialog: the conversion can take minutes; say that it is being taken care of ---- */
+.work-modal { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+  width: min(460px, calc(100vw - 32px)); padding: 24px;
+  position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100vh - 32px); }  /* .modal pins it top-left */
+.work-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+.work-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin: 18px 0 12px; }
+.work-fill { height: 100%; width: 0; background: var(--nr-grad); transition: width 0.6s ease; }
+.work-bar.indeterminate .work-fill { width: 35%; animation: work-sweep 1.4s ease-in-out infinite; }
+@keyframes work-sweep { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .work-bar.indeterminate .work-fill { animation: none; width: 100%; opacity: 0.5; } }
+.work-step { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+.work-time { font-size: 12px; color: var(--text-muted); margin: 0 0 14px; }
+.work-modal .secondary-btn { width: 100%; }
+.convert-status.busy { cursor: pointer; }

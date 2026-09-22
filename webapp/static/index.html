@@ -265,6 +265,17 @@
   </main>
 
   <!-- Welcome / how-it-works dialog -->
+  <dialog id="work-dialog" class="modal work-modal" aria-labelledby="work-title" aria-describedby="work-step">
+    <h2 id="work-title" class="modal-title">Rebuilding your part</h2>
+    <p class="modal-tagline">Your model is being turned into real CAD surfaces on our server.</p>
+    <div class="work-bar" id="work-bar"><div class="work-fill" id="work-fill"></div></div>
+    <p id="work-step" class="work-step" aria-live="polite">Uploading your model…</p>
+    <p id="work-time" class="work-time"></p>
+    <p id="work-note" class="modal-hint">Simple parts take seconds; detailed ones can take several minutes. Nothing is lost if
+      you keep this tab open: the server keeps working and this window updates by itself.</p>
+    <button id="work-hide" type="button" class="secondary-btn">Hide — keep working in the background</button>
+  </dialog>
+
   <div id="welcome-overlay" class="modal-overlay hidden">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
       <button id="welcome-close" class="modal-close" title="Close">×</button>
