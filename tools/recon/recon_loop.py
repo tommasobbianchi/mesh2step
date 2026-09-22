@@ -167,7 +167,8 @@ def ask_model(prompt, claude, model, wd, renders=()):
                "--output-format", "text", prompt]
     t = float(os.environ.get("RECON_CALL_TIMEOUT_S", "1800"))
     # same process group as the loop, so a caller killing the loop's group reaches the model call too
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(wd))
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,        # opencode/claude read a non-tty stdin
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(wd))
     try:
         out, _ = p.communicate(timeout=t)
     except subprocess.TimeoutExpired:            # a hung call costs its round, never the run

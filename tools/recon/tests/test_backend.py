@@ -101,3 +101,24 @@ def test_render_paths_given_to_a_vision_model_are_absolute(tmp_path):
                         "opencode:deepseek/deepseek-v4-flash-vision-exp", "1"],
                        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
     assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-1500:]
+
+
+
+def test_the_model_call_never_inherits_stdin(case):
+    """`opencode run` appends piped stdin to the message: an open, silent stdin hung it forever."""
+    tmp, stl, facts, renders, fake = case
+    fake.write_text(FAKE_OC.replace("import json, os, re, sys\n", "import json, os, re, sys\nsys.stdin.read()\n"))
+    env = dict(os.environ, OPENCODE_BIN=str(fake), FAKE_ARGS=str(tmp / "a.jsonl"), RECON_BACKOFF_S="0",
+               RECON_CALL_TIMEOUT_S="20")
+    r, w = os.pipe()                                     # w stays open: stdin never reaches EOF
+    log = tmp / "out.txt"
+    p = subprocess.Popen([sys.executable, str(LOOP), str(stl), str(facts), str(renders), str(tmp / "wd"),
+                          "opencode:opencode/nemotron-3-ultra-free", "1"], env=env, stdin=r,
+                         stdout=open(log, "w"), stderr=subprocess.STDOUT)
+    os.close(r)
+    try:
+        rc = p.wait(timeout=300)
+    finally:
+        os.close(w)
+    out = log.read_text()
+    assert rc == 0 and "timed out" not in out, out[-1500:]
