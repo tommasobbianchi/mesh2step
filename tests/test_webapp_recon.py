@@ -123,3 +123,18 @@ def test_the_rebuild_download_has_its_own_workdir(monkeypatch):
     assert conv.parent not in ai.parents                  # dropping the conversion cannot delete it
     srv._drop_job(tok)
     assert c.get(f"/api/download/{s['download_token']}").status_code == 200
+
+
+def test_the_rebuild_gets_the_served_step(monkeypatch):
+    """The pipeline's STEP is handed to the rebuild (pipeline.step) so junctions are read from it exactly."""
+    monkeypatch.setenv("MESH2STEP_RECON", "1")
+    seen = {}
+
+    def fake(stl_path, workdir):
+        seen["pipeline"] = (workdir / "pipeline.step").exists()
+        return {"status": "failed"}
+
+    monkeypatch.setattr(srv, "_run_recon", fake)
+    c = TestClient(srv.app)
+    _poll(c, _convert(c))
+    assert seen["pipeline"] is True

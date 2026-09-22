@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--models", nargs="+", required=True)
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--timeout", type=float, default=2700)
+    ap.add_argument("--junction-step", default=None,
+                    help="the pipeline's STEP of this mesh: junctions are read from it exactly (docs/JUNCTIONS.md)")
     a = ap.parse_args()
     t0 = time.time()
     stl, wd = os.path.abspath(a.stl), Path(a.workdir).resolve()
@@ -65,6 +67,8 @@ def main():
     tried, results, winner = [], [], None
     for i, model in enumerate(a.models, 1):
         md = wd / f"m{i}_{re.sub(r'[^A-Za-z0-9]', '_', model)}"
+        if a.junction_step:
+            os.environ["RECON_JUNCTION_STEP"] = os.path.abspath(a.junction_step)
         rc = run_loop([sys.executable, str(HERE / "recon_loop.py"), stl, str(wd / "facts.json"), str(vis),
                        str(md), model, str(a.rounds)], a.timeout - (time.time() - t0))
         best, ok = None, False

@@ -310,8 +310,14 @@ def main():
         import mesh_junctions
         # RECON_MESH_JUNCTIONS=0 keeps the mesh's junction list out of the brief and the feedback (tools stay):
         # recon_part sets it until mesh_junctions passes its corpus gate (tests/test_mesh_junctions.py)
-        jrec = mesh_junctions.extract(STL) if os.environ.get("RECON_MESH_JUNCTIONS", "1") != "0" \
-            else {"junctions": [], "blends": []}
+        jstep = os.environ.get("RECON_JUNCTION_STEP")
+        if jstep and os.path.isfile(jstep) and os.path.getsize(jstep) <= 5e6:
+            import junctions                        # exact: the pipeline's own B-rep of this mesh (webapp)
+            jrec = junctions.extract(jstep)         # >5 MB = a faceted fallback: minutes, and no blends in it
+        elif os.environ.get("RECON_MESH_JUNCTIONS", "1") != "0":
+            jrec = mesh_junctions.extract(STL)
+        else:
+            jrec = {"junctions": [], "blends": []}
         JUNC_NODES = [{"sig": r["sig"], "tool": junction_tree.TREE[r["sig"]]["tool"],
                        "_centre": np.asarray(r["centre"], float)}
                       for r in jrec["junctions"] + jrec["blends"] if r["sig"] in junction_tree.TREE]

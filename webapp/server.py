@@ -903,9 +903,11 @@ def _run_recon(stl_path: Path, workdir: Path) -> dict:
     rounds = os.environ.get("MESH2STEP_RECON_ROUNDS", "5")
     timeout = float(os.environ.get("MESH2STEP_RECON_TIMEOUT_S", "2700"))
     script = Path(__file__).resolve().parents[1] / "tools" / "recon" / "recon_part.py"
+    pipeline = workdir / "pipeline.step"            # the served STEP: junctions for the brief, read exactly
     __import__("subprocess").run(
         [sys.executable, str(script), str(stl_path), str(workdir), "--models", *models,
-         "--rounds", rounds, "--timeout", str(timeout)],
+         "--rounds", rounds, "--timeout", str(timeout)]
+        + (["--junction-step", str(pipeline)] if pipeline.exists() else []),
         capture_output=True, text=True, timeout=timeout + 300)
     res = workdir / "recon_result.json"
     return json.loads(res.read_text()) if res.exists() else {"status": "failed"}
@@ -916,6 +918,10 @@ def _recon_worker(token: str, stl_path: Path, workdir: Path, stem: str) -> None:
     res: dict = {}
     try:
         _RECON[token] = {"status": "running", "ts": t0}
+        conv = _JOBS.get(token, {}).get("path")
+        if conv and Path(conv).exists():            # hand the rebuild the pipeline's own B-rep
+            (workdir / "recon").mkdir(parents=True, exist_ok=True)
+            __import__("shutil").copy(conv, workdir / "recon" / "pipeline.step")
         res = _run_recon(stl_path, workdir / "recon")  # looked up at call time: tests replace it
         step = res.get("best_step")
         if step and Path(step).exists():
