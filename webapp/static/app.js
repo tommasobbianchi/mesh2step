@@ -78,7 +78,6 @@ function frameObject(obj) {
 
 // ---- file loading (client-side preview) ----
 let selectedFile = null;
-let displayName = '';             // the name the user dropped: a reduced mesh keeps it for the STEP it produces
 let trisBeforeCut = 0;
 let maxTriangles = null;   // from the server, so the number lives in one place
 let maxTrianglesFeature = null;   // the ceiling with the feature pass on (the recommended mode)
@@ -110,8 +109,6 @@ function geometryFromParsed(ext, parsed) {
 
 async function loadFile(file) {
   selectedFile = file;
-  displayName = file.name;
-  bakeHistory.length = 0; bakeInfo = null;       // a new model starts unreduced
   const ext = file.name.split('.').pop().toLowerCase();
   const buf = await file.arrayBuffer();
   if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
@@ -432,110 +429,77 @@ function featureOn() {
 function currentLimit() {
   return featureOn() ? (maxTrianglesFeature || maxTriangles) : maxTriangles;
 }
-// Reduction is PREVIEWED, like trims (Tommaso 2026-09-22): /api/edit applies the trims and the reduction, the
-// viewport shows the result, and that mesh BECOMES the file that is converted -- nothing hidden happens later.
-// bakeHistory lets "Undo reduction" restore the previous file and its trims.
-const bakeHistory = [];
-let bakeInfo = null;              // {before, after, dv} of the last baked reduction, for the callout
-
-async function reduceAndPreview(mode, keepPct) {
-  if (!selectedFile) return;
-  const btn = document.getElementById('reduce-apply');
-  const prevLabel = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Reducing…';
-  document.getElementById('decimate-preview').disabled = true;
-  const fd = new FormData();
-  fd.append('file', selectedFile);
-  fd.append('cuts', JSON.stringify(cutOps));
-  fd.append('decimate', mode);
-  if (mode === 'ratio') fd.append('decimate_keep', String(keepPct / 100));
-  try {
-    const res = await fetch('api/edit', { method: 'POST', body: fd });
-    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || 'reduction failed'); }
-    const st = JSON.parse(res.headers.get('X-Mesh-Stats') || '{}');
-    const buf = await res.arrayBuffer();
-    bakeHistory.push({ file: selectedFile, cutOps: cutOps.slice(), info: bakeInfo, name: displayName });
-    const stem = displayName.replace(/\.[^.]+$/, '');
-    selectedFile = new File([buf], `${stem}.stl`, { type: 'model/stl' });   // converted as is, keeps its name
-    cutOps = []; redoStack = [];
-    bakeInfo = { before: st.n_tris_before, after: st.n_tris_after, dv: st.decimate_dv_pct };
-    const geo = new STLLoader().parse(buf);
-    if (currentMesh) { scene.remove(currentMesh); currentMesh = null; } clearResultPreview();
-    const obj = new THREE.Mesh(geo, material); scene.add(obj); currentMesh = obj; frameObject(obj);
-    lastTriCount = st.n_tris_after;
-    meshInfo.textContent = `${displayName} · ${st.n_tris_after.toLocaleString()} triangles (reduced)`;
-    _updateCutButtons();
-  } catch (e) {
-    addWarning('Could not reduce the mesh: ' + e.message);
-    btn.textContent = prevLabel;
-  } finally {
-    updateGate();
-  }
+function reductionKeep() {       // the fraction the server will keep, or null when unknown (planar) / off
+  const mode = document.getElementById('decimate').value;
+  if (mode === 'ratio') return Number(document.getElementById('decimate-keep-num').value) / 100;
+  return mode === 'off' ? 1 : null;
 }
-
-async function undoReduction() {
-  const prev = bakeHistory.pop();
-  if (!prev) return;
-  selectedFile = prev.file; cutOps = prev.cutOps; redoStack = []; bakeInfo = prev.info;
-  await _previewCurrentCuts();
-  if (!cutOps.length) {            // _reloadOriginalPreview counts triangles into meshInfo only: recount
-    let n = 0; currentMesh && currentMesh.traverse((c) => { if (c.isMesh && c.geometry) n += (c.geometry.index ? c.geometry.index.count / 3 : c.geometry.attributes.position.count / 3); });
-    lastTriCount = n;
+function setReduction(keepPct) {  // keepPct null = off
+  const sel = document.getElementById('decimate');
+  sel.value = keepPct == null ? 'off' : 'ratio';
+  document.getElementById('decimate-controls').classList.toggle('hidden', keepPct == null);
+  if (keepPct != null) {
+    document.getElementById('decimate-keep').value = keepPct;
+    document.getElementById('decimate-keep-num').value = keepPct;
   }
-  _updateCutButtons();
   updateGate();
 }
-
 function updateGate() {
   const n = lastTriCount;
   const box = document.getElementById('model-size');
   const callout = document.getElementById('reduce-callout');
   const why = document.getElementById('reduce-why');
   const btn = document.getElementById('reduce-apply');
+  const state = document.getElementById('reduce-state');
   const title = callout.querySelector('b');
-  document.getElementById('decimate-preview').disabled = !selectedFile || working;
   if (!n || !selectedFile) { box.classList.add('hidden'); callout.classList.add('hidden'); return; }
   box.textContent = `${n.toLocaleString()} triangles`;
   box.classList.remove('hidden');
   const limit = currentLimit();
-  const over = Boolean(limit && n > limit);
-  convertBtn.disabled = working || over;
+  const keep = reductionKeep();
+  const after = keep == null ? null : Math.round(n * keep);
+  const over = limit && n > limit;
+  const stillOver = limit && after != null && after > limit;
+  convertBtn.disabled = working || Boolean(stillOver);
+  callout.classList.toggle('hidden', !(over || n > BIG_TRIS || keep !== 1));
+  // the one-click reduction that fits (5% margin), or half for speed when it already fits
   const fitPct = limit ? Math.max(1, Math.min(50, Math.floor(95 * limit / n))) : 50;
-  callout.classList.toggle('hidden', !(over || n > BIG_TRIS || bakeInfo));
-  btn.disabled = false;
-  if (over) {                                               // too big as is: offer the fix, right here
-    title.textContent = bakeInfo ? 'Still too detailed.' : 'Too detailed to convert as is.';
+  if (keep !== 1) {                                         // a reduction is chosen: say what it will do
+    title.textContent = stillOver ? 'Still too detailed.' : 'The mesh will be reduced first.';
+    why.textContent = after == null
+      ? 'Flat areas will be simplified before converting (the exact count is known after).'
+      : `${n.toLocaleString()} → about ${after.toLocaleString()} triangles before converting`
+        + (stillOver ? ` — the limit for this mode is ${limit.toLocaleString()}.` : '.');
+    btn.textContent = stillOver ? `Reduce to ${Math.round(n * fitPct / 100).toLocaleString()} triangles` : 'Undo reduction';
+    btn.dataset.action = stillOver ? 'fit' : 'undo';
+    state.textContent = '';
+  } else if (over) {                                        // too big as is: offer the fix, right here
+    title.textContent = 'Too detailed to convert as is.';
     why.textContent = `${n.toLocaleString()} triangles; this mode takes up to ${limit.toLocaleString()}. `
-      + 'Reducing it here keeps the overall shape; very small details may soften. You will see the result first.';
+      + 'Reducing the mesh here keeps the overall shape; very small details may soften.';
     btn.textContent = `Reduce to ${Math.round(n * fitPct / 100).toLocaleString()} triangles`;
     btn.dataset.action = 'fit';
-  } else if (bakeInfo) {                                    // reduced and previewed: say what changed
-    title.textContent = 'Reduced — this is what will be converted.';
-    why.textContent = `${bakeInfo.before.toLocaleString()} → ${bakeInfo.after.toLocaleString()} triangles`
-      + (bakeInfo.dv != null ? `, volume ${bakeInfo.dv >= 0 ? '+' : ''}${bakeInfo.dv}%.` : '.')
-      + ' Check the shape in the viewer before converting.';
-    btn.textContent = 'Undo reduction';
-    btn.dataset.action = 'undo';
+    state.textContent = '';
   } else {                                                  // fits, just big: optional speed-up
     title.textContent = 'This model is big.';
     why.textContent = 'Detailed models can take several minutes — especially with small holes and '
       + 'rounded edges. Using half the triangles usually gives the same CAD result much sooner.';
     btn.textContent = 'Use half the triangles';
     btn.dataset.action = 'half';
+    state.textContent = '';
   }
+  btn.disabled = false;
   btn.dataset.fit = String(fitPct);
 }
 function updateSizeGuidance() { updateGate(); }
 document.getElementById('reduce-apply').addEventListener('click', (e) => {
   const a = e.currentTarget.dataset.action;
-  if (a === 'undo') undoReduction();
-  else reduceAndPreview('ratio', a === 'fit' ? Number(e.currentTarget.dataset.fit) : 50);
+  if (a === 'undo') setReduction(null);
+  else setReduction(a === 'fit' ? Number(e.currentTarget.dataset.fit) : 50);
 });
-document.getElementById('decimate-preview').addEventListener('click', () => {
-  const mode = document.getElementById('decimate').value;
-  if (mode === 'off') { addWarning('Choose how to reduce first (Flat areas only, or Aggressive with a percentage).'); return; }
-  reduceAndPreview(mode, Number(document.getElementById('decimate-keep-num').value));
-});
+document.getElementById('decimate').addEventListener('change', updateGate);
+document.getElementById('decimate-keep').addEventListener('input', updateGate);
+document.getElementById('decimate-keep-num').addEventListener('input', updateGate);
 document.getElementById('feature-toggle').addEventListener('change', updateGate);
 engineSelect.addEventListener('change', updateGate);
 presetSelect.addEventListener('change', updateGate);
@@ -1142,7 +1106,13 @@ convertBtn.addEventListener('click', async () => {
   fd.append('schema', document.getElementById('schema').value);
   // Mesh preprocessing: applies to BOTH engines, unlike cuts -- the dense
   // curved parts that make TrueForm run for hours are exactly what it is for.
-  // no deferred reduction: a reduction is applied and previewed first, and selectedFile IS the reduced mesh
+  const decimateVal = document.getElementById('decimate').value;
+  if (decimateVal !== 'off') {
+    fd.append('decimate', decimateVal);
+    if (decimateVal === 'ratio') {
+      fd.append('decimate_keep', String(document.getElementById('decimate-keep-num').value / 100));
+    }
+  }
   if (document.getElementById('merge-toggle').checked) {
     fd.append('merge_coplanar_angle', document.getElementById('merge-angle-num').value);
   }
