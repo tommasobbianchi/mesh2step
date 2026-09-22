@@ -72,7 +72,17 @@ def try_repair(shape):
         return shape, False
 
 
-def represent_detail(stl, step, samples=12):
+def _nearest_junction(pts, nodes, limit=2.0):
+    """The mesh junction/blend whose centre comes within `limit` mm of the patch, nearest first."""
+    best = None
+    for node in nodes:
+        d = float(np.min(np.linalg.norm(pts - node["_centre"], axis=1)))
+        if d <= limit and (best is None or d < best[0]):
+            best = (d, node)
+    return best[1] if best else None
+
+
+def represent_detail(stl, step, samples=12, junctions=()):
     """patch_representation.represent(), same counts, plus location of every patch NOT represented."""
     tri = _pr._mesh(Path(stl))
     lo, hi = tri.reshape(-1, 3).min(0), tri.reshape(-1, 3).max(0)
@@ -99,8 +109,14 @@ def represent_detail(stl, step, samples=12):
         what = {"plane": "your solid has a PLANE there (modelled flat or as a sharp edge?)",
                 "other": "your solid has a NON-ANALYTIC (spline) face there - use an exact cylinder/cone/torus",
                 "far": "your solid has NO surface near it"}[kind]
-        out["misses"].append(f"cylindrical mesh patch r={radius:.3f} mm centred near ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f}) "
-                             f"spanning {ext[0]:.1f} x {ext[1]:.1f} x {ext[2]:.1f} mm: {what}")
+        line = (f"cylindrical mesh patch r={radius:.3f} mm centred near ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f}) "
+                f"spanning {ext[0]:.1f} x {ext[1]:.1f} x {ext[2]:.1f} mm: {what}")
+        if len(junctions):                          # the junction this missed patch is: name its tool
+            vpts = tri[list(idx)].reshape(-1, 3) if idx is not None else tri.reshape(-1, 3)
+            node = _nearest_junction(vpts, junctions)
+            if node is not None:
+                line += f" -> junction {node['sig']}, use {node['tool']}"
+        out["misses"].append(line)
     return out
 
 
@@ -126,6 +142,23 @@ def select_best(history, diag):
     return min(valid, key=err)
 
 
+def _junction_brief(jrec, tree):
+    """The brief's JUNCTIONS section: the mesh's signatures -> tools, then the rt signatures+docstrings."""
+    import inspect
+    if SHIM not in sys.path:
+        sys.path.insert(0, SHIM)
+    import recon_tools as rt
+    lines = ["JUNCTIONS (measured from the mesh; each signature maps to the exact tool that reproduces it):"]
+    lines += ["  " + l for l in tree.advise(jrec)[:40]]
+    lines += ["", "TOOLS (recon_tools is already imported in your program as rt; call them directly):"]
+    for name in ("boss", "hole", "counterbore", "ring_fillet", "edge_round"):
+        fn = getattr(rt, name)
+        lines.append(f"  rt.{name}{inspect.signature(fn)}")
+        for doc in (fn.__doc__ or "").strip().splitlines():
+            lines.append("      " + doc.strip())
+    return "\n".join(lines)
+
+
 def _is_limit(text):
     t = (text or "").lower()
     return any(s in t for s in ("usage limit", "rate limit", "rate_limit", "overloaded", "429", "quota",
@@ -133,7 +166,7 @@ def _is_limit(text):
 
 
 def run_script(py, step):
-    code = f"import sys; sys.path.insert(0, {SHIM!r}); import cqshim, cadquery as cq\n" + open(py).read() + \
+    code = f"import sys; sys.path.insert(0, {SHIM!r}); import cqshim, cadquery as cq, recon_tools as rt\n" + open(py).read() + \
            f"\ncq.exporters.export(result, {str(step)!r})\n"
     p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
     return p.returncode == 0 and Path(step).exists(), (p.stderr or "")[-1500:]
@@ -244,6 +277,18 @@ def main():
     diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
     renders = sorted(str(p) for p in Path(RDIR).glob("*.png"))
 
+    JUNC_NODES, JUNC_SECTION = [], ""
+    try:                                            # the mesh's junctions: once, into the brief
+        import junction_tree
+        import mesh_junctions
+        jrec = mesh_junctions.extract(STL)
+        JUNC_NODES = [{"sig": r["sig"], "tool": junction_tree.TREE[r["sig"]]["tool"],
+                       "_centre": np.asarray(r["centre"], float)}
+                      for r in jrec["junctions"] + jrec["blends"] if r["sig"] in junction_tree.TREE]
+        JUNC_SECTION = _junction_brief(jrec, junction_tree)
+    except Exception as e:                          # noqa: BLE001 - junctions are an aid, never fatal
+        print(f"junction extraction skipped: {type(e).__name__}: {e}", flush=True)
+
     def gate(step):
         from OCP.STEPControl import STEPControl_Reader, STEPControl_Writer, STEPControl_AsIs
         from OCP.BRepCheck import BRepCheck_Analyzer
@@ -285,7 +330,7 @@ def main():
                 return out
             rep["where_wrong"] = where(pm, d_ms, "MESH SURFACE NOT COVERED by your solid") + \
                                  where(ps, d_sm, "YOUR SOLID HAS SURFACE WHERE THE MESH HAS NONE")
-            f = represent_detail(STL, p)
+            f = represent_detail(STL, p, junctions=JUNC_NODES)
             rep["features"] = {k: f[k] for k in ("patches", "curved", "plane", "other", "far")}
             rep["feature_misses"] = f["misses"][:15]
             return rep, sh
@@ -332,6 +377,8 @@ def main():
     revolve turned features, pattern repeated features. Prefer exact analytic geometry: lines, arcs,
     tapers -- never splines.
     """).strip()
+    if JUNC_SECTION:
+        BRIEF = BRIEF + "\n\n" + JUNC_SECTION
 
     history = []
     if os.environ.get("RESUME"):          # continue a previous run: its rounds become our history
