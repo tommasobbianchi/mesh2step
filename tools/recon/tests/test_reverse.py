@@ -37,3 +37,20 @@ def test_reverse_rebuilds_a_rounded_plate(tmp_path):
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     kinds = Counter(str(BRepAdaptor_Surface(f.wrapped).GetType()).split("_")[-1] for f in s.Faces())
     assert kinds["Torus"] >= 2 and set(kinds) <= {"Plane", "Cylinder", "Torus"}
+
+
+def test_reverse_stacks_levels_of_a_stepped_part(tmp_path):
+    """A stack of extrusions: one sketch per level between its flat faces (flange, boss, bore through both)."""
+    import reverse
+    w = (cq.Workplane("XY").rect(60, 40).extrude(8)
+         .faces(">Z").workplane().circle(12).extrude(15)
+         .faces(">Z").workplane().hole(8))
+    truth = w.val()
+    stl = js.stl(w, tmp_path / "stepped.stl", tol=0.01, ang=0.1)
+    R = reverse.reverse(stl)
+    assert R["axis"] == "Z" and len(R["levels"]) == 2
+    src, _ = reverse.program(R)
+    ns = {"cq": cq}
+    exec(src, ns)
+    s = ns["result"].val()
+    assert s.isValid() and abs(s.Volume() - truth.Volume()) / truth.Volume() < 0.01

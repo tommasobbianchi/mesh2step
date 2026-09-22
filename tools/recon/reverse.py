@@ -30,11 +30,27 @@ from slice import dedupe, loops  # noqa: E402
 
 
 def pick_axis(tri, lo, hi):
+    """The extrusion axis: the one along which the most surface area is a wall (normal perpendicular to it) or a
+    cap (normal parallel), among axes that HAVE caps (>= 5% of the area: the rounds along a plate's straight side are
+    cylinders about X, but only Z has the flat top/bottom). Ties (within 1%) go to the axis whose sections change least (facts.py's measure) --
+    alone, that measure picked Y for a flange with a round boss on Z."""
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = np.linalg.norm(n, axis=1); ok = area > 1e-12
+    n = n[ok] / area[ok, None]; area = area[ok]
+
+    def aligned(ax):
+        c = np.abs(n[:, ax])
+        return float(area[(c < 0.02) | (c > 0.999)].sum() / area.sum())
+
     def var(ax):
         ps = [sum(float(np.linalg.norm(b - a)) for a, b in section2d(tri, ax, lo[ax] + f * (hi[ax] - lo[ax])))
               for f in (0.3, 0.5, 0.7)]
         return (max(ps) - min(ps)) / max(np.mean(ps), 1e-9)
-    return int(np.argmin([var(a) for a in range(3)]))
+    caps = [float(area[np.abs(n[:, a]) > 0.999].sum() / area.sum()) for a in range(3)]
+    cand = [a for a in range(3) if caps[a] >= 0.05] or [0, 1, 2]   # an extrusion axis has caps (flat ends)
+    sc = {a: aligned(a) for a in cand}
+    top = [a for a in cand if sc[a] >= max(sc.values()) - 0.01]
+    return top[0] if len(top) == 1 else min(top, key=var)
 
 
 def plane_axes(ax):
@@ -189,6 +205,56 @@ def loop_program(L):
     return "".join(out) + ".close()", [p[0] for p in prims]
 
 
+def level_heights(mesh, ax, lo, hi, min_area):
+    """Heights of the flat faces normal to the axis (floors, shoulders, tops): the level boundaries of a stack of
+    extrusions. Clustered within 0.1% of the height, weighted by area; always includes the bottom and the top."""
+    n = mesh.face_normals[:, ax]
+    tri = np.asarray(mesh.triangles, float)
+    flat = np.abs(n) > 0.999
+    H = float(hi[ax] - lo[ax])
+    z = tri[flat][:, :, ax].mean(axis=1)
+    a = mesh.area_faces[flat]
+    hs = {}
+    for zi, ai in zip(z, a):
+        key = round(float(zi) / (1e-3 * H))
+        hs[key] = hs.get(key, 0.0) + float(ai)
+    out = sorted({float(lo[ax]), float(hi[ax])} |
+                 {k * 1e-3 * H for k, area in hs.items() if area >= min_area})
+    merged = [out[0]]
+    for v in out[1:]:
+        if v - merged[-1] > 2e-3 * H:
+            merged.append(v)
+    merged[-1] = float(hi[ax])
+    return merged
+
+
+def level_section(mesh, ax, h):
+    """Outer loop and hole loops of the section at height h, as 2D point arrays in the plane axes."""
+    n = np.zeros(3); n[ax] = 1.0; o = np.zeros(3); o[ax] = h
+    sec = mesh.section(plane_origin=o, plane_normal=n)
+    if sec is None:
+        return []
+    u, v = plane_axes(ax)
+    polys = []
+    for ent in sec.discrete:                                   # 3D polylines of the section
+        P = np.asarray(ent)[:, [u, v]]
+        if len(P) >= 4:
+            pg = Polygon(P)
+            if pg.is_valid and pg.area > 1e-6:
+                polys.append(pg)
+    # nest: a loop inside another is a hole of it
+    polys.sort(key=lambda g: -g.area)
+    shapes = []
+    for pg in polys:
+        host = next((sh for sh in shapes if sh["outer"].contains(pg.representative_point())), None)
+        if host is not None and not any(hp.contains(pg.representative_point()) for hp in host["holes"]):
+            host["holes"].append(pg)
+        else:
+            shapes.append({"outer": pg, "holes": []})
+    return [{"outer": np.asarray(sh["outer"].exterior.coords)[:-1],
+             "holes": [np.asarray(hp.exterior.coords)[:-1] for hp in sh["holes"]]} for sh in shapes]
+
+
 def reverse(stl):
     m = trimesh.load(stl, force="mesh")
     tri = np.asarray(m.triangles, float)
@@ -209,8 +275,15 @@ def reverse(stl):
         r_bot = {"outer": fit_round(m, ax, lo, hi, A_sil, P_sil, -1), "holes": 0.0}
     H = float(hi[ax] - lo[ax])
     plane = {0: "YZ", 1: "XZ", 2: "XY"}[ax]
-    return {"axis": "XYZ"[ax], "plane": plane, "z0": float(lo[ax]), "height": H, "outer": outer, "holes": holes,
-            "r_top": r_top, "r_bottom": r_bot, "silhouette_area": A_sil}
+    R = {"axis": "XYZ"[ax], "plane": plane, "z0": float(lo[ax]), "height": H, "outer": outer, "holes": holes,
+         "r_top": r_top, "r_bottom": r_bot, "silhouette_area": A_sil, "levels": []}
+    zs = level_heights(m, ax, lo, hi, 1e-3 * A_sil)
+    if len(zs) > 2:                                           # a stack of extrusions: one sketch per level
+        for z0, z1 in zip(zs[:-1], zs[1:]):
+            shapes = level_section(m, ax, (z0 + z1) / 2)
+            if shapes:
+                R["levels"].append({"z0": z0, "z1": z1, "shapes": shapes})
+    return R
 
 
 def program(R):
@@ -230,6 +303,8 @@ def program(R):
     # workplane normal must point along +axis; XZ's normal is -Y, so extrude negative there
     sign = -1.0 if R["plane"] == "XZ" else 1.0
     origin = {"X": f"({z0:.4f}, 0, 0)", "Y": f"(0, {z0:.4f}, 0)", "Z": f"(0, 0, {z0:.4f})"}[ax]
+    if R.get("levels"):                                       # stacked levels: sketch -> extrude per level, union
+        return program_levels(R, sign), ["level"] * len(R["levels"])
     body, kinds = loop_program(R["outer"])
     lines.append(f"sketch = cq.Workplane('{R['plane']}', origin={origin}){body}")
     lines.append(f"result = sketch.extrude({sign * H:.4f})")
@@ -248,12 +323,31 @@ def program(R):
     return "\n".join(lines) + "\n", kinds
 
 
+def program_levels(R, sign):
+    ax = R["axis"]
+    org = lambda z: {"X": f"({z:.4f}, 0, 0)", "Y": f"(0, {z:.4f}, 0)", "Z": f"(0, 0, {z:.4f})"}[ax]
+    lines = ["# reverse.py: stacked levels, each a section sketch extruded between its two flat faces",
+             "result = None"]
+    for k, lv in enumerate(R["levels"]):
+        for j, sh in enumerate(lv["shapes"]):
+            body, _ = loop_program(sh["outer"])
+            h = lv["z1"] - lv["z0"]
+            lines.append(f"lv = cq.Workplane('{R['plane']}', origin={org(lv['z0'])}){body}.extrude({sign * h:.4f})")
+            for hole in sh["holes"]:
+                hb, _ = loop_program(hole)
+                lines.append(f"lv = lv.cut(cq.Workplane('{R['plane']}', origin={org(lv['z0'])}){hb}"
+                             f".extrude({sign * h:.4f}))")
+            lines.append("result = lv if result is None else result.union(lv)")
+    return "\n".join(lines) + "\n"
+
+
 if __name__ == "__main__":
     R = reverse(sys.argv[1])
     src, kinds = program(R)
     Path(sys.argv[2]).write_text(src)
-    info = {k: (v if not isinstance(v, np.ndarray) else len(v)) for k, v in R.items() if k != "holes"}
+    info = {k: (v if not isinstance(v, np.ndarray) else len(v)) for k, v in R.items() if k not in ("holes", "levels")}
     info["holes"] = len(R["holes"]); info["outer_primitives"] = kinds
+    info["levels"] = [{"z0": lv["z0"], "z1": lv["z1"], "shapes": len(lv["shapes"])} for lv in R["levels"]]
     print(json.dumps(info, default=float))
     if "--json" in sys.argv:
         Path(sys.argv[sys.argv.index("--json") + 1]).write_text(json.dumps(info, default=float, indent=1))
