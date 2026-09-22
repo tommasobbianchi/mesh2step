@@ -944,3 +944,15 @@ def test_the_monitor_needs_a_token_and_reports_the_live_numbers(client, cube_stl
     assert n["requests"]["last_5min"]["/api/convert"]["n"] >= 1       # the middleware counted it
     assert n["conversions"]["last_hour"] >= 1 and n["conversions"]["recent"][0]["ok"] is True
     assert n["recon"]["daily_max"] and "memory_mb" in n and n["version"]
+
+
+def test_the_monitor_reports_the_hour_and_the_queue_history(client, monkeypatch):
+    """'How many requests per hour, and how long was the queue' -- a snapshot cannot answer either."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "ADMIN_TOKEN", "sekret")
+    srv._QSAMP.append((__import__("time").time(), 7, 2))          # a sampler reading from a minute ago
+    client.get("/api/limits")
+    n = client.get("/api/admin/stats", headers={"x-admin-token": "sekret"}).json()["nodes"][0]
+    assert n["requests"]["last_hour"] >= 1 and "uploads_last_hour" in n["requests"]
+    assert len(n["queue"]["per_min_last_hour"]) == 60 and n["queue"]["peak_last_hour"] >= 7

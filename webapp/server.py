@@ -328,11 +328,26 @@ PREREAD_REFUSE_MIN_BYTES = 1024 * 1024
 # nativedev merges its peers (MESH2STEP_PEERS) so one page shows both.
 _STARTED_AT = time.time()
 _REQ: deque = deque(maxlen=50000)     # (ts, group, status, ms)
+_QSAMP: deque = deque(maxlen=2200)    # (ts, queue length, slots busy) every 10 s: the queue over the last hours
 _DONE: deque = deque(maxlen=2000)     # finished conversions
 ADMIN_TOKEN = os.environ.get("MESH2STEP_ADMIN_TOKEN", "")
 PEERS = [p for p in os.environ.get("MESH2STEP_PEERS", "").split() if p]
 _GROUPS = ("/api/convert", "/api/job", "/api/download", "/api/recon", "/api/edit", "/api/preview",
            "/api/segment", "/api/limits", "/api/admin")
+
+
+def _sample_queue() -> None:
+    """The queue is a rate, not a snapshot: sampling it is the only way to answer 'how bad did it get this hour'."""
+    while True:
+        try:
+            with _admission_lock:
+                _QSAMP.append((time.time(), len(_QUEUE), max(0, _admitted - len(_QUEUE))))
+        except Exception:  # noqa: BLE001 - monitoring must never take the service down
+            pass
+        time.sleep(10)
+
+
+threading.Thread(target=_sample_queue, name="queue-sampler", daemon=True).start()
 
 
 def _group(path: str) -> str:
@@ -1337,6 +1352,15 @@ def _node_stats() -> dict:
             codes[str(code)] = codes.get(str(code), 0) + 1
     for e in groups.values():
         e["ms_p95"] = _pct(e.pop("ms_p95"), 0.95)
+    req_hour = sum(1 for ts, *_ in _REQ if now - ts < 3600)
+    uploads_hour = sum(1 for ts, g, code, _ in _REQ if now - ts < 3600 and g == "/api/convert" and code < 400)
+    refused_hour = sum(1 for ts, g, code, _ in _REQ if now - ts < 3600 and g == "/api/convert" and code == 429)
+    q_min = [0] * 60                                    # worst queue length seen in each of the last 60 minutes
+    for ts, qlen, _busy in _QSAMP:
+        age = now - ts
+        if age < 3600:
+            i = min(59, int(age // 60))
+            q_min[i] = max(q_min[i], qlen)
     done = [d for d in _DONE if now - d["ts"] < 3600]
     day = time.strftime("%Y-%m-%d", time.gmtime())
     try:
@@ -1348,7 +1372,8 @@ def _node_stats() -> dict:
         "node": os.uname().nodename, "version": APP_VERSION, "uptime_s": round(now - _STARTED_AT),
         "slots": {"total": MAX_CONCURRENT_CONVERSIONS, "busy": running},
         "queue": {"length": len(queue), "max": QUEUE_MAX, "waiting": queue[:20],
-                  "longest_wait_s": max([q["waiting_s"] for q in queue], default=0)},
+                  "longest_wait_s": max([q["waiting_s"] for q in queue], default=0),
+                  "per_min_last_hour": list(reversed(q_min)), "peak_last_hour": max(q_min, default=0)},
         "admitted": admitted, "pending_jobs": len(_PENDING), "convert_estimate_s": round(_convert_estimate_s),
         "recon": {"enabled": _recon_enabled(),
                   "queued": sum(1 for r in _RECON.values() if r.get("status") == "queued"),
@@ -1357,6 +1382,7 @@ def _node_stats() -> dict:
                   "started_today": _RECON_DAY.get(day, 0),
                   "daily_max": int(os.environ.get("MESH2STEP_RECON_DAILY_MAX", "100"))},
         "requests": {"per_min_last_hour": list(reversed(per_min)), "last_5min": groups, "codes_5min": codes,
+                     "last_hour": req_hour, "uploads_last_hour": uploads_hour, "refused_last_hour": refused_hour,
                      "total_since_start": len(_REQ)},
         "conversions": {
             "last_hour": len(done), "ok": sum(1 for d in done if d["ok"]),

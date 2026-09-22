@@ -148,6 +148,18 @@ else
   echo "no mesh2step.admin_token in ~/.secrets/credentials.yaml -- monitoring will be off on this node"
 fi
 
+# The AI rebuild runs here too (the Claude CLI is installed and logged in on this node). The daily budget is
+# SPLIT with nativedev -- both nodes bill the same account -- so each carries half of the ceiling.
+say "5c. AI rebuild (Opus), daily budget split with nativedev"
+cat <<'RECON' | ssh -o BatchMode=yes "$HOST" "cat > ~/.config/systemd/user/mesh2step.service.d/90-recon.conf"
+[Service]
+Environment=MESH2STEP_RECON=1
+Environment=MESH2STEP_RECON_MODELS=opus
+Environment=MESH2STEP_RECON_ROUNDS=5
+Environment=MESH2STEP_RECON_TIMEOUT_S=5400
+Environment=MESH2STEP_RECON_DAILY_MAX=50
+RECON
+
 say "6. enable linger and start"
 # Poll for readiness instead of sleeping a fixed interval. uvicorn has to import
 # a ~160 MB OCP binding before it binds the port, so a cold start is slow and

@@ -78,6 +78,10 @@ function nodeCard(n) {
       ${kpi('in the queue', `${q.length}/${q.max}`, q.length ? 'busy' : '')}
       ${kpi('longest wait', fmtS(q.longest_wait_s))}
       ${kpi('requests / min', perMin[perMin.length - 1] || 0)}
+      ${kpi('requests / h', (n.requests.last_hour || 0).toLocaleString())}
+      ${kpi('uploads / h', `${n.requests.uploads_last_hour || 0}${n.requests.refused_last_hour ? ` (${n.requests.refused_last_hour} refused)` : ''}`,
+            n.requests.refused_last_hour ? 'bad' : '')}
+      ${kpi('queue peak / h', q.peak_last_hour || 0, q.peak_last_hour ? 'busy' : '')}
       ${kpi('conversions / h', `${c.ok}/${c.last_hour}`, c.last_hour && c.ok < c.last_hour ? 'bad' : 'ok')}
       ${kpi('typical · slow', `${c.p50_s == null ? '–' : c.p50_s + 's'} · ${c.p95_s == null ? '–' : c.p95_s + 's'}`)}
       ${kpi('AI rebuilds', r.enabled ? `${r.running}▶ ${r.queued}⏳` : 'off', r.enabled ? '' : 'muted')}
@@ -93,7 +97,10 @@ function nodeCard(n) {
       <div class="muted">last 5 minutes by status — ${codes || 'none'}</div>
       <table><tr><th>endpoint</th><th>requests</th><th>slowest 5%</th></tr>${groups}</table>
     </section>
-    <section><h2>Queue</h2><table>${waits}</table></section>
+    <section><h2>Queue — worst length in each of the last 60 minutes</h2>
+      <div class="spark">${(q.per_min_last_hour || []).map((v) => `<i style="height:${Math.round(100 * v / Math.max(1, ...(q.per_min_last_hour || [1])))}%" title="${v} waiting"></i>`).join('')}</div>
+      <div class="muted">peak ${q.peak_last_hour || 0} waiting in the last hour · ${q.length} now</div>
+      <table>${waits}</table></section>
     <section><h2>Last conversions</h2>
       <table><tr><th>time</th><th></th><th>triangles</th><th>path</th><th>took</th><th>faces</th><th></th></tr>${rows}</table>
     </section>
