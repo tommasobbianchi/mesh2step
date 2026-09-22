@@ -7,6 +7,7 @@ Run:  uvicorn webapp.server:app --reload   (from repo root, after `pip install -
       or:  python webapp/server.py
 """
 import base64
+import hmac
 import json
 import tempfile
 import os
@@ -16,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -230,6 +232,7 @@ def _try_admit() -> tuple[bool, float]:
 
 
 def _enqueue(prog: dict) -> None:
+    prog["queued_at"] = time.time()
     with _admission_lock:
         _QUEUE.append(prog)
 
@@ -317,6 +320,34 @@ _UPLOAD_PATHS = frozenset({"/api/convert", "/api/preview", "/api/edit", "/api/se
 # exchange. It is the same 1 MB chunk every upload loop in this file already
 # reads. Above it, refusing before the body is the whole point.
 PREREAD_REFUSE_MIN_BYTES = 1024 * 1024
+
+
+# ---- monitoring (GET /api/admin/stats, page /monitor/) -------------------------------------------------------
+# The live numbers a surge needs: slots, the queue with each job's wait, the AI rebuild backlog and its daily
+# budget, requests per minute by endpoint and status, and what conversions actually did. All in memory, per node;
+# nativedev merges its peers (MESH2STEP_PEERS) so one page shows both.
+_STARTED_AT = time.time()
+_REQ: deque = deque(maxlen=50000)     # (ts, group, status, ms)
+_DONE: deque = deque(maxlen=2000)     # finished conversions
+ADMIN_TOKEN = os.environ.get("MESH2STEP_ADMIN_TOKEN", "")
+PEERS = [p for p in os.environ.get("MESH2STEP_PEERS", "").split() if p]
+_GROUPS = ("/api/convert", "/api/job", "/api/download", "/api/recon", "/api/edit", "/api/preview",
+           "/api/segment", "/api/limits", "/api/admin")
+
+
+def _group(path: str) -> str:
+    for g in _GROUPS:
+        if path.startswith(g):
+            return g
+    return "page/static"
+
+
+@app.middleware("http")
+async def _count_requests(request: Request, call_next):
+    t0 = time.time()
+    resp = await call_next(request)
+    _REQ.append((t0, _group(request.url.path), resp.status_code, round((time.time() - t0) * 1000)))
+    return resp
 
 
 @app.middleware("http")
@@ -1082,6 +1113,10 @@ def _convert_job(*, t_admit: float, **kw) -> dict:
         # backend actually taken, the engine asked for, and each candidate's own wall time -- and
         # the corpus becomes something an ETA can be fitted to.
         st = (res or {}).get("stats") or {}
+        _DONE.append({"ts": time.time(), "seconds": round(time.time() - t_admit, 1),
+                      "ok": bool((res or {}).get("ok")), "tris": kw.get("n_in_tris"),
+                      "engine": kw.get("engine"), "backend": st.get("backend") or "error",
+                      "faces": st.get("n_faces_built"), "error": (st.get("error") or "")[:120]})
         phases = ";".join(f"{lab}:{sec}" for lab, sec, _s in (st.get("feature_phases") or []))
         print(f"SRVCONV {time.time() - t_admit:.3f} tris={kw.get('n_in_tris')} "
               f"engine={kw.get('engine')} backend={st.get('backend') or 'error'}"
@@ -1273,6 +1308,82 @@ def convert(
         if not handed_off:
             _release_admission()
 
+
+
+def _pct(values, q):
+    if not values:
+        return None
+    v = sorted(values)
+    return round(v[min(len(v) - 1, int(q * len(v)))], 1)
+
+
+def _node_stats() -> dict:
+    now = time.time()
+    with _admission_lock:
+        queue = [{"position": i + 1, "waiting_s": round(now - q.get("queued_at", now))}
+                 for i, q in enumerate(_QUEUE)]
+        admitted = _admitted
+    running = max(0, admitted - len(queue))
+    per_min = [0] * 60
+    groups: dict = {}
+    codes: dict = {}
+    for ts, g, code, ms in _REQ:
+        age = now - ts
+        if age < 3600:
+            per_min[min(59, int(age // 60))] += 1
+        if age < 300:
+            e = groups.setdefault(g, {"n": 0, "ms_p95": []})
+            e["n"] += 1; e["ms_p95"].append(ms)
+            codes[str(code)] = codes.get(str(code), 0) + 1
+    for e in groups.values():
+        e["ms_p95"] = _pct(e.pop("ms_p95"), 0.95)
+    done = [d for d in _DONE if now - d["ts"] < 3600]
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    try:
+        cg = "/sys/fs/cgroup" + open("/proc/self/cgroup").read().strip().split(":")[-1]
+        mem_mb = round(int(open(cg + "/memory.current").read()) / 1048576)
+    except Exception:  # noqa: BLE001 - monitoring must never raise
+        mem_mb = None
+    return {
+        "node": os.uname().nodename, "version": APP_VERSION, "uptime_s": round(now - _STARTED_AT),
+        "slots": {"total": MAX_CONCURRENT_CONVERSIONS, "busy": running},
+        "queue": {"length": len(queue), "max": QUEUE_MAX, "waiting": queue[:20],
+                  "longest_wait_s": max([q["waiting_s"] for q in queue], default=0)},
+        "admitted": admitted, "pending_jobs": len(_PENDING), "convert_estimate_s": round(_convert_estimate_s),
+        "recon": {"enabled": _recon_enabled(),
+                  "queued": sum(1 for r in _RECON.values() if r.get("status") == "queued"),
+                  "running": sum(1 for r in _RECON.values() if r.get("status") == "running"),
+                  "busy_refusals": sum(1 for r in _RECON.values() if r.get("status") == "busy"),
+                  "started_today": _RECON_DAY.get(day, 0),
+                  "daily_max": int(os.environ.get("MESH2STEP_RECON_DAILY_MAX", "100"))},
+        "requests": {"per_min_last_hour": list(reversed(per_min)), "last_5min": groups, "codes_5min": codes,
+                     "total_since_start": len(_REQ)},
+        "conversions": {
+            "last_hour": len(done), "ok": sum(1 for d in done if d["ok"]),
+            "p50_s": _pct([d["seconds"] for d in done], 0.5), "p95_s": _pct([d["seconds"] for d in done], 0.95),
+            "recent": list(_DONE)[-20:][::-1]},
+        "memory_mb": mem_mb, "loadavg": [round(x, 2) for x in os.getloadavg()],
+    }
+
+
+@app.get("/api/admin/stats")
+def admin_stats(request: Request, peers: int = 0) -> dict:
+    """The monitoring page's data. Token-gated: the site is public through the funnel."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(503, "monitoring is not configured on this node (MESH2STEP_ADMIN_TOKEN unset)")
+    given = request.headers.get("x-admin-token") or request.query_params.get("token") or ""
+    if not hmac.compare_digest(given, ADMIN_TOKEN):
+        raise HTTPException(401, "bad or missing admin token")
+    out = {"nodes": [_node_stats()], "ts": time.time()}
+    if peers:
+        for base in PEERS:
+            try:
+                req = __import__("urllib.request").request.Request(
+                    f"{base}/api/admin/stats", headers={"x-admin-token": ADMIN_TOKEN})
+                out["nodes"].append(json.load(__import__("urllib.request").request.urlopen(req, timeout=4))["nodes"][0])
+            except Exception as e:  # noqa: BLE001 - a peer that does not answer is shown as unreachable
+                out["nodes"].append({"node": base, "unreachable": str(e)[:120]})
+    return out
 
 
 @app.get("/api/limits")

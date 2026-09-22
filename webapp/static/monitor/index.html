@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>mesh2step — live monitor</title>
+<style>
+  :root { --bg:#111114; --surface:#1a1a1f; --border:#2e2e38; --text:#e0e0e8; --muted:#888899;
+          --accent:#4A8FFF; --ok:#4ade80; --warn:#f59e0b; --bad:#ff5f5f; --radius:10px; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 10px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:16px; }
+  .nodes { display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px,1fr)); gap:10px; margin-bottom:14px; }
+  .kpi { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  .kpi .v { font-size:20px; font-weight:700; } .kpi .l { font-size:11px; color:var(--muted); }
+  .kpi.busy .v { color:var(--warn); } .kpi.bad .v { color:var(--bad); } .kpi.ok .v { color:var(--ok); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  .bar { height:8px; background:var(--border); border-radius:4px; overflow:hidden; margin:2px 0 10px; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .spark { display:flex; align-items:flex-end; gap:1px; height:46px; margin:6px 0 12px; }
+  .spark i { flex:1; background:var(--accent); min-height:1px; border-radius:1px 1px 0 0; }
+  .muted { color:var(--muted); } .bad { color:var(--bad); } .ok { color:var(--ok); }
+  #token { width:100%; max-width:420px; padding:8px; border-radius:8px; border:1px solid var(--border);
+           background:var(--bg); color:var(--text); }
+  button { padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:var(--accent);
+           color:#fff; font-weight:600; cursor:pointer; }
+  section { margin-top:14px; }
+</style>
+</head>
+<body>
+<h1>mesh2step — live monitor</h1>
+<div class="sub" id="head">requests, queue and conversions, per node · refreshes every 5 s</div>
+<div id="gate" hidden>
+  <p>Enter the monitor token (it is stored in this browser only):</p>
+  <p><input id="token" type="password" placeholder="admin token" autocomplete="off" /></p>
+  <p><button id="save">Show the monitor</button></p>
+  <p class="muted" id="gate-msg"></p>
+</div>
+<div class="nodes" id="nodes"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtS = (s) => s == null ? '–' : (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`
+                     : s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`);
+const esc = (t) => String(t == null ? '' : t).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+let token = localStorage.getItem('m2s_admin_token') || '';
+
+function kpi(label, value, cls = '') { return `<div class="kpi ${cls}"><div class="v">${value}</div><div class="l">${label}</div></div>`; }
+
+function nodeCard(n) {
+  if (n.unreachable) {
+    return `<div class="card"><h2>${esc(n.node)}</h2><p class="bad">unreachable: ${esc(n.unreachable)}</p></div>`;
+  }
+  const slots = n.slots, q = n.queue, r = n.recon, c = n.conversions;
+  const perMin = n.requests.per_min_last_hour, peak = Math.max(1, ...perMin);
+  const busyCls = slots.busy >= slots.total ? 'busy' : 'ok';
+  const rows = (c.recent || []).map((d) => `<tr><td>${new Date(d.ts * 1000).toLocaleTimeString()}</td>
+      <td class="${d.ok ? 'ok' : 'bad'}">${d.ok ? 'ok' : 'failed'}</td><td>${(d.tris || 0).toLocaleString()}</td>
+      <td>${esc(d.backend)}</td><td>${d.seconds}s</td><td>${d.faces == null ? '' : d.faces.toLocaleString()}</td>
+      <td class="muted">${esc(d.error)}</td></tr>`).join('');
+  const waits = (q.waiting || []).map((w) => `<tr><td>#${w.position}</td><td>${fmtS(w.waiting_s)} waiting</td></tr>`).join('')
+      || '<tr><td colspan="2" class="muted">nobody waiting</td></tr>';
+  const groups = Object.entries(n.requests.last_5min).sort((a, b) => b[1].n - a[1].n)
+      .map(([g, e]) => `<tr><td>${esc(g)}</td><td>${e.n}</td><td>${e.ms_p95 == null ? '' : e.ms_p95 + ' ms'}</td></tr>`).join('')
+      || '<tr><td colspan="3" class="muted">no requests in the last 5 minutes</td></tr>';
+  const codes = Object.entries(n.requests.codes_5min).sort()
+      .map(([code, k]) => `<span class="${code[0] === '2' ? 'ok' : code === '429' ? '' : 'bad'}">${code}: ${k}</span>`).join(' · ');
+  return `<div class="card">
+    <h2>${esc(n.node)} <span class="muted" style="font-weight:400">${esc(n.version)}</span></h2>
+    <div class="kpis">
+      ${kpi('slots busy', `${slots.busy}/${slots.total}`, busyCls)}
+      ${kpi('in the queue', `${q.length}/${q.max}`, q.length ? 'busy' : '')}
+      ${kpi('longest wait', fmtS(q.longest_wait_s))}
+      ${kpi('requests / min', perMin[perMin.length - 1] || 0)}
+      ${kpi('conversions / h', `${c.ok}/${c.last_hour}`, c.last_hour && c.ok < c.last_hour ? 'bad' : 'ok')}
+      ${kpi('typical · slow', `${c.p50_s == null ? '–' : c.p50_s + 's'} · ${c.p95_s == null ? '–' : c.p95_s + 's'}`)}
+      ${kpi('AI rebuilds', r.enabled ? `${r.running}▶ ${r.queued}⏳` : 'off', r.enabled ? '' : 'muted')}
+      ${kpi('AI today', r.enabled ? `${r.started_today}/${r.daily_max}` : '–', r.started_today >= r.daily_max ? 'bad' : '')}
+      ${kpi('memory', n.memory_mb == null ? '–' : `${(n.memory_mb / 1024).toFixed(1)} GB`)}
+      ${kpi('load', n.loadavg[0])}
+      ${kpi('uptime', fmtS(n.uptime_s))}
+      ${kpi('jobs tracked', n.pending_jobs)}
+    </div>
+    <div class="bar"><i style="width:${Math.min(100, 100 * slots.busy / slots.total)}%"></i></div>
+    <section><h2>Requests per minute (last hour)</h2>
+      <div class="spark">${perMin.map((v) => `<i style="height:${Math.round(100 * v / peak)}%" title="${v}/min"></i>`).join('')}</div>
+      <div class="muted">last 5 minutes by status — ${codes || 'none'}</div>
+      <table><tr><th>endpoint</th><th>requests</th><th>slowest 5%</th></tr>${groups}</table>
+    </section>
+    <section><h2>Queue</h2><table>${waits}</table></section>
+    <section><h2>Last conversions</h2>
+      <table><tr><th>time</th><th></th><th>triangles</th><th>path</th><th>took</th><th>faces</th><th></th></tr>${rows}</table>
+    </section>
+  </div>`;
+}
+
+async function tick() {
+  try {
+    const res = await fetch('../api/admin/stats?peers=1', { headers: { 'x-admin-token': token } });
+    if (res.status === 401) { showGate('That token was not accepted.'); return; }
+    if (!res.ok) { showGate((await res.json().catch(() => ({}))).detail || `server said ${res.status}`); return; }
+    const d = await res.json();
+    $('gate').hidden = true;
+    $('nodes').innerHTML = d.nodes.map(nodeCard).join('');
+    $('head').textContent = `${d.nodes.length} node${d.nodes.length === 1 ? '' : 's'} · updated ${new Date().toLocaleTimeString()} · refreshes every 5 s`;
+  } catch (e) {
+    $('head').textContent = 'Lost contact with the server — retrying…';
+  }
+}
+
+function showGate(msg) { $('gate').hidden = false; $('gate-msg').textContent = msg || ''; $('nodes').innerHTML = ''; }
+$('save').addEventListener('click', () => { token = $('token').value.trim(); localStorage.setItem('m2s_admin_token', token); tick(); });
+$('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
+if (!token) showGate(); else tick();
+setInterval(() => { if (token) tick(); }, 5000);
+</script>
+</body>
+</html>

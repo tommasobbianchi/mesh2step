@@ -922,3 +922,25 @@ def test_edit_previews_trims_then_reduction(client):
     st = _json.loads(r.headers["X-Mesh-Stats"])
     assert st["n_tris_trimmed"] == 1280 and st["n_tris_after"] < 1280        # trimmed first, then reduced
     assert client.post("/api/edit", files=f(), data={}).status_code == 400    # nothing asked: refused
+
+
+def test_the_monitor_needs_a_token_and_reports_the_live_numbers(client, cube_stl_bytes, monkeypatch):
+    """The monitoring page's data: token-gated (the site is public through the funnel), and it reports what a
+    surge needs -- slots, the queue, requests by endpoint, and the conversions that actually ran."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "ADMIN_TOKEN", "")
+    assert client.get("/api/admin/stats").status_code == 503          # not configured: says so
+    monkeypatch.setattr(srv, "ADMIN_TOKEN", "sekret")
+    assert client.get("/api/admin/stats").status_code == 401
+    assert client.get("/api/admin/stats", headers={"x-admin-token": "wrong"}).status_code == 401
+
+    r = client.post("/api/convert", files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+                    data={"engine": "faceted"})
+    assert r.status_code == 200
+    d = client.get("/api/admin/stats", headers={"x-admin-token": "sekret"}).json()
+    n = d["nodes"][0]
+    assert n["slots"]["total"] == srv.MAX_CONCURRENT_CONVERSIONS and n["queue"]["max"] == srv.QUEUE_MAX
+    assert n["requests"]["last_5min"]["/api/convert"]["n"] >= 1       # the middleware counted it
+    assert n["conversions"]["last_hour"] >= 1 and n["conversions"]["recent"][0]["ok"] is True
+    assert n["recon"]["daily_max"] and "memory_mb" in n and n["version"]

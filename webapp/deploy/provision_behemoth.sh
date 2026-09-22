@@ -136,6 +136,18 @@ Environment=MESH2STEP_ENGINE_FALLBACK=1
 Environment=MESH2STEP_EDGEBUILD_TIMEOUT_S=900
 DROPIN
 
+# The monitoring token is a SECRET: it lives in ~/.secrets/credentials.yaml on the control host, never in the
+# repo. Without it a node answers /api/admin/stats with 503, so the page would show that node as unreachable.
+say "5b. monitoring token (from ~/.secrets/credentials.yaml)"
+TOKEN=$(python3 -c "import yaml,pathlib;print((yaml.safe_load((pathlib.Path.home()/'.secrets/credentials.yaml').read_text()) or {}).get('mesh2step',{}).get('admin_token',''))")
+if [ -n "$TOKEN" ]; then
+  printf '[Service]\nEnvironment=MESH2STEP_ADMIN_TOKEN=%s\n' "$TOKEN" |
+    ssh -o BatchMode=yes "$HOST" "cat > ~/.config/systemd/user/mesh2step.service.d/80-monitor.conf"
+  echo "monitoring token installed"
+else
+  echo "no mesh2step.admin_token in ~/.secrets/credentials.yaml -- monitoring will be off on this node"
+fi
+
 say "6. enable linger and start"
 # Poll for readiness instead of sleeping a fixed interval. uvicorn has to import
 # a ~160 MB OCP binding before it binds the port, so a cold start is slow and
