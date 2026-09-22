@@ -62,6 +62,16 @@ def main():
     subprocess.run([sys.executable, str(HERE / "facts.py"), stl, str(wd / "facts.json"), "auto"],
                    capture_output=True, text=True)
 
+    # round 0 for every model: reverse.py's design history (silhouette sketch -> extrude -> rounds). If it passes
+    # the gate the loop stops before any model call; otherwise the model refines it instead of starting blank
+    seed = wd / "reverse.py.out"
+    r = subprocess.CompletedProcess([], 1, "", "RECON_REVERSE=0") if os.environ.get("RECON_REVERSE") == "0" else subprocess.run([sys.executable, str(HERE / "reverse.py"), stl, str(seed)], capture_output=True, text=True,
+                       timeout=600)
+    if r.returncode == 0 and seed.exists():
+        os.environ["RECON_SEED_PROGRAM"] = str(seed)
+    else:
+        print(f"reverse.py failed (continuing without a seed): {(r.stdout + r.stderr)[-300:]}", flush=True)
+
     mesh = trimesh.load(stl, force="mesh")
     diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
     tried, results, winner = [], [], None
@@ -79,6 +89,8 @@ def main():
                       and rep.get("nonanalytic", 0) == 0)     # a spline face is a feature thrown away
             if rep["valid"]:
                 results.append((model, md, best))
+        if best and str(best.get("best", "")).endswith("recon_0.py"):
+            model = "reverse"                               # the design history won: no model wrote it
         tried.append({"model": model, "exit": rc, "accepted": ok})
         if ok:
             winner = (model, md, best); break

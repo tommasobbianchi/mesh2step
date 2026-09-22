@@ -60,7 +60,7 @@ def case(tmp_path):
 def run(case, models, modes):
     tmp, stl, fake, log = case
     env = dict(os.environ, CLAUDE_BIN=str(fake), OPENCODE_BIN=str(fake), FAKE_LOG=str(log),
-               RECON_BACKOFF_S="0", RECON_QUOTA_RETRIES="0")
+               RECON_BACKOFF_S="0", RECON_QUOTA_RETRIES="0", RECON_REVERSE="0")
     for m, mode in modes.items():
         env["FAKE_MODE_" + "".join(c if c.isalnum() else "_" for c in m)] = mode
     wd = tmp / "wd"
@@ -98,7 +98,7 @@ def test_the_loop_stops_at_the_acceptance_gate(case, tmp_path):
     # 10 x 10 x 9.9 box: p95 ~0.1 mm, above the loop's default 0.05 mm but within 0.5% of the diagonal
     fake.write_text(FAKE.replace("box(10, 10, 10)", "box(10, 10, 9.9)"))
     env = dict(os.environ, CLAUDE_BIN=str(fake), OPENCODE_BIN=str(fake), FAKE_LOG=str(log),
-               RECON_BACKOFF_S="0", RECON_QUOTA_RETRIES="0")
+               RECON_BACKOFF_S="0", RECON_QUOTA_RETRIES="0", RECON_REVERSE="0")
     p = subprocess.run([sys.executable, str(RP), str(stl), str(tmp / "wd"), "--models", "opus", "--rounds", "3"],
                        env=env, capture_output=True, text=True, timeout=1200)
     assert p.returncode == 0, p.stderr[-2000:]
