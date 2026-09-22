@@ -71,7 +71,8 @@ def main():
         if (md / "best.json").exists():
             best = json.loads((md / "best.json").read_text())
             rep, rp = best["report"], best["represent"]
-            ok = bool(rep["valid"] and p95(rep) <= ACCEPT_REL * diag and rp["curved"] == rp["patches"])
+            ok = bool(rep["valid"] and p95(rep) <= ACCEPT_REL * diag and rp["curved"] == rp["patches"]
+                      and rep.get("nonanalytic", 0) == 0)     # a spline face is a feature thrown away
             if rep["valid"]:
                 results.append((model, md, best))
         tried.append({"model": model, "exit": rc, "accepted": ok})

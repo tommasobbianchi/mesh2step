@@ -53,6 +53,32 @@ def invalid_face_report(shape, limit=10):
     return out
 
 
+def nonanalytic_faces(shape):
+    """Every face that is not plane/cylinder/cone/torus/sphere, with type, area and centre (largest first).
+
+    The gate's feature count only checks mesh cylinder patches, so accepted rounds of parts 14/19/33 carried
+    B-spline faces nobody flagged, and SURFACE_OF_REVOLUTION was never counted at all (docs/RECON-ERRORS.md).
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere, GeomAbs_Torus
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    ok = {GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus, GeomAbs_Sphere}
+    out, ex = [], TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        face = TopoDS.Face_s(ex.Current()); ex.Next()
+        kind = BRepAdaptor_Surface(face).GetType()
+        if kind in ok:
+            continue
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(face, g); c = g.CentreOfMass()
+        out.append({"type": str(kind).split("_")[-1], "area": round(float(g.Mass()), 3),
+                    "centre": [round(c.X(), 2), round(c.Y(), 2), round(c.Z(), 2)]})
+    return sorted(out, key=lambda f: -f["area"])
+
+
 def try_repair(shape):
     """Run the deterministic repair on an invalid shape; report whether the result is valid."""
     from OCP.BRepCheck import BRepCheck_Analyzer
@@ -138,7 +164,8 @@ def select_best(history, diag):
 
     within = [h for h in valid if err(h) <= bound]
     if within:
-        return max(within, key=lambda h: (h["report"]["features"]["curved"], -err(h)))
+        return max(within, key=lambda h: (h["report"]["features"]["curved"], -h["report"].get("nonanalytic", 0),
+                                          -err(h)))
     return min(valid, key=err)
 
 
@@ -336,6 +363,9 @@ def main():
             f = represent_detail(STL, p, junctions=JUNC_NODES)
             rep["features"] = {k: f[k] for k in ("patches", "curved", "plane", "other", "far")}
             rep["feature_misses"] = f["misses"][:15]
+            na = nonanalytic_faces(sh)                # a spline/revolution face is geometry thrown away,
+            rep["nonanalytic"] = len(na)              # whether or not a mesh cylinder patch sits under it
+            rep["nonanalytic_faces"] = na[:10]
             return rep, sh
 
         rep, sh = measure(step)
@@ -401,7 +431,7 @@ def main():
             Fix what the measurement says is wrong -- the 'where_wrong' lines tell you where your solid
             misses mesh surface or adds surface the mesh does not have, and 'feature_misses' lists every
             cylindrical feature of the mesh that your solid does not reproduce as an exact analytic
-            cylinder/cone/torus face (with its radius and location). If 'valid' is false, 'invalid_faces' lists the faces that make your solid invalid (type, area,
+            cylinder/cone/torus face (with its radius and location). 'nonanalytic_faces' lists every face of your solid that is not an exact plane/cylinder/cone/torus/sphere (type, area, centre): rebuild each with exact primitives (rt.* tools, makeTorus, explicit booleans), never loft/spline/sweep. If 'valid' is false, 'invalid_faces' lists the faces that make your solid invalid (type, area,
             location): rebuild those features so every face is valid. Every feature counts. Keep what is right. Write the
             corrected program to {py} with the Write tool. Reply only 'done'.""")
         _, out = ask_model(prompt, CLAUDE, MODEL, WD, renders)
@@ -448,7 +478,7 @@ def main():
             # diagonal) so a paid rebuild stops as soon as it is good enough -- 28% fewer rounds on the corpus
             stop = float(os.environ["RECON_STOP_REL"]) * diag if os.environ.get("RECON_STOP_REL") else 0.05
             if (rep["valid"] and max(rep["p95_mesh_to_solid"], rep["p95_solid_to_mesh"]) <= stop
-                    and fz["curved"] == fz["patches"]):
+                    and fz["curved"] == fz["patches"] and rep.get("nonanalytic", 0) == 0):
                 print(f"converged at iteration {it}"); break
     json.dump(history, open(WD / "history.json", "w"), indent=1)
 
