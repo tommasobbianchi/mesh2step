@@ -372,6 +372,12 @@ def main():
                 history.append({"py": str(py), "report": None, "error": out}); continue
         step = WD / f"recon_{it}.step"
         ok, err = run_script(py, step)
+        if ok:
+            try:                                    # revolved arcs -> exact tori (canon.py); never fatal
+                import canon
+                canon.canonicalize_step(step)
+            except Exception as e:  # noqa: BLE001
+                print(f"      canonicalize skipped: {e}", flush=True)
         rep = None
         if ok:
             try:
