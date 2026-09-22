@@ -128,7 +128,8 @@ def select_best(history, diag):
 
 def _is_limit(text):
     t = (text or "").lower()
-    return any(s in t for s in ("usage limit", "rate limit", "rate_limit", "overloaded", "429", "quota"))
+    return any(s in t for s in ("usage limit", "rate limit", "rate_limit", "overloaded", "429", "quota",
+                                  "opencode lane lock busy"))
 
 
 def run_script(py, step):
@@ -165,6 +166,27 @@ def ask_model(prompt, claude, model, wd, renders=()):
         name = model.split(":", 1)[1] if model.startswith("claude:") else model
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
                "--output-format", "text", prompt]
+    if model.startswith("opencode:"):             # one opencode run per machine (shared session store)
+        import fcntl
+        lock = os.environ.get("RECON_OC_LOCK", os.path.expanduser("~/.local/state/oc-orchestrate/.run.lock"))
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        fd = open(lock, "a")
+        deadline = time.time() + float(os.environ.get("RECON_OC_LOCK_WAIT_S", "1800"))
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); break
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    fd.close(); return 1, "opencode lane lock busy"
+                time.sleep(2)
+        try:
+            return _call(cmd, wd)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN); fd.close()
+    return _call(cmd, wd)
+
+
+def _call(cmd, wd):
     t = float(os.environ.get("RECON_CALL_TIMEOUT_S", "1800"))
     # same process group as the loop, so a caller killing the loop's group reaches the model call too
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,        # opencode/claude read a non-tty stdin

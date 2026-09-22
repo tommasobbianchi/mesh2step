@@ -51,7 +51,8 @@ def case(tmp_path):
 def run(case, model):
     tmp, stl, facts, renders, fake = case
     args_log = tmp / "args.jsonl"; args_log.write_text("")
-    env = dict(os.environ, OPENCODE_BIN=str(fake), FAKE_ARGS=str(args_log), RECON_BACKOFF_S="0")
+    env = dict(os.environ, OPENCODE_BIN=str(fake), FAKE_ARGS=str(args_log), RECON_BACKOFF_S="0",
+               RECON_OC_LOCK=str(tmp / "lock"))
     wd = tmp / "wd"
     p = subprocess.run([sys.executable, str(LOOP), str(stl), str(facts), str(renders), str(wd), model, "1"],
                        env=env, capture_output=True, text=True, timeout=900)
@@ -109,6 +110,7 @@ def test_the_model_call_never_inherits_stdin(case):
     tmp, stl, facts, renders, fake = case
     fake.write_text(FAKE_OC.replace("import json, os, re, sys\n", "import json, os, re, sys\nsys.stdin.read()\n"))
     env = dict(os.environ, OPENCODE_BIN=str(fake), FAKE_ARGS=str(tmp / "a.jsonl"), RECON_BACKOFF_S="0",
+               RECON_OC_LOCK=str(tmp / "lock"),
                RECON_CALL_TIMEOUT_S="20")
     r, w = os.pipe()                                     # w stays open: stdin never reaches EOF
     log = tmp / "out.txt"
