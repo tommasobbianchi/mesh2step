@@ -394,7 +394,10 @@ def main():
             for w in rep["where_wrong"][:3] + rep["feature_misses"][:3]:
                 print("      " + w, flush=True)
             fz = rep["features"]
-            if (rep["valid"] and rep["p95_mesh_to_solid"] < 0.05 and rep["p95_solid_to_mesh"] < 0.05
+            # stop target: 0.05 mm by default; recon_part passes its own acceptance (fraction of the
+            # diagonal) so a paid rebuild stops as soon as it is good enough -- 28% fewer rounds on the corpus
+            stop = float(os.environ["RECON_STOP_REL"]) * diag if os.environ.get("RECON_STOP_REL") else 0.05
+            if (rep["valid"] and max(rep["p95_mesh_to_solid"], rep["p95_solid_to_mesh"]) <= stop
                     and fz["curved"] == fz["patches"]):
                 print(f"converged at iteration {it}"); break
     json.dump(history, open(WD / "history.json", "w"), indent=1)

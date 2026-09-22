@@ -22,6 +22,7 @@ import trimesh
 
 HERE = Path(__file__).resolve().parent
 RENDER = Path.home() / ".claude/skills/deepseek-vision/scripts/render.py"
+ACCEPT_REL = 0.005                # accepted: max p95 <= 0.5% of the mesh diagonal (the loop stops there too)
 
 
 def p95(rep):
@@ -30,7 +31,7 @@ def p95(rep):
 
 def run_loop(cmd, timeout):
     """Run one model's loop in its own process group; on timeout kill the whole group (model call too)."""
-    p = subprocess.Popen(cmd, start_new_session=True)
+    p = subprocess.Popen(cmd, start_new_session=True, env=dict(os.environ, RECON_STOP_REL=str(ACCEPT_REL)))
     try:
         return p.wait(timeout=max(1.0, timeout))
     except subprocess.TimeoutExpired:
@@ -68,7 +69,7 @@ def main():
         if (md / "best.json").exists():
             best = json.loads((md / "best.json").read_text())
             rep, rp = best["report"], best["represent"]
-            ok = bool(rep["valid"] and p95(rep) <= 0.005 * diag and rp["curved"] == rp["patches"])
+            ok = bool(rep["valid"] and p95(rep) <= ACCEPT_REL * diag and rp["curved"] == rp["patches"])
             if rep["valid"]:
                 results.append((model, md, best))
         tried.append({"model": model, "exit": rc, "accepted": ok})
