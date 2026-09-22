@@ -141,7 +141,7 @@ DROPIN
 say "5b. monitoring token (from ~/.secrets/credentials.yaml)"
 TOKEN=$(python3 -c "import yaml,pathlib;print((yaml.safe_load((pathlib.Path.home()/'.secrets/credentials.yaml').read_text()) or {}).get('mesh2step',{}).get('admin_token',''))")
 if [ -n "$TOKEN" ]; then
-  printf '[Service]\nEnvironment=MESH2STEP_ADMIN_TOKEN=%s\n' "$TOKEN" |
+  printf '[Service]\nEnvironment=MESH2STEP_ADMIN_TOKEN=%s\nEnvironment=MESH2STEP_PEERS=http://100.112.35.102:8000\n' "$TOKEN" |
     ssh -o BatchMode=yes "$HOST" "cat > ~/.config/systemd/user/mesh2step.service.d/80-monitor.conf"
   echo "monitoring token installed"
 else
