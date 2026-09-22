@@ -14,6 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "feature_recon"))
 from slice import loops, dedupe                                    # noqa: E402
 from auto2d import section2d, segment_loop, loop_area               # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from reverse import segment as _segment                             # noqa: E402
 
 stl, out = sys.argv[1], sys.argv[2]
 m = trimesh.load(stl, force="mesh")
@@ -37,7 +39,9 @@ def slice_loops(h):
 
 
 def describe(L):
-    L2, prims = segment_loop(L)
+    # reverse.segment, not auto2d.segment_loop: the latter turned coarse arcs into 1-segment lines (the facts for
+    # part 16 were 210 lines and 2 arcs; its outline is 5 arcs)
+    L2, prims = _segment(np.asarray(L, float))
     segs = []
     for p in prims:
         a, b = L2[p[1]], L2[p[2] if p[2] < len(L2) else 0]

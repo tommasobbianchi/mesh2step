@@ -54,3 +54,17 @@ def test_reverse_stacks_levels_of_a_stepped_part(tmp_path):
     exec(src, ns)
     s = ns["result"].val()
     assert s.isValid() and abs(s.Volume() - truth.Volume()) / truth.Volume() < 0.01
+
+
+def test_facts_fits_arcs_on_a_coarse_mesh(tmp_path):
+    """facts.py used auto2d.segment_loop, which turned coarse arcs into 1-segment lines; it now uses reverse.segment."""
+    import json, subprocess
+    # coarse like the corpus (part 16's arcs sag ~0.005 mm per chord). Much coarser (17 deg facets) still fails:
+    # a mid-height section cuts the rounds' facets and its points scatter ~0.07 mm off the circle (> TOL 0.02)
+    stl = js.stl(_plate(), tmp_path / "plate.stl", tol=0.02, ang=0.15)
+    out = tmp_path / "facts.json"
+    p = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "facts.py"), str(stl), str(out), "2"],
+                       capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, p.stderr[-1500:]
+    segs = [list(s)[0] for lv in json.loads(out.read_text())["levels"] for lp in lv["loops"] for s in lp["segments"]]
+    assert segs.count("arc") >= 3 and len(segs) <= 12, segs          # slot ends + hole, not dozens of chords
