@@ -157,11 +157,10 @@ def _descendants(root):
 def ask_model(prompt, claude, model, wd, renders=()):
     if model.startswith("opencode:"):
         name = model.split(":", 1)[1]
-        cmd = [os.environ.get("OPENCODE_BIN", "opencode"), "run", "-m", name]
-        if "vision" in name:                       # only a vision model can see the renders
-            for r in renders:
+        cmd = [os.environ.get("OPENCODE_BIN", "opencode"), "run", "-m", name, prompt]  # before -f:
+        if "vision" in name:                       # -f is variadic and would swallow the message
+            for r in renders:                      # only a vision model can see the renders
                 cmd += ["-f", r]
-        cmd.append(prompt)
     else:
         name = model.split(":", 1)[1] if model.startswith("claude:") else model
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",

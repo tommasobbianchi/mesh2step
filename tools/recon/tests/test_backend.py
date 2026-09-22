@@ -24,7 +24,10 @@ LOOP = HERE / "recon_loop.py"
 FAKE_OC = r'''#!/usr/bin/env python3
 import json, os, re, sys
 open(os.environ["FAKE_ARGS"], "a").write(json.dumps(sys.argv[1:]) + "\n")
-prompt = sys.argv[-1]
+a = sys.argv[1:]                      # real opencode: -f is variadic, so the message must precede it
+if "-f" in a:
+    assert all(x.endswith(".png") for x in a[a.index("-f"):] if x != "-f"), "prompt swallowed by -f"
+prompt = [x for x in a[:a.index("-f")] if x not in ("run", "-m")][-1] if "-f" in a else a[-1]
 m = re.findall(r"(\S+recon_\d+\.py)", prompt)
 open(m[-1], "w").write('result = cq.Workplane("XY").box(10, 10, 10)\n')
 print("done")
@@ -90,7 +93,7 @@ def test_render_paths_given_to_a_vision_model_are_absolute(tmp_path):
     fake.write_text("#!/usr/bin/env python3\nimport os, re, sys\n"
                     "fs = [sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == '-f']\n"
                     "assert fs and all(os.path.isfile(f) for f in fs), fs\n"
-                    "m = re.findall(r'(\\S+recon_\\d+\\.py)', sys.argv[-1])\n"
+                    "m = re.findall(r'(\\S+recon_\\d+\\.py)', sys.argv[sys.argv.index('-m') + 2])\n"
                     "open(m[-1], 'w').write('result = cq.Workplane(\"XY\").box(10, 10, 10)\\n')\n")
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     env = dict(os.environ, OPENCODE_BIN=str(fake), RECON_BACKOFF_S="0", RECON_OC_LOCK=str(tmp_path / "lock"))
