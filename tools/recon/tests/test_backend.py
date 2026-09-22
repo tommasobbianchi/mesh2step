@@ -76,3 +76,25 @@ def test_opencode_vision_model_gets_renders(case):
     files = [a[i + 1] for i, x in enumerate(a) if x == "-f"]
     assert len(files) == 2 and all(f.endswith(".png") for f in files)
     assert (wd / "best.json").exists()
+
+
+def test_render_paths_given_to_a_vision_model_are_absolute(tmp_path):
+    """deepseek-vision got `-f vis/16/16__CROP1.png` relative to the caller, but opencode runs in WD."""
+    import stat, subprocess, sys, json, os
+    import trimesh
+    loop = Path(__file__).resolve().parents[1] / "recon_loop.py"
+    trimesh.creation.box(extents=[10, 10, 10]).export(tmp_path / "cube.stl")
+    (tmp_path / "facts.json").write_text(json.dumps({"axis": "Z", "bbox_min": [-5]*3, "bbox_max": [5]*3, "levels": []}))
+    (tmp_path / "vis").mkdir(); (tmp_path / "vis" / "a.png").write_bytes(b"png")
+    fake = tmp_path / "oc"
+    fake.write_text("#!/usr/bin/env python3\nimport os, re, sys\n"
+                    "fs = [sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == '-f']\n"
+                    "assert fs and all(os.path.isfile(f) for f in fs), fs\n"
+                    "m = re.findall(r'(\\S+recon_\\d+\\.py)', sys.argv[-1])\n"
+                    "open(m[-1], 'w').write('result = cq.Workplane(\"XY\").box(10, 10, 10)\\n')\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, OPENCODE_BIN=str(fake), RECON_BACKOFF_S="0", RECON_OC_LOCK=str(tmp_path / "lock"))
+    p = subprocess.run([sys.executable, str(loop), "cube.stl", "facts.json", "vis", "wd",
+                        "opencode:deepseek/deepseek-v4-flash-vision-exp", "1"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-1500:]

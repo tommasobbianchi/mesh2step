@@ -203,7 +203,8 @@ def main():
     if len(sys.argv) < 5:
         print("usage: recon_loop.py <stl> <facts.json> <render_dir> <workdir> [model=opus] [iters=4]")
         return 2
-    STL, FACTS, RDIR, WD = sys.argv[1:5]
+    # absolute: the model CLI runs with cwd=WD, so relative paths in its prompt/-f resolve wrongly
+    STL, FACTS, RDIR, WD = (os.path.abspath(a) for a in sys.argv[1:5])
     MODEL = sys.argv[5] if len(sys.argv) > 5 else "opus"
     ITERS = int(sys.argv[6]) if len(sys.argv) > 6 else 4
     WD = Path(WD); WD.mkdir(parents=True, exist_ok=True)
