@@ -674,7 +674,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                     f"This model has {n_in_tris:,} triangles, above the {MAX_INPUT_TRIANGLES:,} "
                     "the conversion engine can take. It was converted by recognising its shape "
                     "directly instead, but that did not produce a usable solid for this model. "
-                    "Reduce the mesh (Simplify or Decimate in your CAD or slicer) and try again."
+                    "Reduce it right here (Options → Reduce mesh → Aggressive) and convert again."
                 ))
             res["warnings"] = [
                 f"{n_in_tris:,} triangles is above the {MAX_INPUT_TRIANGLES:,} the conversion "
@@ -1187,20 +1187,6 @@ def convert(
             }
             if decimate == "ratio":
                 decimate_info["decimate_keep"] = decimate_keep
-        # Over MAX_INPUT_TRIANGLES only the ENGINE is out of reach, not the conversion: the
-        # feature path fits primitives straight from the mesh at a fifth of the memory. Admit
-        # those up to FEATURE_MAX_TRIANGLES and let the worker skip the engine entirely.
-        feature_on = bool(feature) or os.environ.get("MESH2STEP_FEATURE") == "1"
-        feature_only = n_in_tris > MAX_INPUT_TRIANGLES and feature_on
-        _ceiling = FEATURE_MAX_TRIANGLES if feature_on else MAX_INPUT_TRIANGLES
-        if n_in_tris > _ceiling:
-            __import__("shutil").rmtree(workdir, ignore_errors=True)
-            raise HTTPException(413, (
-                f"This model has {n_in_tris:,} triangles. The converter handles up to "
-                f"{_ceiling:,} — above that it needs more memory than the "
-                "server can give it. Reduce the mesh (Simplify or Decimate in your "
-                "CAD or slicer) and upload it again."
-            ))
         cut_before = cut_after = None
         repair_info = None
 
@@ -1229,6 +1215,23 @@ def convert(
                 "repair_watertight_after": rr.watertight_after,
             }
 
+        # The ceiling is checked on the mesh that will be CONVERTED: after the reduction AND the trims. It used to
+        # run before the trims, so trimming a 500k model down to 100k was still refused for its 500k.
+        n_in_tris = len(tris)
+        # Over MAX_INPUT_TRIANGLES only the ENGINE is out of reach, not the conversion: the
+        # feature path fits primitives straight from the mesh at a fifth of the memory. Admit
+        # those up to FEATURE_MAX_TRIANGLES and let the worker skip the engine entirely.
+        feature_on = bool(feature) or os.environ.get("MESH2STEP_FEATURE") == "1"
+        feature_only = n_in_tris > MAX_INPUT_TRIANGLES and feature_on
+        _ceiling = FEATURE_MAX_TRIANGLES if feature_on else MAX_INPUT_TRIANGLES
+        if n_in_tris > _ceiling:
+            __import__("shutil").rmtree(workdir, ignore_errors=True)
+            raise HTTPException(413, (
+                f"This model has {n_in_tris:,} triangles. The converter handles up to "
+                f"{_ceiling:,} — above that it needs more memory than the "
+                "server can give it. Reduce it right here: Options → Reduce mesh → "
+                "Aggressive, keep a percentage that brings it under the limit, and convert again."
+            ))
         stl_path = workdir / "native_input.stl"
         trimesh.Trimesh(vertices=verts, faces=tris, process=False).export(str(stl_path))
         native_engine = "trueform" if engine == "trueform" else "verbatim"
@@ -1276,6 +1279,7 @@ def convert(
 def limits() -> dict:
     """What the client should say before someone waits for a rejection."""
     return {"max_triangles": MAX_INPUT_TRIANGLES,
+            "max_triangles_feature": FEATURE_MAX_TRIANGLES,   # with the feature pass on (the recommended mode)
             "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
             "version": APP_VERSION}
 

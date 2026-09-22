@@ -80,16 +80,19 @@ function frameObject(obj) {
 let selectedFile = null;
 let trisBeforeCut = 0;
 let maxTriangles = null;   // from the server, so the number lives in one place
+let maxTrianglesFeature = null;   // the ceiling with the feature pass on (the recommended mode)
 fetch('api/limits').then((r) => r.json()).then((l) => {
   maxTriangles = l.max_triangles;
+  maxTrianglesFeature = l.max_triangles_feature || l.max_triangles;
+  updateGate();
   if (l.version) document.getElementById('app-version').textContent = ` · version ${l.version}`;
   // the sentence lives in the markup so it renders even if this fetch fails;
   // correct it only when the server's number differs from the one shipped
   const hint = document.querySelector('.primary-hint');
-  const k = `${(l.max_triangles / 1000).toFixed(0)}k triangles`;
-  if (hint && !hint.textContent.includes(k)) {
+  const k = `${(maxTrianglesFeature / 1000).toFixed(0)}k triangles`;
+  if (hint) {                       // bigger models are not refused: they can be reduced right here first
     hint.textContent = `Holes, round edges and flat walls come back as real CAD shapes you can `
-      + `measure and edit. Models up to ${k}.`;
+      + `measure and edit. Up to ${k}; bigger models can be reduced here first.`;
   }
 }).catch(() => {});
 let lastTriCount = 0;
@@ -170,20 +173,10 @@ async function loadFile(file) {
     // the tolerance control is gone: the native engine does its own welding
   }
   inputName.textContent = file.name;
-  document.getElementById('reduce-apply').disabled = false;
-  document.getElementById('reduce-state').textContent = '';
-  const tooBig = maxTriangles && triCount > maxTriangles;
-  convertBtn.disabled = tooBig;
   document.getElementById('trim-enter').classList.remove('hidden');
   document.getElementById('stats-panel').classList.add('hidden');
   document.getElementById('warnings').innerHTML = '';
-  if (tooBig) {
-    // said here, after the reset above clears it, and before anyone waits
-    addWarning(`This model has ${triCount.toLocaleString()} triangles, and the converter `
-      + `handles up to ${maxTriangles.toLocaleString()}. Above that it needs more memory `
-      + `than the server can give it. Reduce the mesh — Simplify or Decimate in your CAD `
-      + `or slicer — and drop it in again.`);
-  }
+  updateGate();                    // Convert and the size callout are decided in ONE place (below)
 
   // Reset cut state on new mesh load
   cutOps = [];
@@ -425,29 +418,91 @@ applyPreset();
 // promise a duration from the count -- it offers the one lever that reliably helps
 // when a conversion is slow, and says so honestly.
 const BIG_TRIS = 20000;
-function updateSizeGuidance(triCount) {
+// ---- the size gate -------------------------------------------------------
+// One place decides whether Convert is possible: the triangle count AFTER the chosen reduction against the
+// server's ceiling for the chosen mode (feature pass on: max_triangles_feature, else max_triangles). It used to
+// disable Convert above the engine-only ceiling and no reduce control could ever re-enable it (a 500k model was a
+// dead end), and it said "reduce it in your CAD", while the reduction is right here.
+function featureOn() {
+  return engineSelect.value !== 'faceted' && document.getElementById('feature-toggle').checked;
+}
+function currentLimit() {
+  return featureOn() ? (maxTrianglesFeature || maxTriangles) : maxTriangles;
+}
+function reductionKeep() {       // the fraction the server will keep, or null when unknown (planar) / off
+  const mode = document.getElementById('decimate').value;
+  if (mode === 'ratio') return Number(document.getElementById('decimate-keep-num').value) / 100;
+  return mode === 'off' ? 1 : null;
+}
+function setReduction(keepPct) {  // keepPct null = off
+  const sel = document.getElementById('decimate');
+  sel.value = keepPct == null ? 'off' : 'ratio';
+  document.getElementById('decimate-controls').classList.toggle('hidden', keepPct == null);
+  if (keepPct != null) {
+    document.getElementById('decimate-keep').value = keepPct;
+    document.getElementById('decimate-keep-num').value = keepPct;
+  }
+  updateGate();
+}
+function updateGate() {
+  const n = lastTriCount;
   const box = document.getElementById('model-size');
   const callout = document.getElementById('reduce-callout');
-  if (!triCount) { box.classList.add('hidden'); callout.classList.add('hidden'); return; }
-  box.textContent = `${triCount.toLocaleString()} triangles`;
+  const why = document.getElementById('reduce-why');
+  const btn = document.getElementById('reduce-apply');
+  const state = document.getElementById('reduce-state');
+  const title = callout.querySelector('b');
+  if (!n || !selectedFile) { box.classList.add('hidden'); callout.classList.add('hidden'); return; }
+  box.textContent = `${n.toLocaleString()} triangles`;
   box.classList.remove('hidden');
-  const big = triCount > BIG_TRIS;
-  callout.classList.toggle('hidden', !big);
-  if (big) {
-    document.getElementById('reduce-why').textContent =
-      `Detailed models can take several minutes — especially with small holes and `
-      + `rounded edges. If it is slow, using half the triangles usually gives the `
-      + `same CAD result much sooner.`;
+  const limit = currentLimit();
+  const keep = reductionKeep();
+  const after = keep == null ? null : Math.round(n * keep);
+  const over = limit && n > limit;
+  const stillOver = limit && after != null && after > limit;
+  convertBtn.disabled = working || Boolean(stillOver);
+  callout.classList.toggle('hidden', !(over || n > BIG_TRIS || keep !== 1));
+  // the one-click reduction that fits (5% margin), or half for speed when it already fits
+  const fitPct = limit ? Math.max(1, Math.min(50, Math.floor(95 * limit / n))) : 50;
+  if (keep !== 1) {                                         // a reduction is chosen: say what it will do
+    title.textContent = stillOver ? 'Still too detailed.' : 'The mesh will be reduced first.';
+    why.textContent = after == null
+      ? 'Flat areas will be simplified before converting (the exact count is known after).'
+      : `${n.toLocaleString()} → about ${after.toLocaleString()} triangles before converting`
+        + (stillOver ? ` — the limit for this mode is ${limit.toLocaleString()}.` : '.');
+    btn.textContent = stillOver ? `Reduce to ${Math.round(n * fitPct / 100).toLocaleString()} triangles` : 'Undo reduction';
+    btn.dataset.action = stillOver ? 'fit' : 'undo';
+    state.textContent = '';
+  } else if (over) {                                        // too big as is: offer the fix, right here
+    title.textContent = 'Too detailed to convert as is.';
+    why.textContent = `${n.toLocaleString()} triangles; this mode takes up to ${limit.toLocaleString()}. `
+      + 'Reducing the mesh here keeps the overall shape; very small details may soften.';
+    btn.textContent = `Reduce to ${Math.round(n * fitPct / 100).toLocaleString()} triangles`;
+    btn.dataset.action = 'fit';
+    state.textContent = '';
+  } else {                                                  // fits, just big: optional speed-up
+    title.textContent = 'This model is big.';
+    why.textContent = 'Detailed models can take several minutes — especially with small holes and '
+      + 'rounded edges. Using half the triangles usually gives the same CAD result much sooner.';
+    btn.textContent = 'Use half the triangles';
+    btn.dataset.action = 'half';
+    state.textContent = '';
   }
+  btn.disabled = false;
+  btn.dataset.fit = String(fitPct);
 }
-document.getElementById('reduce-apply').addEventListener('click', () => {
-  document.getElementById('decimate').value = 'ratio';
-  document.getElementById('decimate').dispatchEvent(new Event('change'));
-  document.getElementById('decimate-keep').value = 50;
-  document.getElementById('decimate-keep-num').value = 50;
-  document.getElementById('reduce-state').textContent = '✓ will use half the triangles';
-  document.getElementById('reduce-apply').disabled = true;
+function updateSizeGuidance() { updateGate(); }
+document.getElementById('reduce-apply').addEventListener('click', (e) => {
+  const a = e.currentTarget.dataset.action;
+  if (a === 'undo') setReduction(null);
+  else setReduction(a === 'fit' ? Number(e.currentTarget.dataset.fit) : 50);
 });
+document.getElementById('decimate').addEventListener('change', updateGate);
+document.getElementById('decimate-keep').addEventListener('input', updateGate);
+document.getElementById('decimate-keep-num').addEventListener('input', updateGate);
+document.getElementById('feature-toggle').addEventListener('change', updateGate);
+engineSelect.addEventListener('change', updateGate);
+presetSelect.addEventListener('change', updateGate);
 
 document.getElementById('reset-btn').addEventListener('click', () => {
   document.getElementById('merge-toggle').checked = false;
@@ -462,10 +517,9 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   // Reset means "back to the recommended setup", not "back to the engine that finds
   // nothing". It used to select faceted + no feature pass, i.e. the one combination
   // that cannot recover a single cylinder.
-  document.getElementById('reduce-apply').disabled = false;
-  document.getElementById('reduce-state').textContent = '';
   presetSelect.value = 'cad';
   applyPreset();
+  updateGate();
 });
 
 // ---- cut helpers ----
@@ -712,6 +766,7 @@ async function _sendCutPreview() {
     currentMesh = obj;
     frameObject(obj);
     lastTriCount = nTris;
+    updateGate();                  // trimming can bring a model under the limit
     meshInfo.textContent = `${selectedFile.name} · ${nTris.toLocaleString()} triangles (trimmed)`;
     // plain words: what was removed, not how the engine counts it
     const removed = trisBeforeCut ? trisBeforeCut - nTris : 0;
@@ -1091,7 +1146,7 @@ convertBtn.addEventListener('click', async () => {
     statusEl.textContent = 'Failed: ' + e.message;
   } finally {
     closeWork();
-    convertBtn.disabled = false;
+    updateGate();                  // not a blanket re-enable: the size gate still decides
   }
 });
 

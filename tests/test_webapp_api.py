@@ -625,7 +625,7 @@ def test_a_model_above_the_triangle_limit_is_refused_with_the_number(client, mon
     assert resp.status_code == 413, resp.status_code
     detail = resp.json()["detail"]
     assert "320" in detail and "100" in detail, detail
-    assert "Simplify" in detail or "Decimate" in detail, detail
+    assert "Reduce mesh" in detail, detail                 # the fix is in the app, not "go use your CAD"
 
 
 def test_above_the_engine_limit_the_feature_path_is_tried_before_refusing(client, monkeypatch):
@@ -871,3 +871,35 @@ def test_the_disk_guard_refuses_when_free_space_cannot_cover_admitted_work(
     assert resp.headers.get("Retry-After")
     assert "space" in resp.json()["detail"].lower()
     assert srv._admission_depth() == 0, "the refused request kept its admission slot"
+
+
+def _two_spheres_stl():
+    import io
+    import trimesh as _tm
+    a = _tm.creation.icosphere(subdivisions=3, radius=5)
+    b = _tm.creation.icosphere(subdivisions=3, radius=5); b.apply_translation([20, 0, 0])
+    buf = io.BytesIO(); _tm.util.concatenate([a, b]).export(buf, file_type="stl")
+    return buf.getvalue()                                  # 2 x 1280 = 2560 triangles
+
+
+def test_an_over_limit_mesh_is_convertible_after_reducing_or_trimming_it(client, monkeypatch):
+    """No dead end: the ceiling applies to the mesh that is CONVERTED, after the reduction and the trims.
+    Trims used to be applied after the check, so trimming a too-big model under the limit was still refused."""
+    import json as _json
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "MAX_INPUT_TRIANGLES", 2000)
+    data = _two_spheres_stl()
+    f = lambda: {"file": ("two.stl", data, "application/octet-stream")}
+    r = client.post("/api/convert", files=f(), data={"engine": "faceted"})
+    assert r.status_code == 413 and "Reduce mesh" in r.json()["detail"]      # says where to fix it, in the app
+    r = client.post("/api/convert", files=f(), data={"engine": "faceted", "cuts": _json.dumps([{"type": "largest"}])})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/convert", files=f(), data={"engine": "faceted", "decimate": "ratio", "decimate_keep": "0.5"})
+    assert r.status_code == 200, r.text
+
+
+def test_limits_report_the_feature_ceiling(client):
+    import webapp.server as srv
+    l = client.get("/api/limits").json()
+    assert l["max_triangles"] == srv.MAX_INPUT_TRIANGLES and l["max_triangles_feature"] == srv.FEATURE_MAX_TRIANGLES
