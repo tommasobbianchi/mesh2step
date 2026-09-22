@@ -44,11 +44,17 @@ RESULT_TTL_S = 3600  # ponytail: in-memory job registry, 1h TTL. Move to Redis/S
 # and only mesh2step-loadtest.service sets it.
 MAX_CONCURRENT_CONVERSIONS = int(os.environ.get("MESH2STEP_SLOTS", "2"))
 _CONVERT_SLOTS = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
-_POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS + 2,
-                           thread_name_prefix="convert")
+# One worker thread per slot: waiting happens in the executor's FIFO queue, not in a thread blocked on the slot
+# semaphore with a 240 s timeout (a conversion runs up to 900 s, so queued jobs behind it used to fail).
+_POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CONVERSIONS, thread_name_prefix="convert")
+# Surge (2026-09-22, cited on a large channel): a bounded FIFO QUEUE instead of refusing whenever the estimated
+# wait passed 240 s. Up to QUEUE_MAX conversions wait their turn (uploads on disk, guarded by the disk check);
+# past it the polite 429 + Retry-After still applies. Memory is bounded by the slots, not by the queue.
+QUEUE_MAX = int(os.environ.get("MESH2STEP_QUEUE_MAX", "120"))
+_QUEUE: list = []                     # progress dicts of conversions waiting for a slot, oldest first
 _PENDING: dict[str, dict] = {}
 SYNC_WAIT_S = float(os.environ.get("MESH2STEP_SYNC_WAIT_S", "20"))    # hold the request this long; past it, hand back a job id
-QUEUE_WAIT_S = 240.0  # how long a queued conversion waits for a slot
+QUEUE_WAIT_S = 6 * 3600.0  # safety net only: with one thread per slot a queued job never blocks on the semaphore
 # With conversion behind a job, nobody is holding a connection open, so the only
 # real limit is how long the work deserves. Measured on this host: a
 # 64k-triangle gate needs 50-91s of CPU, and at load average 19 -- an unrelated
@@ -118,7 +124,7 @@ CANONIZE_MAX_BYTES = 25 * 1024 * 1024  # ~7s at the measured 0.27 s/MB read cost
 # before QUEUE_WAIT_S expires, so accepting it only means holding its upload on
 # disk for four minutes and then failing it. Refusing it now is the same answer,
 # four minutes earlier and without the disk.
-MAX_ADMITTED_CONVERSIONS = MAX_CONCURRENT_CONVERSIONS * 3
+MAX_ADMITTED_CONVERSIONS = MAX_CONCURRENT_CONVERSIONS + QUEUE_MAX
 
 # The depth cap above is the ceiling. The binding limit is usually this one: a
 # request is admitted only if the queue ahead of it is expected to clear inside
@@ -209,8 +215,7 @@ def _admission_depth() -> int:
 def _would_admit() -> bool:
     """Cheap, lock-free-enough read of the same predicate _try_admit enforces."""
     with _admission_lock:
-        return (_admitted < MAX_ADMITTED_CONVERSIONS
-                and _wait_estimate_s(_admitted) <= QUEUE_WAIT_S)
+        return _admitted < MAX_ADMITTED_CONVERSIONS
 
 
 def _try_admit() -> tuple[bool, float]:
@@ -218,10 +223,38 @@ def _try_admit() -> tuple[bool, float]:
     global _admitted
     with _admission_lock:
         wait = _wait_estimate_s(_admitted)
-        if _admitted >= MAX_ADMITTED_CONVERSIONS or wait > QUEUE_WAIT_S:
+        if _admitted >= MAX_ADMITTED_CONVERSIONS:          # the queue is full: refuse now, with Retry-After
             return False, wait
         _admitted += 1
         return True, wait
+
+
+def _enqueue(prog: dict) -> None:
+    with _admission_lock:
+        _QUEUE.append(prog)
+
+
+def _dequeue(prog) -> None:
+    with _admission_lock:
+        if prog in _QUEUE:
+            _QUEUE.remove(prog)
+
+
+def _queue_position(prog) -> int:
+    """1-based place in line, 0 once running (or unknown)."""
+    with _admission_lock:
+        for i, q in enumerate(_QUEUE):
+            if q is prog:
+                return i + 1
+    return 0
+
+
+def _queue_info(prog) -> dict:
+    pos = _queue_position(prog)
+    if not pos:
+        return {}
+    eta = (pos - 1) / MAX_CONCURRENT_CONVERSIONS * _convert_estimate_s + _convert_estimate_s / 2
+    return {"queue_position": pos, "queue_eta_s": round(eta)}
 
 
 def _release_admission() -> None:
@@ -611,7 +644,9 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     alone, and the same work under load average 19 got 18% of a core and blew a
     900s ceiling. Queuing beats thrashing.
     """
-    if not _CONVERT_SLOTS.acquire(timeout=QUEUE_WAIT_S):
+    acquired = _CONVERT_SLOTS.acquire(timeout=QUEUE_WAIT_S)
+    _dequeue(progress)                                        # running now (or given up): out of the line
+    if not acquired:
         # Admission should make this unreachable -- MAX_ADMITTED_CONVERSIONS is
         # sized so the last waiter starts inside QUEUE_WAIT_S. If it ever fires
         # anyway it is still backpressure, not a server fault, so it answers 429
@@ -882,8 +917,11 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
     try:  # the AI rebuild is extra; queueing it must never fail the conversion
         if _recon_enabled():
-            _RECON[token] = {"status": "queued", "ts": time.time()}
-            _RECON_POOL.submit(_recon_worker, token, Path(stl_path), Path(workdir), stem)
+            if _recon_admit():
+                _RECON[token] = {"status": "queued", "ts": time.time()}
+                _RECON_POOL.submit(_recon_worker, token, Path(stl_path), Path(workdir), stem)
+            else:                                          # surge / daily budget: the conversion above stands
+                _RECON[token] = {"status": "busy", "ts": time.time()}
     except Exception as e:  # noqa: BLE001
         print(f"SRVRECON queue failed: {e}", file=sys.stderr)
     return {"ok": True, "stats": d, "download_token": token}
@@ -892,6 +930,23 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
 # --- AI rebuild (tools/recon): runs AFTER a conversion is served, offered as a second download ---
 _RECON: dict[str, dict] = {}                       # conversion token -> rebuild status
 _RECON_POOL = ThreadPoolExecutor(max_workers=1)     # one rebuild at a time: each is minutes of model calls
+
+
+_RECON_DAY: dict = {}                 # UTC date -> rebuilds started (the paid model's daily budget)
+
+
+def _recon_admit() -> bool:
+    """At most MESH2STEP_RECON_QUEUE_MAX rebuilds waiting/running and MESH2STEP_RECON_DAILY_MAX a day: each
+    rebuild can call a paid model for minutes, and the pool behind it has one worker and no queue bound."""
+    qmax = int(os.environ.get("MESH2STEP_RECON_QUEUE_MAX", "6"))
+    dmax = int(os.environ.get("MESH2STEP_RECON_DAILY_MAX", "100"))
+    backlog = sum(1 for r in _RECON.values() if r.get("status") in ("queued", "running"))
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    if backlog >= qmax or _RECON_DAY.get(day, 0) >= dmax:
+        return False
+    _RECON_DAY.clear() if day not in _RECON_DAY else None
+    _RECON_DAY[day] = _RECON_DAY.get(day, 0) + 1
+    return True
 
 
 def _recon_enabled() -> bool:
@@ -1182,6 +1237,7 @@ def convert(
         # what the client already contracts for.
         # shared with the worker by reference: it fills in the phase file once it knows the path
         prog: dict = {}
+        _enqueue(prog)                                            # leaves the line when a slot takes it
         fut = _POOL.submit(
             _convert_job,
             t_admit=t_admit, progress=prog,
@@ -1194,8 +1250,10 @@ def convert(
         )
         handed_off = True  # the worker owns the admission slot from here on
         try:
-            # Small models still answer in one round trip, exactly as before.
-            return fut.result(timeout=SYNC_WAIT_S)
+            # Small models still answer in one round trip, exactly as before -- unless they must wait in line:
+            # then the ticket comes back at once so the page can show the place in the queue.
+            time.sleep(0.05)
+            return fut.result(timeout=0.1 if _queue_position(prog) else SYNC_WAIT_S)
         except FuturesTimeout:
             # Big ones get a ticket instead of a dead connection. A 64k-triangle gate
             # needs 91s on an idle host and far longer on a busy one; no browser, proxy
@@ -1203,7 +1261,7 @@ def convert(
             job = uuid.uuid4().hex
             _PENDING[job] = {"future": fut, "ts": time.time(), "name": f"{stem}.step",
                              "progress": prog}
-            return {"ok": True, "pending": True, "job": job,
+            return {"ok": True, "pending": True, "job": job, **_queue_info(prog),
                     "message": "Still converting — this model is large."}
     finally:
         # Every path out of the block above that is not a hand-off -- a bad
@@ -1239,9 +1297,10 @@ def job_status(job: str):
         raise HTTPException(404, "unknown or expired job")
     fut = entry["future"]
     if not fut.done():
+        q = _queue_info(entry.get("progress"))
         return {"ok": True, "pending": True, "job": job,
                 "elapsed": round(time.time() - entry["ts"], 1),
-                **_read_progress(entry.get("progress"))}
+                **(q or _read_progress(entry.get("progress")))}
     # kept until the TTL purge or the MAX_PENDING_JOBS cap: a client whose connection dropped
     # on the response carrying the result polls again and must get the same answer, not a 404
     try:

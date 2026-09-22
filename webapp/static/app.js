@@ -998,6 +998,13 @@ function showTime(secs) {
 function updateWork(data, secs, note) {
   if (data) workData = data;
   if (note) { workStep.textContent = note; }
+  else if (data && data.queue_position) {                 // a surge: say where they are in line
+    workBar.classList.add('indeterminate');
+    const mins = Math.max(1, Math.round((data.queue_eta_s || 0) / 60));
+    workStep.textContent = data.queue_position === 1
+      ? `You are next in line — your model starts in about ${mins} min`
+      : `You are number ${data.queue_position} in line — your model starts in about ${mins} min`;
+  }
   else if (data && data.phase_n) {
     workBar.classList.remove('indeterminate');
     workFill.style.width = `${Math.round(100 * (data.phase_i - 0.5) / data.phase_n)}%`;
@@ -1074,6 +1081,7 @@ convertBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.detail || 'server error');
     // A big model comes back as a ticket instead of a result: a 64k-triangle part
     // needs minutes, and no browser or proxy holds a request open that long.
+    if (data.pending && data.queue_position) updateWork(data, 0);   // in line from the first answer
     if (data.pending) data = await waitForJob(data.job);
     closeWork();
     renderResult(data);
@@ -1106,6 +1114,7 @@ const PHASE_WORDS = {
 };
 
 function describeProgress(data, secs) {
+  if (data.queue_position) return `Waiting in line — number ${data.queue_position} (${secs}s)`;
   if (!data.phase_n) return `Still converting — ${secs}s. Large models take a few minutes.`;
   const what = PHASE_WORDS[data.phase] || data.phase;
   const ceiling = Math.round((data.ceiling_s || 0) / 60);
@@ -1196,6 +1205,11 @@ async function pollRecon(token) {
   let r;
   try { r = await (await fetch(`api/recon/${token}`)).json(); } catch { return; }
   if (!r || r.status === 'disabled' || r.detail) return;
+  if (r.status === 'busy') {                               // surge or daily budget: say so, plainly
+    box.textContent = 'AI rebuild (beta): too many requests right now — your conversion above is complete.';
+    resultEl.appendChild(box);
+    return;
+  }
   resultEl.appendChild(box);
   const done = ['accepted', 'best_effort', 'failed', 'unavailable'];
   while (box.isConnected) {

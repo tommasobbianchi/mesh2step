@@ -732,29 +732,64 @@ def test_a_full_queue_is_refused_at_once_instead_of_waiting_out_queue_wait(
     assert srv._admission_depth() == 0, "an admission slot leaked"
 
 
-def test_admission_shrinks_when_conversions_are_measured_slower(client, cube_stl_bytes):
-    """The queue is sized on measured time, not on the time the constants assume.
-
-    A 19,042-triangle bench model measured >210s on this host against a 91s seed.
-    At 91s six may wait inside QUEUE_WAIT_S; at 210s only four can, and the fifth
-    must be refused rather than told to wait for a slot that arrives too late.
-    """
+def test_a_slow_host_queues_instead_of_refusing(client, cube_stl_bytes):
+    """Surge policy (2026-09-22): a slower measured conversion no longer shrinks admission -- the job waits its
+    turn in a bounded FIFO queue (QUEUE_MAX) instead of being refused because its wait passed 240 s."""
     import webapp.server as srv
 
     before = srv._convert_estimate_s
+    depth = 0
     try:
-        srv._convert_estimate_s = 210.0
-        depth = 0
+        srv._convert_estimate_s = 900.0
         while srv._try_admit()[0]:
             depth += 1
             assert depth <= srv.MAX_ADMITTED_CONVERSIONS
-        assert depth < srv.MAX_ADMITTED_CONVERSIONS, (
-            "a slower engine must shrink the queue, not keep admitting to the cap")
-        assert srv._wait_estimate_s(depth) > srv.QUEUE_WAIT_S
+        assert depth == srv.MAX_ADMITTED_CONVERSIONS == srv.MAX_CONCURRENT_CONVERSIONS + srv.QUEUE_MAX
     finally:
         for _ in range(depth):
             srv._release_admission()
         srv._convert_estimate_s = before
+
+
+def test_a_queued_upload_gets_its_place_in_line_at_once(client, cube_stl_bytes):
+    """Every slot busy: the upload is not held for SYNC_WAIT_S nor refused; the ticket comes back at once with
+    its queue position, the job endpoint reports it, and the job runs when a slot frees."""
+    import time as _t
+    import webapp.server as srv
+
+    held = [srv._CONVERT_SLOTS.acquire(timeout=5) for _ in range(srv.MAX_CONCURRENT_CONVERSIONS)]
+    assert all(held)
+    try:
+        t0 = _t.time()
+        r = client.post("/api/convert", files={"file": ("cube.stl", cube_stl_bytes, "application/octet-stream")},
+                        data={"engine": "faceted"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("pending") and body.get("queue_position") == 1 and body.get("queue_eta_s") is not None
+        assert _t.time() - t0 < srv.SYNC_WAIT_S / 2              # not held for the synchronous wait
+        st = client.get(f"/api/job/{body['job']}").json()
+        assert st.get("queue_position") == 1
+    finally:
+        for _ in held:
+            srv._CONVERT_SLOTS.release()
+    for _ in range(300):
+        st = client.get(f"/api/job/{body['job']}").json()
+        if not st.get("pending"):
+            break
+        _t.sleep(0.1)
+    assert st.get("ok") and st.get("download_token"), st
+    assert srv._admission_depth() == 0 and not srv._QUEUE
+
+
+def test_the_ai_rebuild_is_capped_in_a_surge(monkeypatch):
+    """Each rebuild may call a paid model for minutes; past MESH2STEP_RECON_QUEUE_MAX waiting it answers busy."""
+    import webapp.server as srv
+
+    monkeypatch.setenv("MESH2STEP_RECON_QUEUE_MAX", "2")
+    monkeypatch.setattr(srv, "_RECON", {"a": {"status": "queued"}, "b": {"status": "running"}})
+    assert srv._recon_admit() is False
+    monkeypatch.setattr(srv, "_RECON", {"a": {"status": "accepted"}})
+    assert srv._recon_admit() is True
 
 
 def test_a_declared_oversize_upload_is_refused_before_the_body_is_read(client):
