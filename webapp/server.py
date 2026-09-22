@@ -358,6 +358,7 @@ _JOBS: dict[str, dict] = {}  # token -> {"path": Path, "name": str, "ts": float}
 
 
 def _drop_job(token: str) -> None:
+    _RECON.pop(token, None)
     job = _JOBS.pop(token, None)
     if not job:
         return
@@ -878,7 +879,65 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
             ]
     token = uuid.uuid4().hex
     _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
+    try:  # the AI rebuild is extra; queueing it must never fail the conversion
+        if _recon_enabled():
+            _RECON[token] = {"status": "queued", "ts": time.time()}
+            _RECON_POOL.submit(_recon_worker, token, Path(stl_path), Path(workdir), stem)
+    except Exception as e:  # noqa: BLE001
+        print(f"SRVRECON queue failed: {e}", file=sys.stderr)
     return {"ok": True, "stats": d, "download_token": token}
+
+
+# --- AI rebuild (tools/recon): runs AFTER a conversion is served, offered as a second download ---
+_RECON: dict[str, dict] = {}                       # conversion token -> rebuild status
+_RECON_POOL = ThreadPoolExecutor(max_workers=1)     # one rebuild at a time: each is minutes of model calls
+
+
+def _recon_enabled() -> bool:
+    return os.environ.get("MESH2STEP_RECON") == "1"
+
+
+def _run_recon(stl_path: Path, workdir: Path) -> dict:
+    models = os.environ.get("MESH2STEP_RECON_MODELS", "opus").split()
+    rounds = os.environ.get("MESH2STEP_RECON_ROUNDS", "5")
+    timeout = float(os.environ.get("MESH2STEP_RECON_TIMEOUT_S", "2700"))
+    script = Path(__file__).resolve().parents[1] / "tools" / "recon" / "recon_part.py"
+    __import__("subprocess").run(
+        [sys.executable, str(script), str(stl_path), str(workdir), "--models", *models,
+         "--rounds", rounds, "--timeout", str(timeout)],
+        capture_output=True, text=True, timeout=timeout + 300)
+    res = workdir / "recon_result.json"
+    return json.loads(res.read_text()) if res.exists() else {"status": "failed"}
+
+
+def _recon_worker(token: str, stl_path: Path, workdir: Path, stem: str) -> None:
+    t0 = time.time()
+    res: dict = {}
+    try:
+        _RECON[token] = {"status": "running", "ts": t0}
+        res = _run_recon(stl_path, workdir / "recon")  # looked up at call time: tests replace it
+        step = res.get("best_step")
+        if step and Path(step).exists():
+            rtok = uuid.uuid4().hex
+            _JOBS[rtok] = {"path": Path(step), "name": f"{stem}.ai.step", "ts": time.time()}
+            rep, rp = res.get("report") or {}, res.get("represent") or {}
+            p95s = [rep[k] for k in ("p95_mesh_to_solid", "p95_solid_to_mesh") if rep.get(k) is not None]
+            metrics = {k: rep.get(k) for k in ("valid", "faces", "cylinders", "cones", "tori", "planes",
+                                               "bsplines")}
+            metrics.update(p95=max(p95s) if p95s else None, curved=rp.get("curved"),
+                           patches=rp.get("patches"))
+            out = {"status": res.get("status"), "model": res.get("model"), "seconds": res.get("seconds"),
+                   "download_token": rtok, "metrics": metrics}
+        else:
+            out = {"status": "unavailable" if res.get("status") == "unavailable" else "failed"}
+    except Exception as e:  # noqa: BLE001 - never raise into the pool
+        out = {"status": "failed", "error": str(e)[:300]}
+    if token in _JOBS:  # the conversion may have expired meanwhile
+        _RECON[token] = {**out, "ts": time.time()}
+    m = out.get("metrics") or {}
+    print(f"SRVRECON {time.time() - t0:.1f} status={out['status']} model={out.get('model')} "
+          f"faces={m.get('faces')} curved={m.get('curved')}/{m.get('patches')} p95={m.get('p95')}",
+          file=sys.stderr)
 
 
 # What the client may be told before the result exists. The count is exact (the candidate list
@@ -1151,6 +1210,16 @@ def limits() -> dict:
     return {"max_triangles": MAX_INPUT_TRIANGLES,
             "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
             "version": APP_VERSION}
+
+
+@app.get("/api/recon/{token}")
+def recon_status(token: str):
+    if not _recon_enabled():
+        return {"status": "disabled"}
+    entry = _RECON.get(token)
+    if entry is None:
+        raise HTTPException(404, "unknown or expired conversion")
+    return {k: v for k, v in entry.items() if k != "ts"}
 
 
 @app.get("/api/job/{job}")
