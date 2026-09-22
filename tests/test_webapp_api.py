@@ -903,3 +903,22 @@ def test_limits_report_the_feature_ceiling(client):
     import webapp.server as srv
     l = client.get("/api/limits").json()
     assert l["max_triangles"] == srv.MAX_INPUT_TRIANGLES and l["max_triangles_feature"] == srv.FEATURE_MAX_TRIANGLES
+
+
+def test_edit_previews_trims_then_reduction(client):
+    """The page reduces BEFORE converting and shows the result (Tommaso 2026-09-22): /api/edit returns the
+    trimmed-then-reduced mesh, with the counts, and that STL is what gets converted."""
+    import json as _json
+    data = _two_spheres_stl()                              # 2560 triangles, two loose spheres
+    f = lambda: {"file": ("two.stl", data, "application/octet-stream")}
+    r = client.post("/api/edit", files=f(), data={"decimate": "ratio", "decimate_keep": "0.5"})
+    assert r.status_code == 200, r.text
+    st = _json.loads(r.headers["X-Mesh-Stats"])
+    assert st["n_tris_before"] == 2560 and 1000 <= st["n_tris_after"] <= 1400 and "decimate_dv_pct" in st
+    m = trimesh.load(io.BytesIO(r.content), file_type="stl", force="mesh")
+    assert len(m.faces) == st["n_tris_after"]
+    r = client.post("/api/edit", files=f(), data={"cuts": _json.dumps([{"type": "largest"}]),
+                                                    "decimate": "ratio", "decimate_keep": "0.5"})
+    st = _json.loads(r.headers["X-Mesh-Stats"])
+    assert st["n_tris_trimmed"] == 1280 and st["n_tris_after"] < 1280        # trimmed first, then reduced
+    assert client.post("/api/edit", files=f(), data={}).status_code == 400    # nothing asked: refused

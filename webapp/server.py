@@ -1583,11 +1583,19 @@ def _parse_cuts(cuts_str: str | None) -> list | None:
 @app.post("/api/edit")
 def edit_mesh(
     file: UploadFile = File(...),
-    cuts: str = Form(...),
+    cuts: str = Form("[]"),
+    decimate: str | None = Form(None),
+    decimate_keep: float = Form(0.25),
 ):
-    parsed_cuts = _parse_cuts(cuts)
-    if parsed_cuts is None:
-        raise HTTPException(400, "cuts parameter is required")
+    """Mesh surgery the user PREVIEWS before converting: trims, then an optional reduction. The page shows the
+    returned STL and converts exactly that file (Tommaso 2026-09-22: reduce before the RE, so it can be seen)."""
+    parsed_cuts = _parse_cuts(cuts) or []
+    if decimate not in (None, "planar", "ratio"):
+        raise HTTPException(400, f"invalid decimate {decimate!r}; must be planar, ratio, or omitted")
+    if decimate == "ratio" and not (0.01 <= decimate_keep < 1.0):
+        raise HTTPException(400, f"invalid decimate_keep {decimate_keep!r}; must be >= 0.01 and < 1.0")
+    if not parsed_cuts and decimate is None:
+        raise HTTPException(400, "nothing to do: give cuts and/or decimate")
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
@@ -1604,15 +1612,25 @@ def edit_mesh(
                     raise HTTPException(413, f"file exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB limit")
                 fh.write(chunk)
 
-        verts, tris = load_mesh(in_path)
-        cr = apply_cuts(verts, tris, parsed_cuts)
-        m = trimesh.Trimesh(vertices=cr.verts, faces=cr.tris, process=False)
+        try:
+            verts, tris = load_mesh(in_path)
+        except MeshLoadError as e:
+            raise HTTPException(400, f"could not read mesh: {e.args[0].split(': ', 1)[-1]}")
+        n0 = len(tris)
+        stats = {"n_tris_before": n0}
+        if parsed_cuts:
+            cr = apply_cuts(verts, tris, parsed_cuts)
+            verts, tris = cr.verts, cr.tris
+        stats["n_tris_trimmed"] = len(tris)
+        if decimate is not None and len(tris):
+            from mesh2step.decimate import decimate_mesh
+            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep)
+            verts, tris = dr.verts, dr.tris
+            stats.update(decimate_mode=dr.mode, decimate_dv_pct=round(dr.dv_pct, 4))
+        stats["n_tris_after"] = len(tris)
+        m = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
         stl_bytes = m.export(file_type="stl")
-
-        stats_header = json.dumps({
-            "n_tris_before": cr.n_tris_before,
-            "n_tris_after": cr.n_tris_after,
-        })
+        stats_header = json.dumps(stats)
         return Response(
             content=stl_bytes,
             media_type="model/stl",
