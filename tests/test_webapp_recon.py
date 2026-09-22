@@ -94,3 +94,32 @@ def test_a_crashing_rebuild_never_touches_the_conversion(monkeypatch):
 def test_unknown_token_is_404_when_enabled(monkeypatch):
     monkeypatch.setenv("MESH2STEP_RECON", "1")
     assert TestClient(srv.app).get("/api/recon/deadbeef").status_code == 404
+
+
+def test_a_pending_rebuild_keeps_its_conversion_alive(monkeypatch, tmp_path):
+    """The conversion's workdir is where the rebuild runs; expiring it mid-rebuild deleted the work."""
+    d = tmp_path / "mesh2step_x"; d.mkdir(); f = d / "a.step"; f.write_text("x")
+    old = time.time() - srv.RESULT_TTL_S - 10
+    monkeypatch.setitem(srv._JOBS, "tokA", {"path": f, "name": "a.step", "ts": old})
+    monkeypatch.setitem(srv._JOBS, "tokB", {"path": f, "name": "b.step", "ts": old})
+    monkeypatch.setitem(srv._RECON, "tokA", {"status": "running", "ts": old})
+    srv._purge_expired()
+    assert "tokA" in srv._JOBS and "tokB" not in srv._JOBS
+    srv._JOBS.pop("tokA", None); srv._RECON.pop("tokA", None)
+
+
+def test_the_rebuild_download_has_its_own_workdir(monkeypatch):
+    monkeypatch.setenv("MESH2STEP_RECON", "1")
+
+    def fake(stl_path, workdir):
+        workdir.mkdir(parents=True, exist_ok=True); s = workdir / "best.step"; s.write_text("ISO-10303-21; ai")
+        return {"status": "accepted", "model": "m", "best_step": str(s), "report": {"valid": True}, "represent": {}}
+
+    monkeypatch.setattr(srv, "_run_recon", fake)
+    c = TestClient(srv.app)
+    tok = _convert(c)
+    s = _poll(c, tok)
+    conv, ai = srv._JOBS[tok]["path"], srv._JOBS[s["download_token"]]["path"]
+    assert conv.parent not in ai.parents                  # dropping the conversion cannot delete it
+    srv._drop_job(tok)
+    assert c.get(f"/api/download/{s['download_token']}").status_code == 200

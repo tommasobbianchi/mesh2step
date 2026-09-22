@@ -393,8 +393,9 @@ def _cap_registries() -> None:
 
 def _purge_expired() -> None:
     now = time.time()
-    for token in [t for t, j in _JOBS.items() if now - j["ts"] > RESULT_TTL_S]:
-        _drop_job(token)
+    for token in [t for t, j in _JOBS.items() if now - j["ts"] > RESULT_TTL_S
+                  and _RECON.get(t, {}).get("status") not in ("queued", "running")]:
+        _drop_job(token)   # a conversion whose AI rebuild is still pending keeps its workdir alive
     for job in [j for j, e in _PENDING.items()
                 if e["future"].done() and now - e["ts"] > RESULT_TTL_S]:
         _PENDING.pop(job, None)
@@ -919,7 +920,10 @@ def _recon_worker(token: str, stl_path: Path, workdir: Path, stem: str) -> None:
         step = res.get("best_step")
         if step and Path(step).exists():
             rtok = uuid.uuid4().hex
-            _JOBS[rtok] = {"path": Path(step), "name": f"{stem}.ai.step", "ts": time.time()}
+            # its own workdir: the download must outlive the conversion's, which expires on its own clock
+            own = Path(tempfile.mkdtemp(prefix="mesh2step_")) / f"{stem}.ai.step"
+            __import__("shutil").copy(step, own)
+            _JOBS[rtok] = {"path": own, "name": f"{stem}.ai.step", "ts": time.time()}
             rep, rp = res.get("report") or {}, res.get("represent") or {}
             p95s = [rep[k] for k in ("p95_mesh_to_solid", "p95_solid_to_mesh") if rep.get(k) is not None]
             metrics = {k: rep.get(k) for k in ("valid", "faces", "cylinders", "cones", "tori", "planes",
