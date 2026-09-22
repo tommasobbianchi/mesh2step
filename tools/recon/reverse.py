@@ -281,9 +281,36 @@ def reverse(stl):
     if len(zs) > 2:                                           # a stack of extrusions: one sketch per level
         for z0, z1 in zip(zs[:-1], zs[1:]):
             shapes = level_section(m, ax, (z0 + z1) / 2)
-            if shapes:
+            if not shapes:
+                continue
+            prev = R["levels"][-1] if R["levels"] else None
+            if prev and abs(prev["z1"] - z0) < 1e-9 and same_shapes(prev["shapes"], shapes):
+                prev["z1"] = z1                               # the same sketch continues: one extrusion, no slivers
+            else:
                 R["levels"].append({"z0": z0, "z1": z1, "shapes": shapes})
+        if len(R["levels"]) == 1:                             # it was one prism after all: the silhouette path
+            R["levels"] = []
     return R
+
+
+def _region(shapes):
+    from shapely.geometry import Polygon as P
+    out = None
+    for sh in shapes:
+        g = P(sh["outer"], [h for h in sh["holes"]]).buffer(0)
+        out = g if out is None else out.union(g)
+    return out
+
+
+def same_shapes(a, b, tol=0.05):
+    """Two level sections are one sketch when their regions differ by a mean offset under tol (mm). Near-equal
+    outlines stacked as separate extrusions leave 0.02-0.08 mm2 sliver faces that the STEP round trip breaks
+    far from the origin (part 8 at x ~8900)."""
+    ra, rb = _region(a), _region(b)
+    if ra is None or rb is None:
+        return False
+    per = max(ra.length, rb.length, 1e-9)
+    return ra.symmetric_difference(rb).area / per < tol
 
 
 def program(R):
