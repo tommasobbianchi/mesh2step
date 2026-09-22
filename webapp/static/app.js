@@ -1118,6 +1118,41 @@ function renderResult(data) {
   });
   renderStats(data);
   showResultPreview(data.download_token);
+  pollRecon(data.download_token);
+}
+
+// AI rebuild (beta): a second, model-authored STEP that arrives minutes after the pipeline's.
+// Silent when the server has it disabled; stops when a newer conversion replaces the card.
+async function pollRecon(token) {
+  const box = document.createElement('div');
+  box.className = 'result-line quiet';
+  let r;
+  try { r = await (await fetch(`api/recon/${token}`)).json(); } catch { return; }
+  if (!r || r.status === 'disabled' || r.detail) return;
+  resultEl.appendChild(box);
+  const done = ['accepted', 'best_effort', 'failed', 'unavailable'];
+  while (box.isConnected) {
+    if (done.includes(r.status)) break;
+    box.textContent = `AI rebuild (beta): ${r.status === 'queued' ? 'queued' : 'working'}… this takes several minutes`;
+    await new Promise((ok) => setTimeout(ok, 10000));
+    try { r = await (await fetch(`api/recon/${token}`)).json(); } catch { return; }
+  }
+  if (!box.isConnected) return;
+  if (!r.download_token) {
+    box.textContent = r.status === 'unavailable' ? 'AI rebuild (beta): unavailable right now'
+                                                 : 'AI rebuild (beta): no usable result for this part';
+    return;
+  }
+  const m = r.metrics || {};
+  const round = (m.cylinders || 0) + (m.cones || 0) + (m.tori || 0);
+  box.className = 'result-line';
+  box.innerHTML = `<b>AI rebuild (beta)</b> — ${m.faces} faces, ${round} round`
+    + ` (${m.cylinders} cylinders, ${m.cones} cones, ${m.tori} tori), deviation ${m.p95 != null ? m.p95.toFixed(3) : '?'} mm`
+    + (r.status === 'accepted' ? '' : ' · best effort')
+    + ` <button class="download-btn" id="dl-ai">Download AI rebuild</button>`;
+  document.getElementById('dl-ai').addEventListener('click', () => {
+    window.location.href = `api/download/${r.download_token}`;
+  });
 }
 
 function renderStats(data) {
