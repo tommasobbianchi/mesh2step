@@ -27,7 +27,11 @@ def load_mesh(path) -> tuple[np.ndarray, np.ndarray]:
             f"unsupported extension {path.suffix!r} (supported: {sorted(SUPPORTED_EXTENSIONS)})"
         )
 
-    loaded = trimesh.load(path.as_posix(), force="mesh", process=False)
+    try:
+        loaded = trimesh.load(path.as_posix(), force="mesh", process=False)
+    except Exception as e:  # noqa: BLE001 - a bad file or a missing optional loader must reach the user as
+        # a readable error, not a bare 500 (behemoth 2026-09-22: 3MF needed networkx, absent there)
+        raise MeshLoadError(f"{path.name}: could not read the file ({type(e).__name__}: {e})") from e
 
     if isinstance(loaded, trimesh.Scene):
         geoms = list(loaded.geometry.values())

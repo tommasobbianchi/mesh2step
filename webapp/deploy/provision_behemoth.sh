@@ -64,7 +64,10 @@ ssh -o BatchMode=yes "$HOST" 'python3 -m pip install --user -q --break-system-pa
     cadquery-ocp-novtk==7.9.3.1.1 \
     fastapi==0.129.0 uvicorn==0.40.0 \
     numpy-stl==3.2.0 trimesh==4.11.2 \
+    networkx==3.6.1 lxml==6.0.2 shapely==2.1.2 rtree==1.4.1 \
     python-multipart requests 2>&1 | tail -8'
+# networkx/lxml/shapely/rtree: trimesh's optional loaders (3MF needs networkx). Missing on behemoth until
+# 2026-09-22, when a 3MF upload there died as a bare 500 -- nativedev had them, so the gate never saw it.
 # numpy/scipy/cadquery are deliberately unpinned: 3.14 wheels differ and the
 # service imports none of cadquery's own API, only OCP.
 # The app does `from mesh2step.cut import ...`, and the package lives under
