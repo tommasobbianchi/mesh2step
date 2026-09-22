@@ -31,7 +31,9 @@ def p95(rep):
 
 def run_loop(cmd, timeout):
     """Run one model's loop in its own process group; on timeout kill the whole group (model call too)."""
-    p = subprocess.Popen(cmd, start_new_session=True, env=dict(os.environ, RECON_STOP_REL=str(ACCEPT_REL)))
+    p = subprocess.Popen(cmd, start_new_session=True, env=dict(os.environ, RECON_STOP_REL=str(ACCEPT_REL),
+                                                                 # mesh junctions: 16.8% recall on the corpus
+                                                                 RECON_MESH_JUNCTIONS=os.environ.get("RECON_MESH_JUNCTIONS", "0")))
     try:
         return p.wait(timeout=max(1.0, timeout))
     except subprocess.TimeoutExpired:

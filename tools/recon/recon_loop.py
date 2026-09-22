@@ -281,7 +281,10 @@ def main():
     try:                                            # the mesh's junctions: once, into the brief
         import junction_tree
         import mesh_junctions
-        jrec = mesh_junctions.extract(STL)
+        # RECON_MESH_JUNCTIONS=0 keeps the mesh's junction list out of the brief and the feedback (tools stay):
+        # recon_part sets it until mesh_junctions passes its corpus gate (tests/test_mesh_junctions.py)
+        jrec = mesh_junctions.extract(STL) if os.environ.get("RECON_MESH_JUNCTIONS", "1") != "0" \
+            else {"junctions": [], "blends": []}
         JUNC_NODES = [{"sig": r["sig"], "tool": junction_tree.TREE[r["sig"]]["tool"],
                        "_centre": np.asarray(r["centre"], float)}
                       for r in jrec["junctions"] + jrec["blends"] if r["sig"] in junction_tree.TREE]

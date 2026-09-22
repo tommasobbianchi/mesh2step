@@ -39,3 +39,29 @@ def test_a_real_corpus_part_in_bounded_time():
     r = mesh_junctions.extract(Path("/home/tommaso/corpora/mechparts/15.stl"))
     assert time.time() - t0 < 120
     assert sum(1 for j in r["junctions"] if "cylinder" in j["sig"]) >= 3     # its 3 round faces meet planes
+
+
+def test_corpus_blends_match_the_accepted_cad():
+    """The gate the synthetic tests missed (2026-09-22: 16.8% recall, 0.1% precision, 4 crashes on the corpus).
+
+    Truth: junctions.extract on the accepted Opus reconstruction of each mechparts part (tests/data/blend_truth.json).
+    Scored as multisets of blend signatures, over every part with <= 30k triangles.
+    """
+    import json
+    from collections import Counter
+    import mesh_junctions
+    truth = json.loads((Path(__file__).resolve().parent / "data" / "blend_truth.json").read_text())
+    tp = fn = fp = 0
+    for part, t in sorted(truth.items()):
+        if t["triangles"] > 30000:
+            continue
+        t0 = time.time()
+        found = Counter(b["sig"] for b in
+                        mesh_junctions.extract(Path(f"/home/tommaso/corpora/mechparts/{part}.stl"))["blends"])
+        assert time.time() - t0 < 120, part
+        want = Counter(t["blends"])
+        tp += sum((want & found).values())
+        fn += sum((want - found).values())
+        fp += sum((found - want).values())
+    recall, precision = tp / max(1, tp + fn), tp / max(1, tp + fp)
+    assert recall >= 0.6 and precision >= 0.6, f"recall {recall:.1%} precision {precision:.1%}"

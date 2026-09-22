@@ -1,0 +1,355 @@
+{
+ "1": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|round": 1,
+   "blend:cylinder|cylinder+plane|fillet": 2,
+   "blend:cylinder|plane+plane|fillet": 4,
+   "blend:cylinder|plane+plane|round": 4,
+   "blend:cylinder|plane+torus|fillet": 4,
+   "blend:cylinder|plane+torus|round": 4,
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+plane|fillet": 6
+  },
+  "triangles": 24014
+ },
+ "10": {
+  "blends": {
+   "blend:cone|cone+cone|fillet": 6,
+   "blend:cone|cone+cone|round": 8,
+   "blend:cylinder|cylinder+cylinder|fillet": 2,
+   "blend:cylinder|cylinder+cylinder|round": 1
+  },
+  "triangles": 9452
+ },
+ "11": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 16,
+   "blend:cylinder|plane+torus|fillet": 2,
+   "blend:cylinder|plane+torus|round": 2,
+   "blend:cylinder|torus+torus|fillet": 1,
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+cylinder|round": 2,
+   "blend:torus|cylinder+plane|round": 4,
+   "blend:torus|plane+torus|round": 2
+  },
+  "triangles": 46674
+ },
+ "12": {
+  "blends": {
+   "blend:cylinder|cylinder+torus|fillet": 1,
+   "blend:cylinder|cylinder+torus|round": 1,
+   "blend:cylinder|plane+plane|round": 3,
+   "blend:cylinder|plane+torus|round": 2,
+   "blend:cylinder|torus+torus|fillet": 6,
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+plane|round": 17,
+   "blend:torus|cylinder+torus|round": 3
+  },
+  "triangles": 164996
+ },
+ "13": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 1,
+   "blend:cylinder|cylinder+plane|round": 1,
+   "blend:cylinder|plane+plane|round": 1
+  },
+  "triangles": 3096
+ },
+ "14": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 6,
+   "blend:cylinder|cylinder+cylinder|round": 6,
+   "blend:cylinder|cylinder+plane|fillet": 4
+  },
+  "triangles": 23666
+ },
+ "15": {
+  "blends": {},
+  "triangles": 1784
+ },
+ "16": {
+  "blends": {
+   "blend:cylinder|torus+torus|fillet": 2,
+   "blend:cylinder|torus+torus|round": 2,
+   "blend:torus|cylinder+plane|round": 8
+  },
+  "triangles": 32688
+ },
+ "17": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 4,
+   "blend:cylinder|cylinder+cylinder|round": 8,
+   "blend:cylinder|cylinder+plane|fillet": 12,
+   "blend:torus|cylinder+plane|round": 1
+  },
+  "triangles": 26386
+ },
+ "18": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 2,
+   "blend:cylinder|torus+torus|fillet": 2,
+   "blend:torus|cylinder+plane|round": 4
+  },
+  "triangles": 43212
+ },
+ "19": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 5,
+   "blend:cylinder|cylinder+cylinder|round": 12,
+   "blend:cylinder|cylinder+torus|fillet": 2,
+   "blend:cylinder|cylinder+torus|round": 9,
+   "blend:cylinder|plane+torus|round": 2,
+   "blend:torus|cylinder+plane|round": 31,
+   "blend:torus|cylinder+torus|round": 2
+  },
+  "triangles": 58914
+ },
+ "2": {
+  "blends": {
+   "blend:cylinder|plane+plane|fillet": 1,
+   "blend:cylinder|plane+plane|round": 2
+  },
+  "triangles": 2212
+ },
+ "20": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|round": 2,
+   "blend:cylinder|cylinder+plane|fillet": 4,
+   "blend:cylinder|plane+plane|round": 1,
+   "blend:cylinder|plane+torus|round": 5,
+   "blend:torus|cylinder+cylinder|round": 4
+  },
+  "triangles": 23848
+ },
+ "21": {
+  "blends": {
+   "blend:cylinder|torus+torus|fillet": 1,
+   "blend:torus|cylinder+plane|round": 2
+  },
+  "triangles": 23968
+ },
+ "22": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 3,
+   "blend:torus|plane+plane|round": 1
+  },
+  "triangles": 23364
+ },
+ "23": {
+  "blends": {
+   "blend:cylinder|cylinder+plane|round": 1,
+   "blend:cylinder|cylinder+torus|fillet": 3,
+   "blend:cylinder|cylinder+torus|round": 2,
+   "blend:cylinder|plane+plane|round": 2,
+   "blend:cylinder|plane+torus|round": 4,
+   "blend:cylinder|torus+torus|fillet": 9,
+   "blend:cylinder|torus+torus|round": 4,
+   "blend:torus|cylinder+cylinder|round": 2,
+   "blend:torus|cylinder+plane|round": 15,
+   "blend:torus|cylinder+torus|round": 3,
+   "blend:torus|plane+torus|round": 18
+  },
+  "triangles": 148822
+ },
+ "24": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 1,
+   "blend:cylinder|cylinder+cylinder|round": 1,
+   "blend:cylinder|cylinder+plane|round": 1
+  },
+  "triangles": 24876
+ },
+ "25": {
+  "blends": {
+   "blend:cylinder|cylinder+torus|fillet": 1,
+   "blend:cylinder|cylinder+torus|round": 2,
+   "blend:cylinder|plane+torus|fillet": 2,
+   "blend:cylinder|plane+torus|round": 9,
+   "blend:cylinder|torus+torus|fillet": 4,
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+cylinder|round": 3,
+   "blend:torus|cylinder+plane|round": 15,
+   "blend:torus|plane+torus|round": 4
+  },
+  "triangles": 107608
+ },
+ "26": {
+  "blends": {},
+  "triangles": 2174
+ },
+ "27": {
+  "blends": {},
+  "triangles": 20908
+ },
+ "28": {
+  "blends": {
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+plane|round": 2
+  },
+  "triangles": 24224
+ },
+ "29": {
+  "blends": {
+   "blend:cone|cone+cone|fillet": 4,
+   "blend:cone|cone+plane|fillet": 2,
+   "blend:cylinder|cylinder+cylinder|fillet": 2,
+   "blend:cylinder|cylinder+plane|fillet": 1
+  },
+  "triangles": 3788
+ },
+ "3": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 4
+  },
+  "triangles": 5304
+ },
+ "30": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 2,
+   "blend:cylinder|plane+plane|fillet": 1
+  },
+  "triangles": 6772
+ },
+ "31": {
+  "blends": {
+   "blend:cone|plane+plane|fillet": 6,
+   "blend:cone|plane+plane|round": 2,
+   "blend:cylinder|plane+plane|fillet": 3,
+   "blend:cylinder|plane+plane|round": 1
+  },
+  "triangles": 3928
+ },
+ "32": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 2,
+   "blend:cylinder|cylinder+cylinder|round": 3,
+   "blend:cylinder|torus+torus|fillet": 3,
+   "blend:torus|cylinder+plane|round": 6
+  },
+  "triangles": 65468
+ },
+ "33": {
+  "blends": {
+   "blend:cone|cone+cone|fillet": 7,
+   "blend:cone|cone+cone|round": 4,
+   "blend:cone|cone+plane|round": 2,
+   "blend:cone|cone+torus|fillet": 6,
+   "blend:cone|cone+torus|round": 6,
+   "blend:cylinder|plane+plane|round": 1,
+   "blend:torus|cone+plane|round": 24,
+   "blend:torus|cone+torus|round": 3,
+   "blend:torus|plane+torus|round": 1
+  },
+  "triangles": 105434
+ },
+ "34": {
+  "blends": {
+   "blend:cylinder|cylinder+plane|fillet": 1,
+   "blend:cylinder|cylinder+plane|round": 2,
+   "blend:cylinder|plane+plane|round": 1
+  },
+  "triangles": 3062
+ },
+ "35": {
+  "blends": {
+   "blend:cylinder|cylinder+plane|round": 1,
+   "blend:cylinder|cylinder+torus|fillet": 1,
+   "blend:cylinder|plane+plane|round": 6,
+   "blend:cylinder|plane+torus|fillet": 5,
+   "blend:cylinder|plane+torus|round": 8,
+   "blend:torus|cylinder+plane|round": 15,
+   "blend:torus|plane+torus|round": 1
+  },
+  "triangles": 31013
+ },
+ "36": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|round": 6,
+   "blend:cylinder|cylinder+plane|round": 8,
+   "blend:cylinder|cylinder+torus|fillet": 10,
+   "blend:cylinder|cylinder+torus|round": 2,
+   "blend:cylinder|plane+plane|round": 5,
+   "blend:cylinder|plane+torus|fillet": 4,
+   "blend:cylinder|plane+torus|round": 2,
+   "blend:torus|cylinder+plane|round": 5,
+   "blend:torus|plane+torus|round": 12
+  },
+  "triangles": 33140
+ },
+ "37": {
+  "blends": {
+   "blend:cylinder|cylinder+plane|fillet": 1,
+   "blend:cylinder|cylinder+torus|fillet": 2,
+   "blend:cylinder|cylinder+torus|round": 2,
+   "blend:cylinder|plane+torus|fillet": 1,
+   "blend:cylinder|plane+torus|round": 8,
+   "blend:cylinder|torus+torus|fillet": 4,
+   "blend:cylinder|torus+torus|round": 2,
+   "blend:torus|cylinder+cylinder|round": 3,
+   "blend:torus|cylinder+plane|round": 9,
+   "blend:torus|cylinder+torus|round": 2,
+   "blend:torus|plane+torus|round": 10
+  },
+  "triangles": 87846
+ },
+ "38": {
+  "blends": {},
+  "triangles": 7804
+ },
+ "39": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 3,
+   "blend:cylinder|cylinder+cylinder|round": 2,
+   "blend:cylinder|cylinder+plane|fillet": 10,
+   "blend:cylinder|cylinder+plane|round": 1,
+   "blend:cylinder|cylinder+torus|fillet": 1,
+   "blend:cylinder|cylinder+torus|round": 1,
+   "blend:cylinder|plane+plane|round": 4,
+   "blend:cylinder|plane+torus|fillet": 2,
+   "blend:torus|cylinder+plane|round": 14
+  },
+  "triangles": 166372
+ },
+ "4": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 2
+  },
+  "triangles": 7856
+ },
+ "5": {
+  "blends": {},
+  "triangles": 6140
+ },
+ "6": {
+  "blends": {
+   "blend:cylinder|plane+plane|fillet": 19,
+   "blend:cylinder|plane+plane|round": 3,
+   "blend:cylinder|plane+torus|fillet": 5,
+   "blend:cylinder|plane+torus|round": 4,
+   "blend:cylinder|torus+torus|round": 1,
+   "blend:torus|cylinder+cylinder|fillet": 1,
+   "blend:torus|cylinder+plane|fillet": 8
+  },
+  "triangles": 100132
+ },
+ "7": {
+  "blends": {
+   "blend:cylinder|cylinder+cylinder|fillet": 1,
+   "blend:torus|cylinder+plane|round": 1
+  },
+  "triangles": 19650
+ },
+ "8": {
+  "blends": {},
+  "triangles": 1832
+ },
+ "9": {
+  "blends": {
+   "blend:cylinder|plane+plane|round": 66,
+   "blend:cylinder|torus+torus|fillet": 1,
+   "blend:cylinder|torus+torus|round": 10,
+   "blend:torus|cylinder+plane|round": 22
+  },
+  "triangles": 46104
+ }
+}

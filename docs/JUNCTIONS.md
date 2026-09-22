@@ -62,3 +62,27 @@ Example: a boss joined to its floor by a fillet is `blend:torus|cylinder+plane|f
    feature the model missed.
 
 The gate is unchanged: a feature counts only when it lands on an exact analytic face.
+
+## Measured library (2026-09-22)
+
+`tools/recon/junction_library.json`: 41 accepted Opus reconstructions (39 mechparts, polydryer, one
+archived duplicate), 78 signatures. Blends, most frequent first; `+torus` rows are blend CHAINS (a round
+running along a straight edge and turning a corner, e.g. the rim of a rounded-rectangle pad):
+
+| count | blend |
+|---|---|
+| 172 | `blend:torus|cylinder+plane|round` |
+| 127 | `blend:cylinder|plane+plane|round` |
+| 60 | `blend:cylinder|plane+plane|fillet` |
+| 50 | `blend:cylinder|plane+torus|round` |
+| 48 | `blend:torus|plane+torus|round` |
+| 48 | `blend:cylinder|cylinder+cylinder|round` |
+| 38 | `blend:cylinder|cylinder+plane|fillet` |
+| 33 | `blend:cylinder|torus+torus|fillet` |
+| 33 | `blend:cylinder|plane+torus|fillet` |
+| 29 | `blend:cylinder|cylinder+cylinder|fillet` |
+| 24 | `blend:torus|cone+plane|round` |
+| 24 | `blend:cylinder|torus+torus|round` |
+
+The toolbox covers the top two families directly (rt.boss / rt.hole / rt.ring_fillet for torus blends on
+cylinder+plane; rt.edge_round for plane+plane edges and profile-rim chains).
