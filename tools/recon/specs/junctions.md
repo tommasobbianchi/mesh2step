@@ -12,6 +12,9 @@
    - tangent: normals agree within 2 degrees at 5 samples along the edge. convex: material angle < 180 degrees
      (e.g. test a point just inside both faces near the edge with BRepClass3d_SolidClassifier, or use the sign of
      (nA x nB) . edge tangent with a consistent edge orientation — your choice, the tests decide).
+     Simplest: OCCT already classifies edges. `OCP.BRepOffset.BRepOffset_Analyse(shape, 0.035)` then
+     `.Type(edge)` returns intervals whose `.Type()` is ChFiDS_Convex / ChFiDS_Concave / ChFiDS_Tangential
+     (measured on tests/junction_shapes.py: box 12 convex, l_block 3 concave, rounded_box 8 tangential).
    - A blend is a cylinder/cone/torus/sphere face tangent to two different neighbouring faces; fields blend,
      between, round, radius (cylinder radius / torus MINOR radius / sphere radius), centre, sig. round = the
      material is on the concave side of the blend surface (convex bulge); a fillet fills an inside corner.
