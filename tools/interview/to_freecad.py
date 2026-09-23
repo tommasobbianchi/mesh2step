@@ -71,6 +71,23 @@ try:
     sh.exportStep({step!r})
     res = {{"ok": True, "valid": sh.isValid(), "volume": sh.Volume, "solids": len(sh.Solids),
             "features": [(o.TypeId.split("::")[-1], o.Label) for o in body.Group], "invalid_features": bad}}
+    # editable means it survives an edit: nudge every Params size +3 %, recompute, the body must still rebuild
+    # (fresh copy per size: a broken reference stays broken after the value is restored)
+    breaks = []
+    sp = doc.getObject("Params")
+    aliases = [sp.getAlias(c) for c in sp.getUsedCells() if sp.getAlias(c)] if sp else []
+    res["params"] = len(aliases)
+    App.closeDocument(doc.Name)
+    for a in aliases:
+        d2 = App.openDocument(OUT); sp2, b2 = d2.getObject("Params"), d2.getObject("Body")
+        x = sp2.get(a)
+        if isinstance(x, (int, float)):
+            sp2.set(sp2.getCellFromAlias(a), str(x * 1.03)); d2.recompute()
+            broke = [o.Label for o in b2.Group if "Invalid" in o.State or "Error" in o.State or "Touched" in o.State]
+            if broke or not b2.Shape.isValid():
+                breaks.append({{"param": a, "broken_features": broke}})
+        App.closeDocument(d2.Name)
+    res["edit_breaks"] = breaks
 except Exception:
     res["error"] = traceback.format_exc()[-2500:]
 open({report!r}, "w").write(json.dumps(res))
@@ -116,7 +133,14 @@ def main():
         runner.write_text(RUNNER.format(out=str(out), script=str(script), step=str(step), report=str(report)))
         subprocess.run([FREECAD, str(runner)], capture_output=True, text=True, timeout=600)
         r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
-        if r.get("ok") and r.get("valid") and r.get("solids") == 1 and not r.get("invalid_features"):
+        if r.get("ok") and r.get("valid") and r.get("solids") == 1 and not r.get("invalid_features") and r.get("edit_breaks"):
+            text = ("The body builds, but it is not editable: after changing one Params value by +3 % and recomputing, "
+                    f"these features break: {json.dumps(r['edit_breaks'])[:2000]}. A fillet/chamfer that names edges "
+                    "as 'EdgeN' breaks when the edge numbering changes. Make every feature survive a size change: "
+                    "e.g. put a chamfer/fillet in the sketch itself (arcs, sloped lines), use a Pad/Pocket taper or "
+                    "a Groove/Revolution for rim chamfers, or re-select the edges from geometry in an expression. "
+                    "Keep the solid identical. Same output rules.")
+        elif r.get("ok") and r.get("valid") and r.get("solids") == 1 and not r.get("invalid_features"):
             va, vb, rel = compare(ref, step)
             r.update(ref_volume=round(va, 3), fc_volume=round(vb, 3), symdiff=round(rel, 5))
             if rel < TOL:
