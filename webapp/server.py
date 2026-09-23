@@ -1158,6 +1158,16 @@ def _stage(progress: dict | None, name: str) -> None:
     itself. These stages are conditional, so they share step 1 and differ only in wording."""
     if progress is not None:
         progress["stage"] = name
+        progress["stage_t"] = time.time()
+
+
+# Each stage's own kill timer: the bar fills inside a step by elapsed / budget, so a 10-minute
+# engine run moves instead of sitting at "step 1" (the step count alone never moved for 25 min).
+_STAGE_BUDGET_S = {"engine": NATIVE_TIMEOUT_S, "edgebuild": EDGEBUILD_TIMEOUT_S}
+
+
+def _timing(start: float | None, budget: float) -> dict:
+    return {"step_elapsed_s": round(time.time() - start, 1) if start else 0.0, "step_budget_s": budget}
 
 
 def _n_phases() -> int:
@@ -1177,8 +1187,9 @@ def _read_progress(progress: dict | None) -> dict:
     # this branch the longest waits are exactly the ones that show no progress at all.
     if not path or not os.path.exists(path):
         if progress.get("stage"):
-            return {"phase": progress["stage"], "phase_i": 1, "phase_n": n,
-                    "ceiling_s": FEATURE_CEILING_S}
+            return {"phase": progress["stage"], "phase_i": 1, "phase_n": n, "ceiling_s": FEATURE_CEILING_S,
+                    **_timing(progress.get("stage_t"),
+                              _STAGE_BUDGET_S.get(progress["stage"], CONVERT_TIMEOUT_S))}
         return {}
     try:
         with open(path) as fh:
@@ -1194,8 +1205,12 @@ def _read_progress(progress: dict | None) -> dict:
         return {}
     # a finished phase means the NEXT one is what the user is waiting for now
     i = rec["i"] + 1 if rec.get("state") in ("done", "timeout") else rec["i"]
+    from mesh2step.feature import CANDIDATE_TIMEOUT_S
     return {"phase": rec.get("label"), "phase_i": 1 + min(i, rec.get("n", i)),
-            "phase_n": 1 + rec.get("n", n - 1), "ceiling_s": FEATURE_CEILING_S}
+            "phase_n": 1 + rec.get("n", n - 1), "ceiling_s": FEATURE_CEILING_S,
+            # a finished record means the next builder is starting now: no elapsed time to report
+            **_timing(rec.get("t") if rec.get("state") == "start" else None,
+                      min(CANDIDATE_TIMEOUT_S, FEATURE_TIMEOUT_S))}
 
 
 def _convert_job(*, t_admit: float, **kw) -> dict:
