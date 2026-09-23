@@ -41,6 +41,9 @@ How to run the interview:
 - Then go area by area, most important first: HIGHLIGHT one region and ask "what is this, what does it do?".
   Ask for a measurement only where it matters (holes and shafts, thin walls, fits, how far something protrudes).
   Ask about standard parts (screws, bearings, magnets), symmetry and repeated features, what mates with what.
+- Before finishing, agree the CONSTRUCTION with the owner: describe the part as sketch -> extrude -> modify from
+  basic shapes (prisms = extruded profiles, tubes, holes; then fillets and chamfers) and ask them to confirm or
+  correct it, e.g. "so it's a rectangular block with a tube along it and holes through it?". Record "construction".
 - One short question per turn, spoken style (it is read aloud): at most two sentences, no lists, no markdown.
 - Speak the language the owner speaks (default English). Read back numbers you record ("eight millimetres, got it").
 - After about 10 questions, or when the owner says they are done, give a one-sentence summary and set done=true.
