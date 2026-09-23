@@ -1451,10 +1451,13 @@ def _node_stats() -> dict:
                  for i, q in enumerate(_QUEUE)]
         admitted = _admitted
     running = max(0, admitted - len(queue))
+    # request threads append while this reads: iterating the live deque raised "deque mutated during
+    # iteration" (500 under load, 2026-09-23). list() copies in C under the GIL, so the snapshot is atomic.
+    req, done_all = list(_REQ), list(_DONE)
     per_min = [0] * 60
     groups: dict = {}
     codes: dict = {}
-    for ts, g, code, ms, _ip in _REQ:
+    for ts, g, code, ms, _ip in req:
         age = now - ts
         if age < 3600:
             per_min[min(59, int(age // 60))] += 1
@@ -1464,13 +1467,13 @@ def _node_stats() -> dict:
             codes[str(code)] = codes.get(str(code), 0) + 1
     for e in groups.values():
         e["ms_p95"] = _pct(e.pop("ms_p95"), 0.95)
-    req_hour = sum(1 for ts, *_ in _REQ if now - ts < 3600)
-    uploads_hour = sum(1 for ts, g, code, _, _ip in _REQ if now - ts < 3600 and g == "/api/convert" and code < 400)
-    refused_hour = sum(1 for ts, g, code, _, _ip in _REQ if now - ts < 3600 and g == "/api/convert" and code == 429)
+    req_hour = sum(1 for ts, *_ in req if now - ts < 3600)
+    uploads_hour = sum(1 for ts, g, code, _, _ip in req if now - ts < 3600 and g == "/api/convert" and code < 400)
+    refused_hour = sum(1 for ts, g, code, _, _ip in req if now - ts < 3600 and g == "/api/convert" and code == 429)
     # Per-caller, last hour: one IP holding every slot is the shape of abuse, and it is invisible in a
     # request-rate line. Counted from the ring so the window is exact, not since-boot.
     hour_ip: dict = {}
-    for ts, g, code, _ms, ip in _REQ:
+    for ts, g, code, _ms, ip in req:
         if now - ts >= 3600:
             continue
         h = hour_ip.setdefault(ip, {"n": 0, "uploads": 0, "refused": 0, "errors": 0})
@@ -1495,7 +1498,7 @@ def _node_stats() -> dict:
         if age < 3600:
             i = min(59, int(age // 60))
             q_min[i] = max(q_min[i], qlen)
-    done = [d for d in _DONE if now - d["ts"] < 3600]
+    done = [d for d in done_all if now - d["ts"] < 3600]
     day = time.strftime("%Y-%m-%d", time.gmtime())
     try:
         cg = "/sys/fs/cgroup" + open("/proc/self/cgroup").read().strip().split(":")[-1]
