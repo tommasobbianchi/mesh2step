@@ -97,7 +97,7 @@ def ask(s: dict, text: str) -> dict:
     r = subprocess.run(cmd + [text], capture_output=True, text=True, timeout=180, cwd=s["dir"])
     d = json.loads(r.stdout)
     s["claude"] = d.get("session_id") or s.get("claude")
-    s["cost"] = s.get("cost", 0) + (d.get("total_cost_usd") or 0)
+    s["cost"] = max(s.get("cost", 0), d.get("total_cost_usd") or 0)   # a resumed session reports its running total
     raw = (d.get("result") or "").strip()
     try:
         rep = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
