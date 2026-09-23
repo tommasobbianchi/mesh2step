@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mesh2step · interview preview</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
+</script>
+<style>
+  :root { --bg:#f4f2ec; --ink:#1d1c1a; --soft:#5b5953; --line:#d9d5ca; --card:#fff; --hi:#d9480f; --acc:#e8b17a; --blue:#1f5f8b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; flex:1; } #clock { font-family: ui-monospace, monospace; color:var(--soft); }
+  main { flex:1; display:grid; grid-template-columns: minmax(0,1.4fr) minmax(320px,1fr); gap:16px; padding:16px; min-height:0; }
+  #view { position:relative; background:#e7e3d8; border:1px solid var(--line); border-radius:14px; overflow:hidden; min-height:300px; }
+  #view canvas { display:block; width:100%; height:100%; }
+  #drop { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:24px; }
+  #drop label { padding:40px 56px; border:2px dashed #a9a497; border-radius:16px; background:#faf9f5; cursor:pointer; font-size:17px; font-weight:600; }
+  #drop input { position:absolute; left:-9999px; }
+  aside { display:flex; flex-direction:column; gap:12px; min-height:0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  #log { flex:1; overflow:auto; display:flex; flex-direction:column; gap:8px; font-size:14px; line-height:1.45; }
+  .q b { color:var(--blue); } .a { color:#3f3d39; }
+  #facts { font-size:13px; display:grid; grid-template-columns: minmax(0,1fr) auto; gap:4px 12px; }
+  #facts span:nth-child(even) { font-family: ui-monospace, monospace; }
+  #bar { display:flex; gap:10px; align-items:center; }
+  button { font:inherit; font-weight:600; min-height:48px; padding:0 18px; border-radius:999px; border:0; cursor:pointer; }
+  #talk { background:var(--ink); color:#f4f2ec; flex:1; } #talk.rec { background:var(--hi); }
+  #talk:disabled, #build:disabled { opacity:.45; cursor:default; }
+  #build { background:var(--acc); color:var(--ink); }
+  #text { flex:1; font:inherit; padding:10px 12px; border:1px solid #bdb8ab; border-radius:10px; min-height:44px; }
+  #status { font-size:13px; color:var(--soft); min-height:18px; }
+  #result a { color:var(--blue); font-weight:600; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header><h1>mesh2step · interview preview <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="clock">0:00</span></header>
+<main>
+  <div id="view">
+    <div id="drop"><label for="file">Drop or choose your mesh (STL / 3MF / OBJ)<input id="file" type="file" accept=".stl,.3mf,.obj"></label>
+      <div style="color:var(--soft)">Then talk: about 5 minutes. Keep a caliper handy.</div></div>
+  </div>
+  <aside>
+    <div class="card" id="log" aria-live="polite"></div>
+    <div class="card"><div style="font-weight:600;margin-bottom:6px">What we have so far</div><div id="facts"></div></div>
+    <div id="bar">
+      <button id="talk" disabled>Tap to talk</button>
+      <button id="build" disabled>Rebuild</button>
+    </div>
+    <form id="tform" style="display:flex;gap:8px"><label for="text" style="position:absolute;left:-9999px">Type instead</label>
+      <input id="text" placeholder="…or type your answer" disabled><button type="submit" style="background:var(--blue);color:#fff">Send</button></form>
+    <div id="status"></div>
+    <div id="result" class="card" hidden></div>
+  </aside>
+</main>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+const $ = (id) => document.getElementById(id);
+const view = $('view'), logEl = $('log'), factsEl = $('facts'), statusEl = $('status');
+let sid = null, faceRegion = [], regionsById = {}, geom, mesh, started = 0, lang = 'en-US', resultMesh;
+
+// ---- viewer
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe7e3d8);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1e6);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a857a, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(1, 2, 3); scene.add(sun);
+function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(view);
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+const BASE = [0.78, 0.76, 0.72], HI = [0.85, 0.28, 0.06];
+function paint(ids) {
+  const col = geom.attributes.color, sel = new Set(ids || []);
+  for (let f = 0; f < faceRegion.length; f++) {
+    const r = faceRegion[f], c = sel.has(r) ? HI : (r < 0 ? [0.7, 0.68, 0.64] : BASE.map((v, k) => v - ((r * 37 + k * 11) % 7) * 0.012));
+    for (let v = 0; v < 3; v++) col.setXYZ(f * 3 + v, c[0], c[1], c[2]);
+  }
+  col.needsUpdate = true;
+  if (sel.size) {                      // turn the camera toward what is being asked about
+    const c = new THREE.Vector3(); let n = 0;
+    for (const id of sel) if (regionsById[id]) { c.add(new THREE.Vector3(...regionsById[id].center)); n++; }
+    if (n) { c.divideScalar(n); const d = camera.position.distanceTo(controls.target);
+      const dir = c.clone().sub(geom.boundingSphere.center).normalize(); if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+      controls.target.copy(c); camera.position.copy(c.clone().add(dir.multiplyScalar(d))); }
+  }
+}
+function show(stlB64) {
+  const bin = Uint8Array.from(atob(stlB64), (ch) => ch.charCodeAt(0)).buffer;
+  geom = new STLLoader().parse(bin); geom.computeBoundingSphere();
+  geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geom.attributes.position.count * 3), 3));
+  mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 }));
+  scene.add(mesh);
+  const s = geom.boundingSphere; controls.target.copy(s.center);
+  camera.position.copy(s.center.clone().add(new THREE.Vector3(1, 0.8, 1.2).normalize().multiplyScalar(s.radius * 3)));
+  camera.near = s.radius / 100; camera.far = s.radius * 100; camera.updateProjectionMatrix();
+}
+
+// ---- conversation
+function say(text, l) {
+  if (!text) return Promise.resolve();
+  return new Promise((res) => { const u = new SpeechSynthesisUtterance(text); u.lang = l || lang; u.onend = res; u.onerror = res;
+    setTimeout(res, 2000 + text.length * 90);        // no voice installed: onend never fires, never lock the mic
+    speechSynthesis.cancel(); speechSynthesis.speak(u); });
+}
+function addLog(who, text) { const d = document.createElement('div'); d.className = who === 'q' ? 'q' : 'a';
+  d.innerHTML = who === 'q' ? '<b>mesh2step</b> ' : '<b>You</b> '; d.append(text); logEl.append(d); logEl.scrollTop = 1e9; }
+function facts(f) { factsEl.replaceChildren(...Object.entries(f || {}).flatMap(([k, v]) => { const a = document.createElement('span'), b = document.createElement('span'); a.textContent = k; b.textContent = v; return [a, b]; })); }
+async function handle(rep, f) {
+  if (rep.lang) lang = rep.lang;
+  addLog('q', rep.say || ''); facts(f); paint(rep.highlight);
+  if (rep.done) { $('build').disabled = false; statusEl.textContent = 'Interview complete: press Rebuild when ready.'; }
+  $('build').disabled = !rep.done && Object.keys(f || {}).length < 3;
+  await say(rep.say, rep.lang);
+  $('talk').disabled = false; $('text').disabled = false;
+}
+
+$('file').addEventListener('change', async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  $('drop').innerHTML = '<div style="font-size:16px">Reading your part…</div>';
+  const fd = new FormData(); fd.append('file', file);
+  const r = await fetch('api/start', { method: 'POST', body: fd });
+  if (!r.ok) { $('drop').textContent = 'Could not read that file: ' + (await r.text()); return; }
+  const d = await r.json();
+  sid = d.sid; faceRegion = d.face_region; d.regions.forEach((x) => { regionsById[x.id] = x; });
+  $('drop').remove(); resize(); show(d.stl_b64);
+  started = Date.now(); setInterval(() => { const s = Math.round((Date.now() - started) / 1000); $('clock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} / ~5:00`; }, 1000);
+  handle(d.reply, d.facts);
+});
+
+async function send(fd, typed) {
+  $('talk').disabled = true; $('text').disabled = true; statusEl.textContent = 'Thinking…';
+  fd.append('sid', sid);
+  const r = await fetch('api/turn', { method: 'POST', body: fd });
+  statusEl.textContent = '';
+  if (!r.ok) { statusEl.textContent = 'Error: ' + (await r.text()); $('talk').disabled = false; $('text').disabled = false; return; }
+  const d = await r.json();
+  if (!typed) addLog('a', d.heard || '(nothing heard)');
+  handle(d.reply, d.facts);
+}
+$('tform').addEventListener('submit', (e) => { e.preventDefault(); const t = $('text').value.trim(); if (!t || !sid) return;
+  $('text').value = ''; addLog('a', t); const fd = new FormData(); fd.append('text', t); send(fd, true); });
+
+let rec = null, chunks = [];
+$('talk').addEventListener('click', async () => {
+  if (rec) { rec.stop(); return; }
+  speechSynthesis.cancel();
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (err) { statusEl.textContent = 'Microphone unavailable (' + err.name + '): type your answers instead.'; return; }
+  chunks = []; rec = new MediaRecorder(stream);
+  rec.ondataavailable = (ev) => chunks.push(ev.data);
+  rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); rec = null;
+    $('talk').classList.remove('rec'); $('talk').textContent = 'Tap to talk';
+    const fd = new FormData(); fd.append('audio', new Blob(chunks, { type: 'audio/webm' }), 'a.webm'); send(fd, false); };
+  rec.start(); $('talk').classList.add('rec'); $('talk').textContent = 'Listening… tap when done';
+});
+
+$('build').addEventListener('click', async () => {
+  $('build').disabled = true; $('talk').disabled = true;
+  const fd = new FormData(); fd.append('sid', sid);
+  await fetch('api/build', { method: 'POST', body: fd });
+  const t0 = Date.now();
+  const poll = setInterval(async () => {
+    const b = await (await fetch('api/build/' + sid)).json();
+    const s = Math.round((Date.now() - t0) / 1000);
+    if (b.status === 'running') { statusEl.textContent = `Rebuilding with your answers… ${Math.floor(s / 60)} min ${s % 60} s (usually 5–25 min)`; return; }
+    clearInterval(poll); statusEl.textContent = '';
+    const box = $('result'); box.hidden = false;
+    if (b.status === 'failed') { box.textContent = 'The rebuild failed: ' + (b.error || 'unknown'); $('build').disabled = false; return; }
+    box.innerHTML = `<div style="font-weight:600">Rebuilt (${b.status})</div><div style="font-size:13px;color:var(--soft)">curved surfaces ${b.represent?.curved ?? '?'} of ${b.represent?.patches ?? '?'}</div><a href="api/result/${sid}/step">Download STEP</a>`;
+    const stl = await (await fetch(`api/result/${sid}/stl`)).arrayBuffer();
+    const g = new STLLoader().parse(stl);
+    resultMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1f5f8b, roughness: 0.5 }));
+    if (mesh) { mesh.material.transparent = true; mesh.material.opacity = 0.25; if (b.scale && b.scale !== 1) mesh.scale.setScalar(b.scale); }
+    scene.add(resultMesh);
+    say(lang.startsWith('it') ? 'Ecco il pezzo ricostruito. Guardalo e dimmi se è giusto.' : 'Here is your rebuilt part. Have a look and tell me if it is right.');
+  }, 5000);
+});
+</script>
+</body>
+</html>
