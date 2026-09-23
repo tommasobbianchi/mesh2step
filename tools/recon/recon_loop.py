@@ -224,7 +224,12 @@ def ask_model(prompt, claude, model, wd, renders=()):
                 cmd += ["-f", r]
     else:
         name = model.split(":", 1)[1] if model.startswith("claude:") else model
+        # --allowedTools does NOT deny what it leaves out: measured 2026-09-23, an opus rebuild wrote
+        # its own cmp.py through a /bin/bash -c and ran candidate programs itself, outside run_script
+        # and outside its 600 s cap. One reached 21.7 GB and OOM-killed the whole service (13 times in
+        # 18 h). Deny the exec tools by name; the memory cap in _run_recon is the belt to this brace.
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
+               "--disallowedTools", "Bash,Task,Edit,NotebookEdit,WebFetch,WebSearch",
                "--output-format", "text", prompt]
     if model.startswith("opencode:"):             # one opencode run per machine (shared session store)
         import fcntl

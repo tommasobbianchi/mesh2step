@@ -1005,11 +1005,19 @@ def _run_recon(stl_path: Path, workdir: Path) -> dict:
     timeout = float(os.environ.get("MESH2STEP_RECON_TIMEOUT_S", "2700"))
     script = Path(__file__).resolve().parents[1] / "tools" / "recon" / "recon_part.py"
     pipeline = workdir / "pipeline.step"            # the served STEP: junctions for the brief, read exactly
-    __import__("subprocess").run(
-        [sys.executable, str(script), str(stl_path), str(workdir), "--models", *models,
-         "--rounds", rounds, "--timeout", str(timeout)]
-        + (["--junction-step", str(pipeline)] if pipeline.exists() else []),
-        capture_output=True, text=True, timeout=timeout + 300)
+    cmd = ([sys.executable, str(script), str(stl_path), str(workdir), "--models", *models,
+            "--rounds", rounds, "--timeout", str(timeout)]
+           + (["--junction-step", str(pipeline)] if pipeline.exists() else []))
+    # A rebuild runs code a model wrote, and OCCT allocates until the kernel stops it: one candidate
+    # program reached 21.7 GB and took the SERVICE with it, 13 OOM kills in 18 h, each losing every
+    # conversion in flight. Its own scope with its own MemoryMax means an overrun costs the rebuild and
+    # nothing else. _RECON_POOL has one worker, so at most one of these exists at a time.
+    mem = os.environ.get("MESH2STEP_RECON_MEM", "8G")
+    runner = __import__("shutil").which("systemd-run")
+    if runner and mem != "0":                       # absent in tests and on a non-systemd host: run bare
+        cmd = [runner, "--user", "--scope", "--quiet", "--collect",
+               "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0", *cmd]
+    __import__("subprocess").run(cmd, capture_output=True, text=True, timeout=timeout + 300)
     res = workdir / "recon_result.json"
     return json.loads(res.read_text()) if res.exists() else {"status": "failed"}
 
