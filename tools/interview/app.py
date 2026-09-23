@@ -99,35 +99,99 @@ def regions(m: trimesh.Trimesh):
     return face_region, out
 
 
+def _runs(loop: np.ndarray, span: float, n: int = 720):
+    """A closed 2D section loop cut into runs of constant curvature: ("arc", r, centre, sweep_deg, pts) or ("line", pts).
+    Works on filleted meshes, where no edge is sharp and region growing sees one smooth surface."""
+    seg = np.r_[0, np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))]
+    t = np.linspace(0, seg[-1], n, endpoint=False)
+    p = np.c_[np.interp(t, seg, loop[:, 0]), np.interp(t, seg, loop[:, 1])]
+    a, c = np.roll(p, 4, 0), np.roll(p, -4, 0)
+    u, v, w = p - a, c - p, c - a
+    curv = 2 * (u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]) / np.maximum(
+        np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) * np.linalg.norm(w, axis=1), 1e-12)
+    straight = np.abs(curv) * span < 0.5
+    lab = np.sign(curv) * np.log(np.maximum(np.abs(curv), 1e-9))
+    brk = [i for i in range(n) if straight[i] != straight[i - 1] or (not straight[i] and abs(lab[i] - lab[i - 1]) > 0.25)] or [0]
+    out = []
+    for j, s0 in enumerate(brk):
+        e = brk[(j + 1) % len(brk)]
+        q = p[np.arange(s0, e if e > s0 else e + n) % n]
+        if len(q) < 6:
+            continue
+        if straight[s0]:
+            out.append(("line", q))
+            continue
+        sol = np.linalg.lstsq(np.c_[2 * q, np.ones(len(q))], (q ** 2).sum(1), rcond=None)[0]   # Kasa circle fit
+        r = float(np.sqrt(max(sol[2] + sol[0] ** 2 + sol[1] ** 2, 0)))
+        if r > 0:
+            out.append(("arc", r, sol[:2], np.degrees(len(q) * seg[-1] / n / r), q))
+    return out
+
+
 def dims(m: trimesh.Trimesh, regs: list) -> list:
-    """Dimensions drawn on the model for the owner to type over: overall lengths, main diameters, wall thicknesses."""
+    """Dimensions drawn on the model for the owner to type over: overall lengths, main diameters, wall thicknesses.
+    Diameters/walls come first from the mid cross-section across the extrusion axis (the sketch), then from regions."""
     (x0, y0, z0), (x1, y1, z1) = m.bounds
     out = [{"id": "L" + a, "label": a, "value": float(b - c), "a": pa, "b": pb}
            for a, b, c, pa, pb in (("X", x1, x0, [x0, y0, z0], [x1, y0, z0]), ("Y", y1, y0, [x1, y0, z0], [x1, y1, z0]),
                                    ("Z", z1, z0, [x1, y0, z0], [x1, y0, z1]))]
-    seen = []
+    span = float(max(m.extents))
+    dia, wall = [], []                               # (value, a, b, region|None)
+    n, w = m.face_normals, m.area_faces
+    cands = list(np.linalg.eigh((n * w[:, None]).T @ n)[1].T) + list(np.eye(3))
+    score = [w[(np.abs(n @ e) < 0.05) | (np.abs(n @ e) > 0.995)].sum() / w.sum() for e in cands]
+    if max(score) > 0.8:                             # an extrusion: walls parallel to e, caps across it
+        e = cands[int(np.argmax(score))]
+        h = m.vertices @ e
+        sec = m.section(plane_origin=e * (h.min() + h.max()) / 2, plane_normal=e)
+        if sec is not None:
+            pl, T = sec.to_2D()
+            to3 = lambda q: (T @ np.r_[q[0], q[1], 0, 1])[:3].tolist()
+            arcs, lines = [], []
+            for loop in pl.discrete:
+                for x in _runs(np.asarray(loop), span):
+                    (arcs if x[0] == "arc" else lines).append(x)
+            for _, r, c, sweep, q in sorted(arcs, key=lambda x: -x[1]):
+                if sweep >= 150:                     # a hole or a C/round end; fillets sweep ~90 and are micro detail
+                    ang = 0.6 + 0.9 * len(dia)       # concentric diameters drawn at different angles, labels apart
+                    u = r * np.array([np.cos(ang), np.sin(ang)])
+                    dia.append((2 * r, to3(c - u), to3(c + u), None))
+            big = [x for x in arcs if x[3] >= 150]
+            for i, (_, r1, c1, _, q1) in enumerate(big):          # concentric arcs: the wall between them
+                for _, r2, c2, _, _ in big[i + 1:]:
+                    if np.linalg.norm(c1 - c2) < 0.02 * span and abs(r1 - r2) > 1e-3 * span:
+                        d = q1[len(q1) // 2] - c1; d /= np.linalg.norm(d)
+                        wall.append((abs(r1 - r2), to3(c1 + d * r1), to3(c1 + d * r2), None))
+            for i, q1 in enumerate(lines):                        # parallel opposite straight runs: a plate or rib
+                d1 = q1[1][-1] - q1[1][0]; l1 = np.linalg.norm(d1)
+                for q2 in lines[i + 1:]:
+                    d2 = q2[1][-1] - q2[1][0]; l2 = np.linalg.norm(d2)
+                    if min(l1, l2) < 0.1 * span or abs(d1 @ d2) < 0.99 * l1 * l2:
+                        continue
+                    m1 = q1[1].mean(0); gap = q2[1].mean(0) - m1
+                    t = abs(d1[0] * gap[1] - d1[1] * gap[0]) / l1
+                    if 0 < t < 0.5 * span and abs(gap @ d1) / l1 < 0.5 * (l1 + l2):
+                        nrm = np.array([-d1[1], d1[0]]) / l1 * np.sign(d1[0] * gap[1] - d1[1] * gap[0])
+                        wall.append((t, to3(m1), to3(m1 + nrm * t), None))
     for r in sorted((r for r in regs if r["kind"] == "cylinder"), key=lambda r: -r["area"]):
-        d = 2 * r["radius"]
-        if d > 0 and all(abs(d - q) > 0.03 * q for q in seen) and len(seen) < 4:   # one label per distinct size
-            seen.append(d)
-            c, u = np.array(r["axis_point"]), np.array(r["u"]) * r["radius"]
-            out.append({"id": f"D{r['id']}", "label": "\u2300", "value": d, "a": (c - u).tolist(),
-                        "b": (c + u).tolist(), "region": r["id"]})
+        c, u = np.array(r["axis_point"]), np.array(r["u"]) * r["radius"]
+        dia.append((2 * r["radius"], (c - u).tolist(), (c + u).tolist(), r["id"]))
     planes = sorted((r for r in regs if r["kind"] == "plane"), key=lambda r: -r["area"])[:12]
-    seen, span = [float(e) for e in m.extents], float(max(m.extents))   # an overall length is not a wall
     for p in planes:                                 # a thickness: the nearest opposite-facing face behind a big face
-        n, c = np.array(p["normal"]), np.array(p["center"])
-        gaps = [float((c - np.array(q["center"])) @ n) for q in planes if np.dot(q["normal"], n) < -0.98]
-        gaps = [g for g in gaps if 0 < g < 0.5 * span]
-        if not gaps:
-            continue
-        t = min(gaps)
-        if all(abs(t - q) > 0.03 * q for q in seen) and len(seen) < 6:
-            seen.append(t)
-            out.append({"id": f"T{p['id']}", "label": "t", "value": t, "a": c.tolist(), "b": (c - n * t).tolist(),
-                        "region": p["id"]})
+        nn, c = np.array(p["normal"]), np.array(p["center"])
+        gaps = [g for q in planes if np.dot(q["normal"], nn) < -0.98
+                for g in [float((c - np.array(q["center"])) @ nn)] if 0 < g < 0.5 * span]
+        if gaps:
+            wall.append((min(gaps), c.tolist(), (c - nn * min(gaps)).tolist(), p["id"]))
+    for tag, label, items, cap, seen in (("D", "\u2300", dia, 5, []), ("T", "t", wall, 4, [float(x) for x in m.extents])):
+        k = 0
+        for v, a, b, rid in items:                   # one label per distinct size; an overall length is not a wall
+            if v > 0 and all(abs(v - q) > 0.03 * q for q in seen) and k < cap:
+                seen.append(v); k += 1
+                out.append({"id": f"{tag}{k}", "label": label, "value": v, "a": a, "b": b,
+                            **({"region": rid} if rid is not None else {})})
     for x in out:
-        x["value"] = round(x["value"], 4)
+        x["value"] = round(float(x["value"]), 4)
     return out
 
 
@@ -199,7 +263,7 @@ def dim(sid: str = Form(...), id: str = Form(...), mm: float = Form(...)):
         raise HTTPException(400, "bad dimension")
     s["measured"][id] = mm
     k = float(np.median([v / next(x["value"] for x in s["dims"] if x["id"] == i) for i, v in s["measured"].items()]))
-    name = {"D": "diameter", "T": "thickness"}.get(id[0], "overall " + dm["label"]) + (f" (region {dm['region']})" if "region" in dm else "")
+    name = {"D": "diameter", "T": "thickness"}.get(id[0], "overall " + dm["label"]) + f" {id}"
     s["facts"]["scale"] = f"{k:.6g}"
     s["facts"][name] = f"{mm:g} mm (typed)"
     s.setdefault("typed", []).append(f"{name} = {mm:g} mm")

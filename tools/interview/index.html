@@ -106,7 +106,7 @@ function setScale(f) { const k = parseFloat(String(f?.scale ?? '')); if (k > 0) 
 function makeDims(list) {
   for (const x of list) {
     const a = new THREE.Vector3(...x.a), b = new THREE.Vector3(...x.b);
-    const d = { ...x, mid: a.clone().add(b).multiplyScalar(0.5), el: document.createElement('input') };
+    const d = { ...x, mid: a.clone().lerp(b, x.label === '⌀' ? 0.85 : 0.5), el: document.createElement('input') };   // ⌀ near its rim: concentric ones stay apart
     if (!a.equals(b)) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]),
       new THREE.LineBasicMaterial({ color: 0xc2185b, depthTest: false })));
     d.el.className = 'dim'; d.el.inputMode = 'decimal'; d.el.setAttribute('aria-label', 'size in mm: ' + x.label);
@@ -137,7 +137,8 @@ function paint(ids) {
     for (let v = 0; v < 3; v++) col.setXYZ(f * 3 + v, c[0], c[1], c[2]);
   }
   col.needsUpdate = true;
-  if (sel.size) {                      // turn the camera toward what is being asked about
+  const area = [...sel].reduce((t, id) => t + (regionsById[id]?.area || 0), 0), all = Object.values(regionsById).reduce((t, r) => t + r.area, 0);
+  if (sel.size && area < 0.5 * all) {  // turn the camera toward what is being asked about (not when it is most of the part)
     const c = new THREE.Vector3(); let n = 0;
     for (const id of sel) if (regionsById[id]) { c.add(new THREE.Vector3(...regionsById[id].center)); n++; }
     if (n) { c.divideScalar(n); const d = camera.position.distanceTo(controls.target);
