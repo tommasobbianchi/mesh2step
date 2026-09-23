@@ -80,7 +80,7 @@ open({report!r}, "w").write(json.dumps(res))
 def ask(sid, text, cwd):
     cmd = [CLAUDE, "-p", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
            "--model", "opus", "--output-format", "json"] + (["--resume", sid] if sid else [])
-    d = json.loads(subprocess.run(cmd + [text], capture_output=True, text=True, timeout=900, cwd=cwd).stdout)
+    d = json.loads(subprocess.run(cmd + [text], capture_output=True, text=True, timeout=1800, cwd=cwd).stdout)
     m = re.search(r"```python\n(.*?)```", d.get("result") or "", re.S)
     return d.get("session_id"), (m.group(1) if m else d.get("result") or ""), d.get("total_cost_usd") or 0
 
