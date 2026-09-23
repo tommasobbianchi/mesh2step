@@ -69,6 +69,7 @@ let sid = null, faceRegion = [], regionsById = {}, geom, mesh, started = 0, lang
 
 // ---- viewer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+view.append(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe7e3d8);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1e6);
 const controls = new OrbitControls(camera, renderer.domElement);
