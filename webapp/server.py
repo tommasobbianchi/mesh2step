@@ -102,6 +102,11 @@ APP_VERSION = _app_version()
 # at all: a limit above the cap does not fail, it THROTTLES, and a throttled
 # conversion never finishes at any timeout.
 MAX_INPUT_TRIANGLES = 120_000
+# What a REQUESTED reduction must deliver. A reduction that lands above the engine's ceiling is a
+# dead end: Convert stays refused and the panel has nothing left to offer. Kept just under the
+# ceiling so the count the user is shown is the count that admits, with room for the weld that
+# runs after it. Only applies when a decimation was asked for -- see decimate.decimate_mesh.
+DECIMATE_MAX_TRIS = int(os.environ.get("MESH2STEP_DECIMATE_MAX_TRIS", "118000"))
 # ...but that ceiling is the ENGINE's, not the converter's. The feature path never loads the
 # mesh into the engine: it fits primitives and builds from those. Measured peak RSS 702 MB at
 # 164,996 triangles (mechparts/12) and 670 MB at 148,822 (/23) -- ~2.0 MB per 1k + 372 MB,
@@ -1299,13 +1304,15 @@ def convert(
         if decimate is not None:
             from mesh2step.decimate import decimate_mesh
 
-            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep)
+            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep,
+                               max_tris=DECIMATE_MAX_TRIS)
             verts, tris = dr.verts, dr.tris
             n_in_tris = len(tris)
             decimate_info = {
                 "decimate_mode": dr.mode,
                 "n_decimate_faces_before": dr.n_faces_before,
                 "n_decimate_faces_after": dr.n_faces_after,
+                "decimate_fit_passes": dr.fit_passes,
                 "decimate_dv_pct": round(dr.dv_pct, 4),
             }
             if decimate == "ratio":
@@ -1859,9 +1866,11 @@ def edit_mesh(
         stats["n_tris_trimmed"] = len(tris)
         if decimate is not None and len(tris):
             from mesh2step.decimate import decimate_mesh
-            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep)
+            dr = decimate_mesh(verts, tris, mode=decimate, keep=decimate_keep,
+                               max_tris=DECIMATE_MAX_TRIS)
             verts, tris = dr.verts, dr.tris
-            stats.update(decimate_mode=dr.mode, decimate_dv_pct=round(dr.dv_pct, 4))
+            stats.update(decimate_mode=dr.mode, decimate_dv_pct=round(dr.dv_pct, 4),
+                         decimate_fit_passes=dr.fit_passes)   # >0: the mode alone left it over the ceiling
         stats["n_tris_after"] = len(tris)
         m = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
         stl_bytes = m.export(file_type="stl")

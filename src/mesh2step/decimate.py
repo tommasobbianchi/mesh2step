@@ -40,6 +40,7 @@ class DecimateResult:
     n_faces_before: int
     n_faces_after: int
     dv_pct: float      # signed volume change, % of the input volume
+    fit_passes: int = 0   # extra quadric passes it took to get under max_tris (0 = the mode sufficed)
 
 
 def _volume(verts: np.ndarray, tris: np.ndarray) -> float:
@@ -48,9 +49,27 @@ def _volume(verts: np.ndarray, tris: np.ndarray) -> float:
     return float(np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() / 6.0)
 
 
+def _quadric(verts: np.ndarray, tris: np.ndarray, keep: float):
+    import fast_simplification
+
+    nv, nt = fast_simplification.simplify(verts.astype(np.float32), tris.astype(np.int32),
+                                          target_reduction=float(1.0 - keep))
+    return np.asarray(nv, dtype=np.float64), np.asarray(nt, dtype=np.int64)
+
+
 def decimate_mesh(verts: np.ndarray, tris: np.ndarray, *,
-                  mode: str = "planar", keep: float = 0.25) -> DecimateResult:
-    """Reduce the triangle count. `keep` is the fraction to retain, "ratio" only."""
+                  mode: str = "planar", keep: float = 0.25,
+                  max_tris: int | None = None) -> DecimateResult:
+    """Reduce the triangle count. `keep` is the fraction to retain, "ratio" only.
+
+    max_tris makes the RESULT a guarantee rather than an attempt. Neither arm can promise a count
+    on its own: "planar" stops at the last coplanar vertex, so a curved part barely moves, and the
+    quadric collapse treats its ratio as a target it can undershoot on constrained topology. A
+    reduction the user asked for and that still lands above the ceiling is a dead end -- Convert
+    refuses and the panel offers nothing further. So when max_tris is given, keep collapsing until
+    the count is under it. Only when the CALLER asks: an automatic decimation on an untouched
+    upload was measured twice and refused both times, and this does not reintroduce it.
+    """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
     v0 = _volume(verts, tris)
@@ -96,13 +115,7 @@ def decimate_mesh(verts: np.ndarray, tris: np.ndarray, *,
         nv = np.asarray(out.points, dtype=np.float64)
         nt = np.asarray(out.faces, dtype=np.int64).reshape(-1, 4)[:, 1:]
     elif mode == "ratio":
-        import fast_simplification
-
-        nv, nt = fast_simplification.simplify(
-            verts.astype(np.float32), tris.astype(np.int32),
-            target_reduction=float(1.0 - keep))
-        nv = np.asarray(nv, dtype=np.float64)
-        nt = np.asarray(nt, dtype=np.int64)
+        nv, nt = _quadric(verts, tris, keep)
     else:
         raise ValueError(f"unknown decimate mode {mode!r}")
 
@@ -111,9 +124,22 @@ def decimate_mesh(verts: np.ndarray, tris: np.ndarray, *,
     if len(nt) == 0:
         return DecimateResult(verts, tris, mode, n0, n0, 0.0)
 
+    # Overshoot the target by 2% and re-measure: one pass usually lands, a constrained mesh needs
+    # two or three, and the loop is bounded so a mesh that simply cannot collapse further returns
+    # its best effort instead of spinning.
+    passes = 0
+    while max_tris and len(nt) > max_tris > MIN_TRIS and passes < 5:
+        nv, nt2 = _quadric(nv, nt, max(0.01, (max_tris / len(nt)) * 0.98))
+        passes += 1
+        if len(nt2) == 0 or len(nt2) >= len(nt):    # no progress: stop rather than loop or break it
+            break
+        nt = nt2
+
+    if len(nt) == 0:
+        return DecimateResult(verts, tris, mode, n0, n0, 0.0)
     v1 = _volume(nv, nt)
     dv = 0.0 if v0 == 0 else 100.0 * (v1 - v0) / v0
-    return DecimateResult(nv, nt, mode, n0, len(nt), dv)
+    return DecimateResult(nv, nt, mode, n0, len(nt), dv, passes)
 
 
 if __name__ == "__main__":
