@@ -1098,8 +1098,13 @@ function updateWork(data, secs, note) {
   }
   else if (data && data.phase_n) {
     workBar.classList.remove('indeterminate');
-    workFill.style.width = `${Math.round(100 * (data.phase_i - 0.5) / data.phase_n)}%`;
-    workStep.textContent = `Step ${data.phase_i} of ${data.phase_n}: ${PHASE_WORDS[data.phase] || data.phase}`;
+    // inside a step the bar moves by that step's own clock against its kill timer, capped short of
+    // the next step: the step count alone sat at "1 of 8" for the whole 10-minute engine run
+    const budget = data.step_budget_s || 0, spent = data.step_elapsed_s || 0;
+    const frac = budget ? Math.min(0.95, spent / budget) : 0.5;
+    workFill.style.width = `${Math.round(100 * (data.phase_i - 1 + frac) / data.phase_n)}%`;
+    workStep.textContent = `Step ${data.phase_i} of ${data.phase_n}: ${PHASE_WORDS[data.phase] || data.phase}`
+      + (budget ? ` — ${fmtTime(Math.round(spent))} of at most ${Math.round(budget / 60)} min` : '');
   } else {
     workBar.classList.add('indeterminate');
     workStep.textContent = 'Working on your model…';
@@ -1174,6 +1179,7 @@ convertBtn.addEventListener('click', async () => {
     closeWork();
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Failed: ' + e.message;
+    showFailure(e.message);
   } finally {
     closeWork();
     updateGate();                  // not a blanket re-enable: the size gate still decides
@@ -1238,6 +1244,15 @@ async function waitForJob(job) {
   }
 }
 
+// A one-line status under the button was missed by people who had hidden the progress window:
+// a failure gets the same card a success does.
+function showFailure(msg) {
+  resultEl.innerHTML = '<div class="result-head bad">This model could not be converted</div>'
+    + '<div class="result-line"></div>';
+  resultEl.querySelector('.result-line').textContent = msg;
+  resultEl.classList.remove('hidden');
+}
+
 function renderResult(data) {
   // What a person needs: did it work, what did it find, where is the file.
   // Everything countable stays available under Options > Details.
@@ -1245,7 +1260,7 @@ function renderResult(data) {
   if (!data.ok) {
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Could not convert this model: ' + (s.error || 'unknown reason');
-    resultEl.classList.add('hidden');
+    showFailure(s.error || 'unknown reason');
     return;
   }
   const lines = [];
@@ -1327,7 +1342,7 @@ function renderStats(data) {
   if (!data.ok) {
     statusEl.className = 'convert-status';
     statusEl.textContent = 'Could not convert this model: ' + (s.error || 'unknown reason');
-    resultEl.classList.add('hidden');
+    showFailure(s.error || 'unknown reason');
     return;
   }
   if (s.engine === 'trueform') {

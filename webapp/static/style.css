@@ -270,6 +270,7 @@ select {
 .result-head { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 .result-head.good { color: var(--good, #48c07a); }
 .result-head.warn { color: var(--warn, #d9a441); }
+.result-head.bad { color: var(--danger); }
 .result-line { font-size: 12.5px; line-height: 1.6; opacity: 0.85; }
 .result-line.quiet { opacity: 0.45; margin-top: 4px; }
 .result-card .download-btn { width: 100%; margin-top: 14px; }
