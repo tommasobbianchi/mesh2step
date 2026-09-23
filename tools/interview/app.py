@@ -61,7 +61,7 @@ def regions(m: trimesh.Trimesh):
     _, lab = connected_components(g, directed=False)
     area = m.area_faces
     tot = np.bincount(lab, weights=area)
-    order = np.argsort(-tot)[:MAX_REGIONS]
+    order = [c for c in np.argsort(-tot) if tot[c] > 0][:MAX_REGIONS]   # degenerate (zero-area) slivers name nothing
     face_region = np.full(n, -1, dtype=int)
     out = []
     for rid, comp in enumerate(order):
