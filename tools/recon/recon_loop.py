@@ -228,8 +228,13 @@ def ask_model(prompt, claude, model, wd, renders=()):
         # its own cmp.py through a /bin/bash -c and ran candidate programs itself, outside run_script
         # and outside its 600 s cap. One reached 21.7 GB and OOM-killed the whole service (13 times in
         # 18 h). Deny the exec tools by name; the memory cap in _run_recon is the belt to this brace.
+        # --strict-mcp-config with an empty --mcp-config: load NO MCP servers. Without it every call
+        # booted the user's whole MCP fleet -- measured 2026-09-23 on behemoth, one Serena launch per
+        # call (256 that day, 5 per conversion), each opening a browser dashboard tab -- and MCP tools
+        # such as context-mode's ctx_execute run arbitrary code straight past --disallowedTools above.
         cmd = [claude, "-p", "--model", name, "--allowedTools", "Read,Write",
                "--disallowedTools", "Bash,Task,Edit,NotebookEdit,WebFetch,WebSearch",
+               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                "--output-format", "text", prompt]
     if model.startswith("opencode:"):             # one opencode run per machine (shared session store)
         import fcntl
