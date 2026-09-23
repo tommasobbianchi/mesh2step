@@ -65,11 +65,17 @@ ssh -o BatchMode=yes "$HOST" 'python3 -m pip install --user -q --break-system-pa
     fastapi==0.129.0 uvicorn==0.40.0 \
     numpy-stl==3.2.0 trimesh==4.11.2 \
     networkx==3.6.1 lxml==6.0.2 shapely==2.1.2 rtree==1.4.1 \
+    cadquery==2.8.0 cadquery-ocp==7.9.3.1.1 pymeshfix markdown \
     python-multipart requests 2>&1 | tail -8'
 # networkx/lxml/shapely/rtree: trimesh's optional loaders (3MF needs networkx). Missing on behemoth until
 # 2026-09-22, when a 3MF upload there died as a bare 500 -- nativedev had them, so the gate never saw it.
-# numpy/scipy/cadquery are deliberately unpinned: 3.14 wheels differ and the
-# service imports none of cadquery's own API, only OCP.
+# cadquery + cadquery-ocp: the AI rebuild EXECUTES the model's CadQuery program
+# (tools/recon/recon_loop.run_script does `import cadquery as cq`), so "only OCP" stopped being true
+# when the rebuild shipped. cadquery also imports OCP.IVtkOCC, which the novtk wheel does not carry;
+# nativedev has cadquery-ocp of the SAME version alongside novtk, so pin that exact version here and
+# never a different one. Missing until 2026-09-23: every AI rebuild on behemoth failed, 29 for 29.
+# pymeshfix: repair level 'solidify' raises ImportError without it. markdown: the /guide page 500s.
+# numpy/scipy are deliberately unpinned: 3.14 wheels differ.
 # The app does `from mesh2step.cut import ...`, and the package lives under
 # src/ -- a src-layout is NOT importable from the repo root. nativedev resolves
 # it through an EDITABLE install (__editable__.mesh2step-0.1.0.pth pointing at
