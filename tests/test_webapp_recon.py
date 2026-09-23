@@ -138,3 +138,57 @@ def test_the_rebuild_gets_the_served_step(monkeypatch):
     c = TestClient(srv.app)
     _poll(c, _convert(c))
     assert seen["pipeline"] is True
+
+
+def _fake_recon(calls):
+    def run(stl_path, workdir):
+        calls.append(stl_path)
+        return {"status": "failed", "model": None, "best_step": None, "seconds": 0.0,
+                "report": None, "represent": None}
+    return run
+
+
+def test_an_allowlist_refuses_every_other_caller(monkeypatch):
+    """MESH2STEP_RECON_ALLOW restricts the paid rebuild to listed TCP peers. TestClient's peer is
+    'testclient', so a list without it must queue NOTHING: no rebuild entry, no recon call."""
+    monkeypatch.setenv("MESH2STEP_RECON", "1")
+    monkeypatch.setenv("MESH2STEP_RECON_ALLOW", "100.103.234.2 100.85.88.58")
+    calls = []
+    monkeypatch.setattr(srv, "_run_recon", _fake_recon(calls))
+    c = TestClient(srv.app)
+    tok = _convert(c)
+    time.sleep(0.5)
+    assert c.get(f"/api/recon/{tok}").status_code == 404      # the UI treats this as: stay silent
+    assert calls == []
+
+
+def test_a_forged_forwarded_for_does_not_pass_the_allowlist(monkeypatch):
+    """Identity is the TCP peer. A caller claiming an allowlisted address in X-Forwarded-For is refused."""
+    monkeypatch.setenv("MESH2STEP_RECON", "1")
+    monkeypatch.setenv("MESH2STEP_RECON_ALLOW", "100.103.234.2")
+    calls = []
+    monkeypatch.setattr(srv, "_run_recon", _fake_recon(calls))
+    c = TestClient(srv.app, headers={"X-Forwarded-For": "100.103.234.2"})
+    tok = _convert(c)
+    time.sleep(0.5)
+    assert c.get(f"/api/recon/{tok}").status_code == 404
+    assert calls == []
+
+
+def test_an_allowlisted_peer_gets_the_rebuild(monkeypatch):
+    monkeypatch.setenv("MESH2STEP_RECON", "1")
+    monkeypatch.setenv("MESH2STEP_RECON_ALLOW", "testclient")
+    calls = []
+    monkeypatch.setattr(srv, "_run_recon", _fake_recon(calls))
+    c = TestClient(srv.app)
+    tok = _convert(c)
+    assert _poll(c, tok)["status"] == "failed"
+    assert len(calls) == 1
+
+
+def test_loopback_is_never_allowlisted(monkeypatch):
+    """Every proxied public request arrives as 127.0.0.1: listing it by mistake must not open the door."""
+    class Req:
+        class client: host = "127.0.0.1"
+    monkeypatch.setenv("MESH2STEP_RECON_ALLOW", "127.0.0.1 100.103.234.2")
+    assert srv._recon_allowed(Req) is False
