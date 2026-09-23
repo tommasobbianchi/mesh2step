@@ -37,18 +37,20 @@ normal or axis, radius). The goal: learn the design intent so the part can be re
 How to run the interview. The goal is the CONSTRUCTION HISTORY, not details: on a STEP a diameter is trivial to
 adjust afterwards, but the path sketch -> extrude -> modify must be right. General shape first, micro details never.
 - Start with what the whole part is and what it does.
-- Real size: the mesh has no reliable units. Ask for ONE easy overall measurement (you highlight it) and record
-  "scale" = real_mm / mesh_units. Do not ask for more measurements unless a size defines the shape itself.
-- Build the history with the owner, biggest shape first, from basic shapes: prisms (extruded profiles), tubes,
-  holes; then modifiers (fillets, chamfers, pockets, patterns). For each step HIGHLIGHT the region and propose it:
-  "is this the base, a block extruded along its length?", "and this is a tube added along it?", "then holes cut
-  through here?". Let them confirm or correct. Record each confirmed step as "step1", "step2", ... in order.
+- Real size: NEVER ask for measurements. The owner types sizes straight onto the dimensions drawn on the model
+  (pink until one is typed, then all turn green); you are told when they do, and "scale" is set for you.
+  If they SAY an overall size, record "scale" = real_mm / mesh_units yourself.
+- FEW QUESTIONS. Do the reading yourself and only ask the owner to confirm or correct. Build the history biggest
+  shape first, from basic shapes: prisms (extruded profiles), tubes, holes; then modifiers (fillets, chamfers,
+  pockets, patterns). Propose several steps in one turn when the regions make them obvious, highlighting them:
+  "I read a block extruded along its length, a tube along the top, and holes cut through here: right?".
+  Record each confirmed step as "step1", "step2", ... in order.
 - Ask about symmetry and repeated features (they collapse many steps into one).
 - Skip micro details: screw sizes, small hole diameters, fits, tolerances, materials. Do not ask about them.
 - Before finishing, read the whole history back in one sentence and record the confirmed "construction".
 - One short question per turn, spoken style (it is read aloud): at most two sentences, no lists, no markdown.
 - Speak the language the owner speaks (default English). Read back numbers you record ("eight millimetres, got it").
-- After about 8 questions, or when the owner says they are done, give a one-sentence summary and set done=true.
+- After about 4 questions, or when the owner says they are done, give a one-sentence summary and set done=true.
 
 Reply with ONLY a JSON object, nothing else:
 {"say": "<what you say aloud>", "lang": "<BCP-47 like en-US or it-IT>", "highlight": [<region ids>],
@@ -88,14 +90,50 @@ def regions(m: trimesh.Trimesh):
                 A = np.c_[2 * p, np.ones(len(p))]; b = (p ** 2).sum(1)                # Kasa circle fit
                 sol = np.linalg.lstsq(A, b, rcond=None)[0]
                 rad = float(np.sqrt(max(sol[2] + sol[0] ** 2 + sol[1] ** 2, 0)))
-                r.update(kind="cylinder", axis=np.round(axis, 3).tolist(), radius=round(rad, 3))
+                ctr = sol[0] * u + sol[1] * v + float((pts @ axis).mean()) * axis           # on the axis, mid-height
+                r.update(kind="cylinder", axis=np.round(axis, 3).tolist(), radius=round(rad, 3),
+                         axis_point=np.round(ctr, 3).tolist(), u=np.round(u, 3).tolist())
             else:
                 r["kind"] = "curved"
         out.append(r)
     return face_region, out
 
 
+def dims(m: trimesh.Trimesh, regs: list) -> list:
+    """Dimensions drawn on the model for the owner to type over: overall lengths, main diameters, wall thicknesses."""
+    (x0, y0, z0), (x1, y1, z1) = m.bounds
+    out = [{"id": "L" + a, "label": a, "value": float(b - c), "a": pa, "b": pb}
+           for a, b, c, pa, pb in (("X", x1, x0, [x0, y0, z0], [x1, y0, z0]), ("Y", y1, y0, [x1, y0, z0], [x1, y1, z0]),
+                                   ("Z", z1, z0, [x1, y0, z0], [x1, y0, z1]))]
+    seen = []
+    for r in sorted((r for r in regs if r["kind"] == "cylinder"), key=lambda r: -r["area"]):
+        d = 2 * r["radius"]
+        if d > 0 and all(abs(d - q) > 0.03 * q for q in seen) and len(seen) < 4:   # one label per distinct size
+            seen.append(d)
+            c, u = np.array(r["axis_point"]), np.array(r["u"]) * r["radius"]
+            out.append({"id": f"D{r['id']}", "label": "\u2300", "value": d, "a": (c - u).tolist(),
+                        "b": (c + u).tolist(), "region": r["id"]})
+    planes = sorted((r for r in regs if r["kind"] == "plane"), key=lambda r: -r["area"])[:12]
+    seen, span = [float(e) for e in m.extents], float(max(m.extents))   # an overall length is not a wall
+    for p in planes:                                 # a thickness: the nearest opposite-facing face behind a big face
+        n, c = np.array(p["normal"]), np.array(p["center"])
+        gaps = [float((c - np.array(q["center"])) @ n) for q in planes if np.dot(q["normal"], n) < -0.98]
+        gaps = [g for g in gaps if 0 < g < 0.5 * span]
+        if not gaps:
+            continue
+        t = min(gaps)
+        if all(abs(t - q) > 0.03 * q for q in seen) and len(seen) < 6:
+            seen.append(t)
+            out.append({"id": f"T{p['id']}", "label": "t", "value": t, "a": c.tolist(), "b": (c - n * t).tolist(),
+                        "region": p["id"]})
+    for x in out:
+        x["value"] = round(x["value"], 4)
+    return out
+
+
 def ask(s: dict, text: str) -> dict:
+    if s.get("typed"):                              # sizes the owner typed on the model since the last turn
+        text = f"(The owner typed on the model: {'; '.join(s.pop('typed'))}. scale is now {s['facts'].get('scale')}.) " + text
     cmd = [CLAUDE, "-p", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
            "--model", MODEL, "--output-format", "json"]
     cmd += ["--resume", s["claude"]] if s.get("claude") else ["--system-prompt", SYSTEM]
@@ -141,14 +179,31 @@ def start(file: UploadFile = File(...)):
     raw = d / f"upload{suffix}"; raw.write_bytes(file.file.read())
     m = trimesh.load(raw, force="mesh"); m.export(mesh)
     face_region, regs = regions(m)
-    s = SESS[sid] = {"dir": str(d), "facts": {}, "log": [], "name": file.filename, "regions": regs}
+    s = SESS[sid] = {"dir": str(d), "facts": {}, "log": [], "name": file.filename, "regions": regs,
+                     "dims": dims(m, regs), "measured": {}}
     (d / "regions.json").write_text(json.dumps(regs))
     bb = np.round(m.extents, 3).tolist()
     rep = ask(s, f"The owner uploaded '{file.filename}'. Mesh bounding box {bb} (mesh units, maybe not mm), "
                  f"{len(m.faces)} triangles, watertight={m.is_watertight}. Regions:\n{json.dumps(regs)}\n"
                  "Greet them in one sentence and ask your first question.")
     return {"sid": sid, "stl_b64": base64.b64encode(m.export(file_type="stl")).decode(),
-            "face_region": face_region.tolist(), "regions": regs, "reply": rep, "facts": s["facts"]}
+            "face_region": face_region.tolist(), "regions": regs, "dims": s["dims"], "reply": rep, "facts": s["facts"]}
+
+
+@app.post("/api/dim")
+def dim(sid: str = Form(...), id: str = Form(...), mm: float = Form(...)):
+    """The owner typed a real size over a drawn dimension: it fixes the scale (median over all typed ones)."""
+    s = SESS.get(sid)
+    dm = next((x for x in (s or {}).get("dims", []) if x["id"] == id), None)
+    if dm is None or not 0 < mm < 1e5 or dm["value"] <= 0:
+        raise HTTPException(400, "bad dimension")
+    s["measured"][id] = mm
+    k = float(np.median([v / next(x["value"] for x in s["dims"] if x["id"] == i) for i, v in s["measured"].items()]))
+    name = {"D": "diameter", "T": "thickness"}.get(id[0], "overall " + dm["label"]) + (f" (region {dm['region']})" if "region" in dm else "")
+    s["facts"]["scale"] = f"{k:.6g}"
+    s["facts"][name] = f"{mm:g} mm (typed)"
+    s.setdefault("typed", []).append(f"{name} = {mm:g} mm")
+    return {"facts": s["facts"], "measured": s["measured"]}
 
 
 @app.post("/api/turn")

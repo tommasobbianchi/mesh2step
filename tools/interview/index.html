@@ -34,6 +34,10 @@
   #build { background:var(--acc); color:var(--ink); }
   #text { flex:1; font:inherit; padding:10px 12px; border:1px solid #bdb8ab; border-radius:10px; min-height:44px; }
   #status { font-size:13px; color:var(--soft); min-height:18px; }
+  .dim { position:absolute; transform:translate(-50%,-50%); width:74px; font:600 13px ui-monospace, monospace; text-align:center;
+         padding:4px 4px; border-radius:8px; border:1.5px solid #c2185b; background:#f8c8dc; color:#6a0f35; }
+  .dim.ok { border-color:#2e7d32; background:#c8ebcb; color:#14451a; } .dim.typed { border-width:3px; }
+  #dims-hint { position:absolute; left:12px; bottom:10px; font-size:13px; color:var(--soft); background:#faf9f5cc; padding:4px 8px; border-radius:8px; }
   #result a { color:var(--blue); font-weight:600; }
   @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
 </style>
@@ -43,7 +47,7 @@
 <main>
   <div id="view">
     <div id="drop"><label for="file">Drop or choose your mesh (STL / 3MF / OBJ)<input id="file" type="file" accept=".stl,.3mf,.obj"></label>
-      <div style="color:var(--soft)">Then talk: about 5 minutes. Keep a caliper handy.</div></div>
+      <div style="color:var(--soft)">Then talk: about 5 minutes. Keep a caliper handy for one size.</div></div>
   </div>
   <aside>
     <div class="card" id="log" aria-live="polite"></div>
@@ -66,6 +70,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = (id) => document.getElementById(id);
 const view = $('view'), logEl = $('log'), factsEl = $('facts'), statusEl = $('status');
 let sid = null, faceRegion = [], regionsById = {}, geom, mesh, started = 0, lang = 'en-US', resultMesh;
+let dims = [], scale = null, measured = {};
 
 // ---- viewer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -77,7 +82,52 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x8a857a, 1.2));
 const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(1, 2, 3); scene.add(sun);
 function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(view);
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); placeDims(); });
+
+// ---- dimensions drawn on the model: pink until the scale is known, then green; the owner types over any of them
+function placeDims() {
+  const r = view.getBoundingClientRect();
+  for (const d of dims) {
+    const p = d.mid.clone().project(camera);
+    d.el.hidden = p.z > 1;
+    d.el.style.left = ((p.x + 1) / 2 * r.width) + 'px'; d.el.style.top = ((1 - p.y) / 2 * r.height) + 'px';
+  }
+}
+function paintDims() {
+  for (const d of dims) {
+    if (document.activeElement === d.el) continue;
+    const mm = measured[d.id] ?? (scale ? d.value * scale : null);
+    d.el.value = mm == null ? (d.label === 't' ? 't ?' : d.label === 'X' || d.label === 'Y' || d.label === 'Z' ? d.label + ' ?' : '⌀ ?')
+      : (d.label === '⌀' ? '⌀' : '') + (+mm.toFixed(mm < 10 ? 2 : 1));
+    d.el.classList.toggle('ok', mm != null); d.el.classList.toggle('typed', d.id in measured);
+  }
+}
+function setScale(f) { const k = parseFloat(String(f?.scale ?? '')); if (k > 0) { scale = k; paintDims(); } }
+function makeDims(list) {
+  for (const x of list) {
+    const a = new THREE.Vector3(...x.a), b = new THREE.Vector3(...x.b);
+    const d = { ...x, mid: a.clone().add(b).multiplyScalar(0.5), el: document.createElement('input') };
+    if (!a.equals(b)) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]),
+      new THREE.LineBasicMaterial({ color: 0xc2185b, depthTest: false })));
+    d.el.className = 'dim'; d.el.inputMode = 'decimal'; d.el.setAttribute('aria-label', 'size in mm: ' + x.label);
+    d.el.title = 'Type the real size in mm';
+    d.el.addEventListener('focus', () => { d.el.value = ''; if (d.region != null) paint([d.region]); });
+    d.el.addEventListener('blur', () => paintDims());
+    d.el.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      const mm = parseFloat(d.el.value.replace(',', '.').replace(/[^0-9.]/g, ''));
+      d.el.blur(); if (!(mm > 0)) return;
+      const fd = new FormData(); fd.append('sid', sid); fd.append('id', d.id); fd.append('mm', mm);
+      const r = await fetch('api/dim', { method: 'POST', body: fd });
+      if (!r.ok) { statusEl.textContent = 'Could not save that size: ' + (await r.text()); return; }
+      const j = await r.json(); measured = j.measured; facts(j.facts); setScale(j.facts); paintDims();
+    });
+    view.append(d.el); dims.push(d);
+  }
+  const h = document.createElement('div'); h.id = 'dims-hint';
+  h.textContent = 'Type any size you know over a pink label (mm, Enter). One is enough: the rest turn green.'; view.append(h);
+  paintDims();
+}
 
 const BASE = [0.78, 0.76, 0.72], HI = [0.85, 0.28, 0.06];
 function paint(ids) {
@@ -118,7 +168,7 @@ function addLog(who, text) { const d = document.createElement('div'); d.classNam
 function facts(f) { factsEl.replaceChildren(...Object.entries(f || {}).flatMap(([k, v]) => { const a = document.createElement('span'), b = document.createElement('span'); a.textContent = k; b.textContent = v; return [a, b]; })); }
 async function handle(rep, f) {
   if (rep.lang) lang = rep.lang;
-  addLog('q', rep.say || ''); facts(f); paint(rep.highlight);
+  addLog('q', rep.say || ''); facts(f); setScale(f); paint(rep.highlight);
   if (rep.done) { $('build').disabled = false; statusEl.textContent = 'Interview complete: press Rebuild when ready.'; }
   $('build').disabled = !rep.done && Object.keys(f || {}).length < 3;
   await say(rep.say, rep.lang);
@@ -133,7 +183,7 @@ $('file').addEventListener('change', async (e) => {
   if (!r.ok) { $('drop').textContent = 'Could not read that file: ' + (await r.text()); return; }
   const d = await r.json();
   sid = d.sid; faceRegion = d.face_region; d.regions.forEach((x) => { regionsById[x.id] = x; });
-  $('drop').remove(); resize(); show(d.stl_b64);
+  $('drop').remove(); resize(); show(d.stl_b64); makeDims(d.dims || []);
   started = Date.now(); setInterval(() => { const s = Math.round((Date.now() - started) / 1000); $('clock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} / ~5:00`; }, 1000);
   handle(d.reply, d.facts);
 });
