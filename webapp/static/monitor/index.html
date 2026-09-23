@@ -69,6 +69,22 @@ function nodeCard(n) {
   const groups = Object.entries(n.requests.last_5min).sort((a, b) => b[1].n - a[1].n)
       .map(([g, e]) => `<tr><td>${esc(g)}</td><td>${e.n}</td><td>${e.ms_p95 == null ? '' : e.ms_p95 + ' ms'}</td></tr>`).join('')
       || '<tr><td colspan="3" class="muted">no requests in the last 5 minutes</td></tr>';
+  // Who is calling. A public funnel means the visitor list is the security surface: one IP taking
+  // every slot, a datacentre PTR behind a burst of uploads, or a wall of 4xx is the shape of abuse.
+  const cl = n.clients || { top: [], unique_last_hour: 0, external_last_hour: 0 };
+  const clients = (cl.top || []).map((t) => {
+    const hot = t.refused > 0 || t.errors >= 5 || t.uploads >= 10;
+    return `<tr class="${t.internal ? 'muted' : ''}">
+      <td>${esc(t.ip)}${t.internal ? ' <span class="muted">(ours)</span>' : ''}</td>
+      <td class="muted">${esc(t.rdns || '')}</td>
+      <td class="${hot ? 'bad' : ''}">${t.n}</td>
+      <td>${t.uploads || ''}</td>
+      <td class="${t.refused ? 'bad' : ''}">${t.refused || ''}</td>
+      <td class="${t.errors ? 'bad' : ''}">${t.errors || ''}</td>
+      <td class="muted">${fmtS(t.first_seen_s || 0)} ago</td>
+      <td class="muted" title="${esc(t.ua || '')}">${esc((t.ua || '').slice(0, 42))}</td>
+      <td class="muted" title="${esc(t.origin || '')}">${esc((t.origin || '').slice(0, 30))}</td></tr>`;
+  }).join('') || '<tr><td colspan="9" class="muted">nobody called in the last hour</td></tr>';
   const codes = Object.entries(n.requests.codes_5min).sort()
       .map(([code, k]) => `<span class="${code[0] === '2' ? 'ok' : code === '429' ? '' : 'bad'}">${code}: ${k}</span>`).join(' · ');
   return `<div class="card">
@@ -90,6 +106,7 @@ function nodeCard(n) {
       ${kpi('load', n.loadavg[0])}
       ${kpi('uptime', fmtS(n.uptime_s))}
       ${kpi('jobs tracked', n.pending_jobs)}
+      ${kpi('visitors / h', `${cl.external_last_hour || 0}${cl.unique_last_hour ? ` of ${cl.unique_last_hour}` : ''}`)}
     </div>
     <div class="bar"><i style="width:${Math.min(100, 100 * slots.busy / slots.total)}%"></i></div>
     <section><h2>Requests per minute (last hour)</h2>
@@ -101,6 +118,11 @@ function nodeCard(n) {
       <div class="spark">${(q.per_min_last_hour || []).map((v) => `<i style="height:${Math.round(100 * v / Math.max(1, ...(q.per_min_last_hour || [1])))}%" title="${v} waiting"></i>`).join('')}</div>
       <div class="muted">peak ${q.peak_last_hour || 0} waiting in the last hour · ${q.length} now</div>
       <table>${waits}</table></section>
+    <section><h2>Callers in the last hour</h2>
+      <table><tr><th>address</th><th>reverse DNS</th><th>reqs</th><th>uploads</th><th>refused</th>
+        <th>errors</th><th>first seen</th><th>user agent</th><th>origin</th></tr>${clients}</table>
+      <div class="muted">${cl.external_last_hour || 0} from outside the tailnet · ${cl.known || 0} addresses known since boot</div>
+    </section>
     <section><h2>Last conversions</h2>
       <table><tr><th>time</th><th></th><th>triangles</th><th>path</th><th>took</th><th>faces</th><th></th></tr>${rows}</table>
     </section>

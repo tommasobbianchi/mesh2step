@@ -956,3 +956,32 @@ def test_the_monitor_reports_the_hour_and_the_queue_history(client, monkeypatch)
     n = client.get("/api/admin/stats", headers={"x-admin-token": "sekret"}).json()["nodes"][0]
     assert n["requests"]["last_hour"] >= 1 and "uploads_last_hour" in n["requests"]
     assert len(n["queue"]["per_min_last_hour"]) == 60 and n["queue"]["peak_last_hour"] >= 7
+
+
+def test_the_monitor_names_the_callers(client, monkeypatch):
+    """The site is public through the funnel, so 'who is calling' is the security surface. The monitor has to
+    name each caller, count what it did in the last hour, and separate our own tailnet from the outside."""
+    import webapp.server as srv
+
+    monkeypatch.setattr(srv, "ADMIN_TOKEN", "sekret")
+    srv._REQ.clear(); srv._CLIENTS.clear(); srv._RDNS.clear()
+
+    # Caddy APPENDS the peer it saw, so the rightmost entry is ours and a client-supplied one is not.
+    for _ in range(3):
+        client.get("/api/limits", headers={"x-forwarded-for": "9.9.9.9, 203.0.113.7",
+                                           "user-agent": "curl/8.5.0", "referer": "https://elsewhere.example/x"})
+    client.get("/api/limits", headers={"x-forwarded-for": "100.64.1.2"})       # tailnet: ours
+    client.get("/api/nope", headers={"x-forwarded-for": "203.0.113.7",         # a 404 from the same caller
+                                     "user-agent": "curl/8.5.0"})
+
+    n = client.get("/api/admin/stats", headers={"x-admin-token": "sekret"}).json()["nodes"][0]
+    cl = n["clients"]
+    by_ip = {t["ip"]: t for t in cl["top"]}
+    assert "203.0.113.7" in by_ip, "the rightmost X-Forwarded-For entry is the caller, not the claimed one"
+    assert "9.9.9.9" not in by_ip, "a client-supplied X-Forwarded-For must never be believed"
+    t = by_ip["203.0.113.7"]
+    assert t["n"] == 4 and t["errors"] == 1 and t["internal"] is False
+    assert t["ua"] == "curl/8.5.0"                                  # the agent it last called with
+    assert t["origin"] == "https://elsewhere.example/x"             # kept: a 404 sends no referer
+    assert by_ip["100.64.1.2"]["internal"] is True                             # tailnet is not a visitor
+    assert cl["unique_last_hour"] == 2 and cl["external_last_hour"] == 1

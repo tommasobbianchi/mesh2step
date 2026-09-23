@@ -327,7 +327,12 @@ PREREAD_REFUSE_MIN_BYTES = 1024 * 1024
 # budget, requests per minute by endpoint and status, and what conversions actually did. All in memory, per node;
 # nativedev merges its peers (MESH2STEP_PEERS) so one page shows both.
 _STARTED_AT = time.time()
-_REQ: deque = deque(maxlen=50000)     # (ts, group, status, ms)
+_REQ: deque = deque(maxlen=50000)     # (ts, group, status, ms, client ip)
+# Who is calling, so abuse is visible before it is expensive. The site is public through the funnel:
+# a scripted uploader looks exactly like a keen user until you can see one IP hold every slot.
+_CLIENTS: dict = {}                   # ip -> counters + the last user-agent/origin seen
+_CLIENTS_MAX = 5000
+_RDNS: dict = {}                      # ip -> PTR name or "" (resolved off-thread; names datacentres/VPNs)
 _QSAMP: deque = deque(maxlen=2200)    # (ts, queue length, slots busy) every 10 s: the queue over the last hours
 _DONE: deque = deque(maxlen=2000)     # finished conversions
 ADMIN_TOKEN = os.environ.get("MESH2STEP_ADMIN_TOKEN", "")
@@ -357,12 +362,72 @@ def _group(path: str) -> str:
     return "page/static"
 
 
+def _client_ip(request: Request) -> str:
+    """The real caller. Caddy APPENDS the peer it saw to any X-Forwarded-For the client sent, so the
+    RIGHTMOST entry is the one our own proxy vouches for -- the leftmost is whatever the client claimed."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[-1].strip()[:45]
+    return (request.client.host if request.client else "?")[:45]
+
+
+def _is_internal(ip: str) -> bool:
+    """Tailnet (100.64/10 CGNAT) and loopback: us, our nodes, our health checks -- never the public."""
+    if ip.startswith("127.") or ip in ("::1", "?"):
+        return True
+    p = ip.split(".")
+    return len(p) == 4 and p[0] == "100" and p[1].isdigit() and 64 <= int(p[1]) <= 127
+
+
 @app.middleware("http")
 async def _count_requests(request: Request, call_next):
     t0 = time.time()
     resp = await call_next(request)
-    _REQ.append((t0, _group(request.url.path), resp.status_code, round((time.time() - t0) * 1000)))
+    ip = _client_ip(request)
+    _REQ.append((t0, _group(request.url.path), resp.status_code, round((time.time() - t0) * 1000), ip))
+    try:
+        c = _CLIENTS.get(ip)
+        if c is None:
+            if len(_CLIENTS) >= _CLIENTS_MAX:     # drop the stalest, never grow without bound
+                for k in sorted(_CLIENTS, key=lambda k: _CLIENTS[k]["last"])[:_CLIENTS_MAX // 10]:
+                    _CLIENTS.pop(k, None)
+            c = _CLIENTS[ip] = {"first": t0, "n": 0, "uploads": 0, "refused": 0, "errors": 0,
+                                "internal": _is_internal(ip)}
+        c["last"] = t0
+        c["n"] += 1
+        c["ua"] = (request.headers.get("user-agent") or "")[:180]
+        org = request.headers.get("origin") or request.headers.get("referer") or ""
+        if org:
+            c["origin"] = org[:120]
+        g = _group(request.url.path)
+        if g == "/api/convert":
+            if resp.status_code == 429:
+                c["refused"] += 1
+            elif resp.status_code < 400:
+                c["uploads"] += 1
+        if resp.status_code >= 400 and resp.status_code != 429:
+            c["errors"] += 1
+        if not c["internal"] and ip not in _RDNS:
+            _RDNS[ip] = None                      # queued; the resolver thread fills it in
+    except Exception:  # noqa: BLE001 - monitoring must never take the service down
+        pass
     return resp
+
+
+def _resolve_rdns() -> None:
+    """PTR names off the request path: 'ec2-…compute.amazonaws.com' on a burst of uploads says
+    datacentre, not customer. Local resolver only -- nothing about a visitor leaves this box."""
+    import socket
+    while True:
+        for ip in [k for k, v in list(_RDNS.items()) if v is None]:
+            try:
+                _RDNS[ip] = socket.gethostbyaddr(ip)[0][:80]
+            except Exception:  # noqa: BLE001 - no PTR is the common case
+                _RDNS[ip] = ""
+        time.sleep(20)
+
+
+threading.Thread(target=_resolve_rdns, name="rdns", daemon=True).start()
 
 
 @app.middleware("http")
@@ -1350,7 +1415,7 @@ def _node_stats() -> dict:
     per_min = [0] * 60
     groups: dict = {}
     codes: dict = {}
-    for ts, g, code, ms in _REQ:
+    for ts, g, code, ms, _ip in _REQ:
         age = now - ts
         if age < 3600:
             per_min[min(59, int(age // 60))] += 1
@@ -1361,8 +1426,30 @@ def _node_stats() -> dict:
     for e in groups.values():
         e["ms_p95"] = _pct(e.pop("ms_p95"), 0.95)
     req_hour = sum(1 for ts, *_ in _REQ if now - ts < 3600)
-    uploads_hour = sum(1 for ts, g, code, _ in _REQ if now - ts < 3600 and g == "/api/convert" and code < 400)
-    refused_hour = sum(1 for ts, g, code, _ in _REQ if now - ts < 3600 and g == "/api/convert" and code == 429)
+    uploads_hour = sum(1 for ts, g, code, _, _ip in _REQ if now - ts < 3600 and g == "/api/convert" and code < 400)
+    refused_hour = sum(1 for ts, g, code, _, _ip in _REQ if now - ts < 3600 and g == "/api/convert" and code == 429)
+    # Per-caller, last hour: one IP holding every slot is the shape of abuse, and it is invisible in a
+    # request-rate line. Counted from the ring so the window is exact, not since-boot.
+    hour_ip: dict = {}
+    for ts, g, code, _ms, ip in _REQ:
+        if now - ts >= 3600:
+            continue
+        h = hour_ip.setdefault(ip, {"n": 0, "uploads": 0, "refused": 0, "errors": 0})
+        h["n"] += 1
+        if g == "/api/convert":
+            if code == 429:
+                h["refused"] += 1
+            elif code < 400:
+                h["uploads"] += 1
+        if code >= 400 and code != 429:
+            h["errors"] += 1
+    top = []
+    for ip, h in sorted(hour_ip.items(), key=lambda kv: -kv[1]["n"])[:25]:
+        c = _CLIENTS.get(ip, {})
+        top.append({"ip": ip, "internal": bool(c.get("internal")), "rdns": _RDNS.get(ip) or "",
+                    "ua": c.get("ua", ""), "origin": c.get("origin", ""),
+                    "first_seen_s": round(now - c["first"]) if c.get("first") else None,
+                    "last_seen_s": round(now - c["last"]) if c.get("last") else None, **h})
     q_min = [0] * 60                                    # worst queue length seen in each of the last 60 minutes
     for ts, qlen, _busy in _QSAMP:
         age = now - ts
@@ -1392,6 +1479,9 @@ def _node_stats() -> dict:
         "requests": {"per_min_last_hour": list(reversed(per_min)), "last_5min": groups, "codes_5min": codes,
                      "last_hour": req_hour, "uploads_last_hour": uploads_hour, "refused_last_hour": refused_hour,
                      "total_since_start": len(_REQ)},
+        "clients": {"unique_last_hour": len(hour_ip),
+                    "external_last_hour": sum(1 for ip in hour_ip if not _is_internal(ip)),
+                    "known": len(_CLIENTS), "top": top},
         "conversions": {
             "last_hour": len(done), "ok": sum(1 for d in done if d["ok"]),
             "p50_s": _pct([d["seconds"] for d in done], 0.5), "p95_s": _pct([d["seconds"] for d in done], 0.95),
