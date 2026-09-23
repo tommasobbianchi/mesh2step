@@ -858,7 +858,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     except NativeTimeout:
         __import__("shutil").rmtree(workdir, ignore_errors=True)
         raise HTTPException(504, (
-            f"This model did not finish within {int(CONVERT_TIMEOUT_S / 60)} minutes. "
+            f"This model did not finish within {max(1, round((time.time() - t_convert) / 60))} minutes. "
             f"It has {n_in_tris:,} triangles — try simplifying the mesh before "
             "uploading, or convert it again when the server is quieter."
         )) from None
