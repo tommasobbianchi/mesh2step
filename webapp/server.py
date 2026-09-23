@@ -753,7 +753,7 @@ def _edgebuild_upgrade(stl_path, out_path, res) -> dict:
 def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
                        schema, native_unify, merge_coplanar_angle, filename, stem,
                        n_in_tris, cut_before, cut_after, repair_info, feature=False,
-                       feature_only=False, decimate_info=None, progress=None) -> dict:
+                       feature_only=False, decimate_info=None, progress=None, recon=False) -> dict:
     """The part that takes minutes. Runs on a worker so the request can let go.
 
     Bounded by _CONVERT_SLOTS: measured on this host a 64k-triangle gate needs 91s
@@ -1032,7 +1032,7 @@ def _convert_in_worker(*, stl_path, out_path, workdir, engine, native_engine,
     token = uuid.uuid4().hex
     _JOBS[token] = {"path": out_path, "name": f"{stem}.step", "ts": time.time()}
     try:  # the AI rebuild is extra; queueing it must never fail the conversion
-        if _recon_enabled():
+        if recon and _recon_enabled():        # recon: this caller may spend on it (_recon_allowed)
             if _recon_admit():
                 _RECON[token] = {"status": "queued", "ts": time.time()}
                 _RECON_POOL.submit(_recon_worker, token, Path(stl_path), Path(workdir), stem)
@@ -1067,6 +1067,22 @@ def _recon_admit() -> bool:
 
 def _recon_enabled() -> bool:
     return os.environ.get("MESH2STEP_RECON") == "1"
+
+
+def _recon_allowed(request: Request) -> bool:
+    """Who may trigger a paid AI rebuild. MESH2STEP_RECON_ALLOW is a space-separated list of TCP peer
+    addresses; empty means no restriction (the previous behaviour).
+
+    Deliberately the raw TCP peer, never X-Forwarded-For (so never _client_ip). Measured 2026-09-23:
+    every request through the funnel and Caddy reaches the app as 127.0.0.1, so the only request that
+    carries the caller's identity is a DIRECT tailnet connection to :8000, whose source address
+    WireGuard authenticates. A header could be forged by anyone who can reach :8000. Loopback is never
+    allowed even if listed: that is the address every proxied public request arrives from."""
+    allow = os.environ.get("MESH2STEP_RECON_ALLOW", "").split()
+    if not allow:
+        return True
+    peer = request.client.host if request.client else ""
+    return peer in allow and peer not in ("127.0.0.1", "::1")
 
 
 def _run_recon(stl_path: Path, workdir: Path) -> dict:
@@ -1219,6 +1235,7 @@ def _convert_job(*, t_admit: float, **kw) -> dict:
 
 @app.post("/api/convert")
 def convert(
+    request: Request,
     file: UploadFile = File(...),
     engine: str = Form("faceted"),
     tolerance: str = Form("0.01"),
@@ -1379,7 +1396,7 @@ def convert(
             merge_coplanar_angle=merge_coplanar_angle, filename=file.filename, stem=stem,
             n_in_tris=n_in_tris, cut_before=cut_before, cut_after=cut_after,
             repair_info=repair_info, feature=feature, feature_only=feature_only,
-            decimate_info=decimate_info,
+            decimate_info=decimate_info, recon=_recon_allowed(request),
         )
         handed_off = True  # the worker owns the admission slot from here on
         try:
