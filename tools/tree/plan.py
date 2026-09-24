@@ -347,7 +347,11 @@ def plan_tree(stl, wd=None):
     F = facts(m, tol)
     wd = wd or tempfile.mkdtemp()
     _log("facts", len(F["flat"]), "flat,", len(F["cyl"]), "cyl")
-    plan, cost, raw, sid = ask_plan(stl, F, wd)
+    replay = json.loads(Path(os.environ["PLAN_REPLAY"]).read_text())["plans"] if os.environ.get("PLAN_REPLAY") else None
+    if replay:                                         # bench: the recorded planner replies, no model call
+        plan, cost, raw, sid = replay[0], 0.0, "", ("replay" if len(replay) > 1 else None)
+    else:
+        plan, cost, raw, sid = ask_plan(stl, F, wd)
     _log("plan", cost)
     best, tries, d = None, [], None
     for turn in range(2):                              # plan, then one revision that sees the misses
@@ -369,10 +373,13 @@ def plan_tree(stl, wd=None):
                                               for f in tree["features"]]), skipped=json.dumps(skipped),
                             explained=d["explained"] if d else 0, extra=d["extra"] if d else 0, tol=tol,
                             clusters=json.dumps(ev))
-        plan2, c2, raw, sid = _call([CLAUDE, "-p", "--model", MODEL, "--resume", sid, "--allowedTools", "Read",
-                                     "--disallowedTools", "Bash,Task,Edit,Write,NotebookEdit,WebFetch,WebSearch",
-                                     "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-                                     "--output-format", "json", msg], wd)
+        if replay:
+            plan2, c2 = replay[1], 0.0
+        else:
+            plan2, c2, raw, sid = _call([CLAUDE, "-p", "--model", MODEL, "--resume", sid, "--allowedTools", "Read",
+                                         "--disallowedTools", "Bash,Task,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+                                         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                                         "--output-format", "json", msg], wd)
         cost = max(cost, c2)                           # a resumed session reports its running total
         _log("revised plan", cost)
         if not plan2.get("bodies"):

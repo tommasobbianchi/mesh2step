@@ -1,0 +1,93 @@
+{
+ "source": "gate planner run 2026-09-24 13:31, sonnet",
+ "plans": [
+  {
+   "bodies": [
+    {
+     "op": "pad",
+     "label": "Stepped main block",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P2",
+     "to": "P1"
+    },
+    {
+     "op": "pad",
+     "label": "Side tab",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P15",
+     "to": "P2"
+    },
+    {
+     "op": "pocket",
+     "label": "Large cross bore",
+     "kind": "cylinder",
+     "cyl": "C2",
+     "from": "P27",
+     "to": "P19"
+    },
+    {
+     "op": "pocket",
+     "label": "Small cross bore",
+     "kind": "cylinder",
+     "cyl": "C1",
+     "from": "P25",
+     "to": "P24"
+    }
+   ]
+  },
+  {
+   "bodies": [
+    {
+     "op": "pad",
+     "label": "Stepped main block",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P2",
+     "to": "P1"
+    },
+    {
+     "op": "pocket",
+     "label": "Bottom channel",
+     "kind": "prism",
+     "axis": "Z",
+     "from": "P3",
+     "to": "P18",
+     "clip_u": [
+      "P9",
+      "P7"
+     ],
+     "clip_v": [
+      "P12",
+      "P14"
+     ]
+    },
+    {
+     "op": "pocket",
+     "label": "Recess in +X face",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P1",
+     "to": "P6"
+    },
+    {
+     "op": "pad",
+     "label": "Raised pad on -X face",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P8",
+     "to": "P2"
+    },
+    {
+     "op": "pad",
+     "label": "Side tab",
+     "kind": "prism",
+     "axis": "X",
+     "from": "P15",
+     "to": "P8"
+    }
+   ]
+  }
+ ]
+}

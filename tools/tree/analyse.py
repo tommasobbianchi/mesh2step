@@ -5,6 +5,8 @@ usage: analyse.py <mesh> <out_dir>      writes out_dir/tree.json and out_dir/ana
 """
 import json
 import sys
+
+import numpy as np
 import time
 from pathlib import Path
 
@@ -29,6 +31,7 @@ def measure(tree, m, tol, occ):
 
 def main(stl, out):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
+    np.random.seed(0)                                  # surface sampling is random: same mesh, same decisions
     t0 = time.time()
     tree, m, tol = PR.propose(stl)
     occ = T.occupancy(m, m.bounds, n=60)

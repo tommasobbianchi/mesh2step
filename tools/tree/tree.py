@@ -306,6 +306,9 @@ def tessellate(shape, defl):
     return np.array(V), np.array(F)
 
 
+_MESH_KD = {}
+
+
 def deviation(mesh, shape, tol):
     """Per mesh face: distance from its centre to the rebuilt surface. And the other way: rebuilt surface points
     farther than tol from the mesh (material or cuts the mesh does not have). Sampled, KD-tree: fast, ~spacing."""
@@ -314,10 +317,15 @@ def deviation(mesh, shape, tol):
     V, F = tessellate(shape, tol / 2)
     sm = trimesh.Trimesh(V, F, process=False)
     n = int(min(400000, max(50000, sm.area / (tol / 3) ** 2)))
-    sp, _ = trimesh.sample.sample_surface_even(sm, n) if len(F) else (np.zeros((1, 3)), None)
+    # plain random sampling: the even variant spent 106 of 145 s rejecting close points (gate profile)
+    sp, _ = trimesh.sample.sample_surface(sm, n) if len(F) else (np.zeros((1, 3)), None)
     d_mesh = cKDTree(sp).query(mesh.triangles_center)[0]
-    mp, _ = trimesh.sample.sample_surface_even(mesh, n)
-    d_solid = cKDTree(np.r_[mp, mesh.vertices]).query(sp)[0]
+    nm = int(min(400000, max(50000, mesh.area / (tol / 3) ** 2)))
+    key = (id(mesh), nm)
+    if key not in _MESH_KD:                            # the mesh never changes during an analysis: sample it once
+        mp, _ = trimesh.sample.sample_surface(mesh, nm)
+        _MESH_KD.clear(); _MESH_KD[key] = cKDTree(np.r_[mp, mesh.vertices])
+    d_solid = _MESH_KD[key].query(sp)[0]
     w = mesh.area_faces
     return {"face_dist": d_mesh, "solid_pts": sp, "solid_dist": d_solid, "solid_mesh": sm,
             "explained": float(w[d_mesh < tol].sum() / w.sum()), "extra": float((d_solid > tol).mean()),
@@ -340,7 +348,7 @@ def feature_faces(mesh, tree, shape, tol):
                 else:
                     body = prism(f)
                 V, F = tessellate(body, tol / 2)
-                sp, _ = trimesh.sample.sample_surface_even(trimesh.Trimesh(V, F, process=False), 60000)
+                sp, _ = trimesh.sample.sample_surface(trimesh.Trimesh(V, F, process=False), 60000)
                 owner[cKDTree(sp).query(c)[0] < tol] = i
             elif f["op"] in ("round", "chamfer"):
                 es = modifier_edges(shape, tree, f, tol) if shape is not None else []
