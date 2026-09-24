@@ -427,6 +427,10 @@ def section_region(mesh, axis, h):
 
 
 def solid_region(shape, axis, h, defl=0.02):
+    return _solid_region(shape, axis, h, defl)[0]
+
+
+def _solid_region(shape, axis, h, defl=0.02):
     """The exact section of an OCCT solid across `axis` at h, as a shapely region in (u, v): the plane's section
     edges, polygonised, each cell kept if the solid classifier puts it inside. No tessellation involved: a
     tessellated model leaks at face seams (3413 open edges on the gate) and its sections read nonsense."""
@@ -443,7 +447,7 @@ def solid_region(shape, axis, h, defl=0.02):
     sec = BRepAlgoAPI_Section(shape, gp_Pln(gp_Pnt(*o), gp_Dir(*nv)), False)
     sec.Approximation(True); sec.Build()
     if not sec.IsDone():
-        return Polygon()
+        return Polygon(), False
     lines = []
     for e in _edges(sec.Shape()):
         c = BRepAdaptor_Curve(e); d = GCPnts_QuasiUniformDeflection(c, defl)
@@ -454,13 +458,31 @@ def solid_region(shape, axis, h, defl=0.02):
         # polygonize needs the loop to close exactly
         lines.append(LineString([(round([p.X(), p.Y(), p.Z()][mu], 6), round([p.X(), p.Y(), p.Z()][mv], 6)) for p in P]))
     if not lines:
-        return Polygon()
+        return Polygon(), True
+    # approximated section curves end up to ~0.13 mm apart (mechparts/37: a 2425 mm2 slice read 446): snap every
+    # endpoint to the centroid of the endpoints within 0.2 % of the part's size so the loops close
+    from scipy.spatial import cKDTree
+    E = np.array([c for ln in lines for c in (ln.coords[0], ln.coords[-1])])
+    snap = 2e-3 * float(np.ptp(E, axis=0).max() or 1.0)
+    groups = cKDTree(E).query_ball_point(E, snap)
+    target = np.array([E[g].mean(axis=0) for g in groups])
+    fixed = []
+    for j, ln in enumerate(lines):
+        c = np.array(ln.coords)
+        c[0], c[-1] = target[2 * j], target[2 * j + 1]
+        fixed.append(LineString(np.round(c, 6)))
+    lines = fixed
+    deg = {}
+    for ln in lines:                                   # every loop end must meet another edge end
+        for c in (ln.coords[0], ln.coords[-1]):
+            deg[c] = deg.get(c, 0) + 1
+    closed = all(v % 2 == 0 for v in deg.values())
     keep = []
     for cell in polygonize(unary_union(lines)):
         q = cell.representative_point(); p3 = [0.0, 0.0, 0.0]; p3[mu], p3[mv], p3[k] = q.x, q.y, h
         if BRepClass3d_SolidClassifier(shape, gp_Pnt(*p3), 1e-7).State() == TopAbs_IN:
             keep.append(cell)
-    return unary_union(keep).buffer(0) if keep else Polygon()
+    return (unary_union(keep).buffer(0) if keep else Polygon()), closed
 
 
 def occupancy(mesh, bounds, n=40, region=None):
@@ -475,10 +497,44 @@ def occupancy(mesh, bounds, n=40, region=None):
     return np.stack([shapely.contains_xy(region(axis, lo[k] + g * (i + 0.5)), U, W) for i in range(n)])
 
 
+def _exact_area(shape, axis, h, eps):
+    """The solid's cross-section area at h, exactly: the volume of its common with a thin slab, over the slab."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    k = AX[axis]
+    lo = [-BIG, -BIG, -BIG]; lo[k] = h - eps / 2
+    size = [2 * BIG, 2 * BIG, 2 * BIG]; size[k] = eps
+    slab = BRepPrimAPI_MakeBox(gp_Pnt(*lo), *size).Shape()
+    return volume(BRepAlgoAPI_Common(shape, slab).Shape()) / eps
+
+
+def checked_region(shape, axis, h, eps):
+    """solid_region, or None when its area disagrees with the exact section area by more than 3 %: section edges
+    sometimes do not close into loops (mechparts/23: slices read 0 of 1717 mm2 even after snapping)."""
+    r, closed = _solid_region(shape, axis, h)
+    if closed:                                         # loops closed: trusted without the (slower) exact check
+        return r
+    ex = _exact_area(shape, axis, h, eps)
+    return r if abs(r.area - ex) <= 0.03 * max(ex, 1e-9) + 1e-6 else None
+
+
 def volume_iou(mesh, shape, tol, occ_mesh=None):
+    """Volume overlap of the solid and the mesh on the occupancy grid. A slice whose solid section cannot be
+    trusted (checked_region -> None) is left out on both sides instead of counted as empty."""
+    import shapely
     a = occ_mesh if occ_mesh is not None else occupancy(mesh, mesh.bounds)
-    b = occupancy(None, mesh.bounds, n=a.shape[0], region=lambda ax, h: solid_region(shape, ax, h))   # same grid
-    return float(np.logical_and(a, b).sum() / max(np.logical_or(a, b).sum(), 1))
+    lo, hi = mesh.bounds; k = int(np.argmax(hi - lo)); axis = "XYZ"[k]; mu, mv = UV[axis]
+    n = a.shape[0]; g = (hi[k] - lo[k]) / n
+    us = np.arange(lo[mu] + g / 2, hi[mu], g); vs = np.arange(lo[mv] + g / 2, hi[mv], g)
+    U, W = np.meshgrid(us, vs, indexing="ij")
+    inter = union = 0
+    for i in range(n):                                 # same grid as the mesh's occupancy
+        r = checked_region(shape, axis, lo[k] + g * (i + 0.5), g / 50)
+        if r is None:
+            continue
+        b = shapely.contains_xy(r, U, W)
+        inter += int(np.logical_and(a[i], b).sum()); union += int(np.logical_or(a[i], b).sum())
+    return float(inter / max(union, 1))
 
 
 def write_step(shape, path):
