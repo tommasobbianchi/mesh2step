@@ -271,9 +271,7 @@ def _prism_body(b, op, lab, feats, m, F, tol, lo_all, hi_all):
         shape, _ = T.compile_tree(cur, tol)
         if shape is None:
             raise ValueError("nothing to cut yet")
-        V, Fc = T.tessellate(shape, tol / 2)
-        model = trimesh.Trimesh(V, Fc, process=False)
-        region = unary_union([_section(model, axis, h).difference(_section(m, axis, h)) for h in inner[1:4]])
+        region = unary_union([T.solid_region(shape, axis, h).difference(_section(m, axis, h)) for h in inner[1:4]])
         region = region.buffer(-tol / 2).buffer(tol / 2)   # drop the hairline between two meshes
     if clip is not None:
         region = region.intersection(clip)
@@ -304,8 +302,7 @@ def residual_prisms(tree, m, F, tol, max_blobs=6):
         return T.volume_iou(m, sh, tol, occ_m) + 0.5 * (d["explained"] - d["extra"]), sh
 
     base, shape = score(feats)
-    V, Fc = T.tessellate(shape, tol / 2); model = trimesh.Trimesh(V, Fc, process=False)
-    occ_s = T.occupancy(model, m.bounds, n=60)
+    occ_s = T.occupancy(None, m.bounds, n=60, region=lambda ax, h: T.solid_region(shape, ax, h))
     flats = {a: sorted(x["at"] for x in F["flat"] if x["axis"] == a) for a in AXN}
     snap = lambda a, h: min(flats[a], key=lambda z: abs(z - h)) if flats[a] and min(abs(z - h) for z in flats[a]) < 1.5 * g else h
     # grid index -> world: slices along k0, then the two plane axes of k0 (T.occupancy's layout)
@@ -330,8 +327,8 @@ def residual_prisms(tree, m, F, tol, max_blobs=6):
             pu, pv = T.UV[axis]
             clip = box(bmin[pu] - g, bmin[pv] - g, bmax[pu] + g, bmax[pv] + g)
             hs = [a + f * (b - a) for f in (0.25, 0.5, 0.75)]
-            diffs = [(_section(model, axis, h).difference(_section(m, axis, h)) if op == "pocket" else
-                      _section(m, axis, h).difference(_section(model, axis, h))).intersection(clip) for h in hs]
+            diffs = [(T.solid_region(shape, axis, h).difference(_section(m, axis, h)) if op == "pocket" else
+                      _section(m, axis, h).difference(T.solid_region(shape, axis, h))).intersection(clip) for h in hs]
             region = _majority(diffs, tol)
             for poly in _polys(region, tol)[:1]:
                 cand = {"op": op, "label": ("Pocket" if op == "pocket" else "Boss") + f" across {axis}", "axis": axis,
@@ -356,10 +353,11 @@ def plan_tree(stl, wd=None):
     _log("facts", len(F["flat"]), "flat,", len(F["cyl"]), "cyl")
     plan, cost, raw, sid = ask_plan(stl, F, wd)
     _log("plan", cost)
-    best, tries = None, []
+    best, tries, d = None, [], None
     for turn in range(2):                              # plan, then one revision that sees the misses
         tree, skipped = build(plan, m, F, tol)
         _log("built", len(tree["features"]), "features; skipped", skipped)
+        d = None
         if tree["features"]:
             shape, _ = T.compile_tree(tree, tol)
             d = T.deviation(m, shape, tol) if shape is not None else None

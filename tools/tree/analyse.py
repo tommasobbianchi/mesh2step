@@ -33,13 +33,18 @@ def main(stl, out):
     tree, m, tol = PR.propose(stl)
     occ = T.occupancy(m, m.bounds, n=60)
     info = {"tol": tol, "proposal": measure(tree, m, tol, occ), "planner": None, "chosen": "proposal", "cost_usd": 0.0}
-    if info["proposal"].get("explained", 0) < GOOD:
+    # a stack of many thin layers traces the shape but is no designer's history: ask the planner then too
+    layered = sum(f["op"] == "pad" and f.get("label", "").startswith("Level") for f in tree["features"]) > 3
+    info["layered"] = layered
+    if info["proposal"].get("explained", 0) < GOOD or layered:
         try:
             t2, _, _, pi = PL.plan_tree(stl, str(out))
             info["cost_usd"] = pi["cost"]
             if t2:
                 info["planner"] = dict(measure(t2, m, tol, occ), skipped=pi["skipped"])
-                if info["planner"]["score"] > info["proposal"]["score"]:
+                # the history matters more than the last points of match: a planner tree that holds the volume
+                # (IoU >= 0.9) replaces a layer stack even when the stack traces the surface closer
+                if info["planner"]["score"] > info["proposal"]["score"] or (layered and info["planner"].get("iou", 0) >= 0.9):
                     tree, info["chosen"] = t2, "planner"
         except Exception as e:                         # noqa: BLE001 -- the free proposal still stands
             info["planner"] = {"error": f"{type(e).__name__}: {e}"[:300]}

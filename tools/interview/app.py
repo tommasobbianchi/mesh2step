@@ -312,7 +312,7 @@ def _analyse(sid):
         bb = np.round(m.extents, 3).tolist()
         s["reply"] = ask(s, f"The owner uploaded '{s['name']}'. Mesh bounding box {bb} (units probably mm). "
                             f"Proposed construction:\n{json.dumps(v['steps'])}\nMatch: {v['explained']:.1%} of the "
-                            f"mesh explained within {tol:.3g}; where it misses: {json.dumps(s['evidence'])}\n"
+                            f"mesh explained within {s["tol"]:.3g}; where it misses: {json.dumps(s['evidence'])}\n"
                             "Greet them in one sentence and read the construction back.")
         s["status"] = "ready"
     except Exception as e:                             # noqa: BLE001 -- shown to the tester as-is

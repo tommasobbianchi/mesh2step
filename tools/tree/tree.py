@@ -367,7 +367,44 @@ def section_region(mesh, axis, h):
     return acc.buffer(0)
 
 
-def occupancy(mesh, bounds, n=40):
+def solid_region(shape, axis, h, defl=0.02):
+    """The exact section of an OCCT solid across `axis` at h, as a shapely region in (u, v): the plane's section
+    edges, polygonised, each cell kept if the solid classifier puts it inside. No tessellation involved: a
+    tessellated model leaks at face seams (3413 open edges on the gate) and its sections read nonsense."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    from OCP.gp import gp_Pln
+    from OCP.TopAbs import TopAbs_IN
+    from shapely.geometry import LineString, Polygon
+    from shapely.ops import polygonize, unary_union
+    k = AX[axis]; mu, mv = UV[axis]
+    o = [0.0, 0.0, 0.0]; o[k] = h; nv = [0.0, 0.0, 0.0]; nv[k] = 1.0
+    sec = BRepAlgoAPI_Section(shape, gp_Pln(gp_Pnt(*o), gp_Dir(*nv)), False)
+    sec.Approximation(True); sec.Build()
+    if not sec.IsDone():
+        return Polygon()
+    lines = []
+    for e in _edges(sec.Shape()):
+        c = BRepAdaptor_Curve(e); d = GCPnts_QuasiUniformDeflection(c, defl)
+        if not d.IsDone() or d.NbPoints() < 2:
+            continue
+        P = [d.Value(i) for i in range(1, d.NbPoints() + 1)]
+        # round: two edges meeting at a vertex differ in the last bits (-47.283000000000015 vs -47.283), and
+        # polygonize needs the loop to close exactly
+        lines.append(LineString([(round([p.X(), p.Y(), p.Z()][mu], 6), round([p.X(), p.Y(), p.Z()][mv], 6)) for p in P]))
+    if not lines:
+        return Polygon()
+    keep = []
+    for cell in polygonize(unary_union(lines)):
+        q = cell.representative_point(); p3 = [0.0, 0.0, 0.0]; p3[mu], p3[mv], p3[k] = q.x, q.y, h
+        if BRepClass3d_SolidClassifier(shape, gp_Pnt(*p3), 1e-7).State() == TopAbs_IN:
+            keep.append(cell)
+    return unary_union(keep).buffer(0) if keep else Polygon()
+
+
+def occupancy(mesh, bounds, n=40, region=None):
     """Inside/outside on a grid (n slices along the longest axis, same spacing across): volume tests that survive
     sliver triangles (ray tests ran out of memory on the gate mesh)."""
     import shapely
@@ -375,14 +412,13 @@ def occupancy(mesh, bounds, n=40):
     g = (hi[k] - lo[k]) / n
     us = np.arange(lo[mu] + g / 2, hi[mu], g); vs = np.arange(lo[mv] + g / 2, hi[mv], g)
     U, W = np.meshgrid(us, vs, indexing="ij")
-    return np.stack([shapely.contains_xy(section_region(mesh, axis, lo[k] + g * (i + 0.5)), U, W) for i in range(n)])
+    region = region or (lambda a, h: section_region(mesh, a, h))
+    return np.stack([shapely.contains_xy(region(axis, lo[k] + g * (i + 0.5)), U, W) for i in range(n)])
 
 
 def volume_iou(mesh, shape, tol, occ_mesh=None):
-    import trimesh
-    V, F = tessellate(shape, tol)
     a = occ_mesh if occ_mesh is not None else occupancy(mesh, mesh.bounds)
-    b = occupancy(trimesh.Trimesh(V, F, process=False), mesh.bounds, n=a.shape[0])   # same grid as the mesh's
+    b = occupancy(None, mesh.bounds, n=a.shape[0], region=lambda ax, h: solid_region(shape, ax, h))   # same grid
     return float(np.logical_and(a, b).sum() / max(np.logical_or(a, b).sum(), 1))
 
 
