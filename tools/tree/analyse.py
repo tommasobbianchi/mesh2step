@@ -43,7 +43,8 @@ def _planner_child(stl, out, q):
     np.random.seed(1)
     try:
         t2, _, _, pi = PL.plan_tree(stl, out)
-        q.put((t2, {"cost": pi["cost"], "skipped": pi["skipped"], "hopeless": pi.get("hopeless")}, None))
+        info = {"cost": pi["cost"], "skipped": pi["skipped"], "hopeless": pi.get("hopeless")}
+        q.put((t2, info, None))
     except Exception as e:                             # noqa: BLE001
         q.put((None, None, f"{type(e).__name__}: {e}"[:300]))
 
@@ -85,7 +86,7 @@ def main(stl, out):
             info["planner"] = {"error": err}
         else:
             info["cost_usd"] = pi["cost"]
-            if pi.get("hopeless") is not None:         # its bodies could not win: not measured, not chosen
+            if pi.get("hopeless") is not None:         # its bodies cannot win: not measured
                 info["planner"] = {"hopeless": pi["hopeless"], "skipped": pi["skipped"]}
             elif t2:
                 info["planner"] = dict(measure(t2, m, tol, occ), skipped=pi["skipped"])

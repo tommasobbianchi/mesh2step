@@ -31,7 +31,7 @@ CLAUDE = os.path.expanduser("~/.local/bin/claude")
 RENDER = Path.home() / ".claude/skills/deepseek-vision/scripts/render.py"
 MODEL = os.environ.get("PLAN_MODEL", "sonnet")
 AXN = "XYZ"
-HOPELESS = 0.9                                         # bodies score below which polishing is skipped
+HOPELESS = 0.9                                # bodies score below which polishing is skipped
 
 PROMPT = """You plan how a designer would MODEL this part in CAD from basic bodies: prisms (a sketch extruded
 between two flat faces) and cylinders/tubes, added (pad) or cut (pocket), biggest first, cuts after the bodies
@@ -242,7 +242,7 @@ def build(plan, m, F, tol):
             base[0] = sc
     tree = {"units": "mm", "features": feats}
     PR._ids(tree)
-    tree["_score"] = base[0]                           # volume IoU + half the surface match of the bodies
+    tree["_score"] = base[0]                  # volume IoU + half the surface match of the bodies
     return tree, skipped
 
 
@@ -410,8 +410,9 @@ def plan_tree(stl, wd=None):
     _, tree, plan, skipped = best
     bodies_score = tree.pop("_score", None)
     if bodies_score is not None and bodies_score < HOPELESS:
-        # bodies this far off cannot win (analyse needs a higher score than the proposal, or IoU >= 0.9):
-        # skip the polishing passes. SV08 shroud: bodies 0.45, ~250 s of residual/finish for a tree at IoU 0.49
+        # bodies this far off cannot win (analyse needs a higher score than the proposal, or
+        # IoU >= 0.9): skip the polishing. SV08 shroud: bodies 0.45, ~250 s of residual/finish
+        # for a tree at IoU 0.49
         _log("bodies score", round(bodies_score, 3), "< HOPELESS: no residual/finish")
         return tree, m, tol, {"cost": cost, "plan": plan, "skipped": skipped, "tries": tries,
                               "hopeless": round(bodies_score, 4)}
