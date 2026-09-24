@@ -43,7 +43,7 @@ def _planner_child(stl, out, q):
     np.random.seed(1)
     try:
         t2, _, _, pi = PL.plan_tree(stl, out)
-        q.put((t2, {"cost": pi["cost"], "skipped": pi["skipped"]}, None))
+        q.put((t2, {"cost": pi["cost"], "skipped": pi["skipped"], "hopeless": pi.get("hopeless")}, None))
     except Exception as e:                             # noqa: BLE001
         q.put((None, None, f"{type(e).__name__}: {e}"[:300]))
 
@@ -85,7 +85,9 @@ def main(stl, out):
             info["planner"] = {"error": err}
         else:
             info["cost_usd"] = pi["cost"]
-            if t2:
+            if pi.get("hopeless") is not None:         # its bodies could not win: not measured, not chosen
+                info["planner"] = {"hopeless": pi["hopeless"], "skipped": pi["skipped"]}
+            elif t2:
                 info["planner"] = dict(measure(t2, m, tol, occ), skipped=pi["skipped"])
                 # the history matters more than the last points of match: a planner tree that holds the volume
                 # (IoU >= 0.9) replaces a layer stack even when the stack traces the surface closer
