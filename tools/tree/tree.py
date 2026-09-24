@@ -353,7 +353,7 @@ def tessellate(shape, defl):
                 a, b, c = t.Triangle(i).Get()
                 F.append((o + a - 1, o + c - 1, o + b - 1) if face.Orientation().value == 1 else (o + a - 1, o + b - 1, o + c - 1))
         ex.Next()
-    # (0, 3) when the shape is empty: 1-D empties broke trimesh in deviation (mechparts/7, a residual trial)
+    # (0, 3) when the shape is empty: 1-D empties broke trimesh in deviation (mechparts/7)
     return np.array(V, dtype=float).reshape(-1, 3), np.array(F, dtype=int).reshape(-1, 3)
 
 
@@ -459,7 +459,8 @@ def _solid_region(shape, axis, h, defl=0.02):
         lines.append(LineString([(round([p.X(), p.Y(), p.Z()][mu], 6), round([p.X(), p.Y(), p.Z()][mv], 6)) for p in P]))
     if not lines:
         return Polygon(), True
-    # approximated section curves end up to ~0.13 mm apart (mechparts/37: a 2425 mm2 slice read 446): snap every
+    # approximated section curves end up to ~0.13 mm apart (mechparts/37: a 2425 mm2 slice read
+    # 446): snap every
     # endpoint to the centroid of the endpoints within 0.2 % of the part's size so the loops close
     from scipy.spatial import cKDTree
     E = np.array([c for ln in lines for c in (ln.coords[0], ln.coords[-1])])
@@ -498,34 +499,42 @@ def occupancy(mesh, bounds, n=40, region=None):
 
 
 def _exact_area(shape, axis, h, eps):
-    """The solid's cross-section area at h, exactly: the volume of its common with a thin slab, over the slab."""
+    """The solid's cross-section area at h, exactly: its common with a thin slab, over the slab."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     k = AX[axis]
-    lo = [-BIG, -BIG, -BIG]; lo[k] = h - eps / 2
-    size = [2 * BIG, 2 * BIG, 2 * BIG]; size[k] = eps
+    lo = [-BIG, -BIG, -BIG]
+    lo[k] = h - eps / 2
+    size = [2 * BIG, 2 * BIG, 2 * BIG]
+    size[k] = eps
     slab = BRepPrimAPI_MakeBox(gp_Pnt(*lo), *size).Shape()
     return volume(BRepAlgoAPI_Common(shape, slab).Shape()) / eps
 
 
 def checked_region(shape, axis, h, eps):
-    """solid_region, or None when its area disagrees with the exact section area by more than 3 %: section edges
-    sometimes do not close into loops (mechparts/23: slices read 0 of 1717 mm2 even after snapping)."""
+    """solid_region, or None when its area disagrees with the exact section area by > 3 %: section
+    edges sometimes do not close into loops (mechparts/23: slices read 0 of 1717 mm2 after snapping)."""
     r, closed = _solid_region(shape, axis, h)
-    if closed:                                         # loops closed: trusted without the (slower) exact check
+    if closed:                                         # loops closed: trusted without the exact check
         return r
     ex = _exact_area(shape, axis, h, eps)
     return r if abs(r.area - ex) <= 0.03 * max(ex, 1e-9) + 1e-6 else None
 
 
 def volume_iou(mesh, shape, tol, occ_mesh=None):
-    """Volume overlap of the solid and the mesh on the occupancy grid. A slice whose solid section cannot be
+    """Volume overlap of the solid and the mesh on the occupancy grid. A slice whose solid section
+    cannot be
     trusted (checked_region -> None) is left out on both sides instead of counted as empty."""
     import shapely
     a = occ_mesh if occ_mesh is not None else occupancy(mesh, mesh.bounds)
-    lo, hi = mesh.bounds; k = int(np.argmax(hi - lo)); axis = "XYZ"[k]; mu, mv = UV[axis]
-    n = a.shape[0]; g = (hi[k] - lo[k]) / n
-    us = np.arange(lo[mu] + g / 2, hi[mu], g); vs = np.arange(lo[mv] + g / 2, hi[mv], g)
+    lo, hi = mesh.bounds
+    k = int(np.argmax(hi - lo))
+    axis = "XYZ"[k]
+    mu, mv = UV[axis]
+    n = a.shape[0]
+    g = (hi[k] - lo[k]) / n
+    us = np.arange(lo[mu] + g / 2, hi[mu], g)
+    vs = np.arange(lo[mv] + g / 2, hi[mv], g)
     U, W = np.meshgrid(us, vs, indexing="ij")
     inter = union = 0
     for i in range(n):                                 # same grid as the mesh's occupancy
@@ -533,7 +542,8 @@ def volume_iou(mesh, shape, tol, occ_mesh=None):
         if r is None:
             continue
         b = shapely.contains_xy(r, U, W)
-        inter += int(np.logical_and(a[i], b).sum()); union += int(np.logical_or(a[i], b).sum())
+        inter += int(np.logical_and(a[i], b).sum())
+        union += int(np.logical_or(a[i], b).sum())
     return float(inter / max(union, 1))
 
 
