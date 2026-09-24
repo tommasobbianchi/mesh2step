@@ -392,12 +392,17 @@ def _export(sid):
         (d / "final_tree.json").write_text(json.dumps(tree, indent=1))
         shape, _ = T.compile_tree(tree, s["tol"] * k)
         T.write_step(shape, d / "part.step")
-        r = FC.build(tree, d / "part.FCStd", s["tol"] * k)
+        s["export"] = {"status": "running", "step": True}
+        try:
+            r = FC.build(tree, d / "part.FCStd", s["tol"] * k)
+        except Exception as e:                         # noqa: BLE001 -- the STEP stands on its own
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
         s["export"] = {"status": "done", "scale": k, "fcstd_ok": bool(r.get("ok") and r.get("valid")),
                        "edit_breaks": r.get("edit_breaks"), "params": r.get("params"), "symdiff": r.get("symdiff"),
-                       "error": r.get("error")}
+                       "edit_checked": r.get("edit_checked"), "error": r.get("error"), "step": True}
     except Exception as e:                             # noqa: BLE001
-        s["export"] = {"status": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
+        s["export"] = {"status": "failed", "error": f"{type(e).__name__}: {e}"[:300],
+                       "step": (d / "part.step").exists()}
 
 
 def scale_tree(tree, k):

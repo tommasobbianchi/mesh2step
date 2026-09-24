@@ -144,7 +144,13 @@ try:
     res["params"] = aliases
     breaks = []
     App.closeDocument(doc.Name)
+    import time
+    t_gate = time.time()
+    res["edit_checked"] = 0
     for a in aliases:                                   # editable = survives an edit (fresh copy per size)
+        if time.time() - t_gate > 180:                  # a 98-pad tree recomputes for minutes per size: budget it
+            break
+        res["edit_checked"] += 1
         d2 = App.openDocument(OUT); P2, b2 = d2.getObject("Params"), d2.getObject("Body")
         x = P2.get(a); P2.set(P2.getCellFromAlias(a), repr(x * 1.03)); d2.recompute()
         broke = [o.Label for o in b2.Group if "Invalid" in o.State or "Error" in o.State or "Touched" in o.State]
@@ -231,7 +237,8 @@ def build(tree, out, tol=0.05):
     out = Path(out).resolve(); report = out.with_suffix(".report.json"); py = out.with_suffix(".build.py")
     py.write_text(script(tree, out, report, tol))
     report.unlink(missing_ok=True)
-    subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=900)
+    n = len(tree["features"])
+    subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
     if r.get("ok"):                                    # same solid as the STEP compile?
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut

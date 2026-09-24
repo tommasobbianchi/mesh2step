@@ -291,8 +291,9 @@ $('export').addEventListener('click', async () => {
     if (e.status === 'running') { statusEl.textContent = `Writing STEP and FreeCAD… ${Math.round((Date.now() - t0) / 1000)} s`; return; }
     clearInterval(poll); statusEl.textContent = ''; $('export').disabled = false;
     const box = $('result'); box.hidden = false;
-    if (e.status !== 'done') { box.textContent = 'Export failed: ' + (e.error || e.status); return; }
-    const edit = e.fcstd_ok ? (e.edit_breaks?.length ? `FreeCAD model: ${e.params.length} editable sizes, ${e.edit_breaks.length} break on edit.` : `FreeCAD model: ${e.params.length} editable sizes, all survive an edit.`) : 'FreeCAD model could not be built: ' + (e.error || '');
+    if (e.status !== 'done' && !e.step) { box.textContent = 'Export failed: ' + (e.error || e.status); return; }
+    const checked = e.edit_checked != null && e.params && e.edit_checked < e.params.length ? ` (edit check on ${e.edit_checked} of them, time budget)` : '';
+    const edit = e.fcstd_ok ? (e.edit_breaks?.length ? `FreeCAD model: ${e.params.length} editable sizes${checked}, ${e.edit_breaks.length} break on edit.` : `FreeCAD model: ${e.params.length} editable sizes${checked}, none broke on edit.`) : 'The STEP is ready; the FreeCAD model could not be built: ' + (e.error || e.status);
     box.innerHTML = `<div style="font-weight:600">Your part${e.scale !== 1 ? ` (scaled ×${(+e.scale).toFixed(4)} to mm)` : ''}</div><div style="font-size:13px;color:var(--soft)"></div><a href="api/result/${sid}/part.step">Download STEP</a> · ${e.fcstd_ok ? `<a href="api/result/${sid}/part.FCStd">Download FreeCAD</a>` : ''}`;
     box.children[1].textContent = edit;
   }, 3000);
