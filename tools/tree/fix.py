@@ -103,7 +103,7 @@ def compact(tree, limit=600):
     out = []
     for f in tree["features"]:
         g = dict(f)
-        if "loops" in g and len(json.dumps(g["loops"])) > limit:
+        if g["op"] in ("pad", "pocket") and len(json.dumps(g["loops"])) > limit:
             pts = np.array([q for lp in g["loops"] for x in lp for q in (x.get("p") or [x["c"]])])
             kinds = [x["t"] for lp in g["loops"] for x in lp]
             g["loops"] = (f"kept: {len(g['loops'])} loops, {kinds.count('line')} lines, {kinds.count('arc')} arcs, "
@@ -121,7 +121,7 @@ def apply_patch(tree, patch):
     for r in patch.get("replace") or []:
         for i, f in enumerate(feats):
             if f["id"] == r.get("id"):
-                if not isinstance(r.get("loops"), list) and "loops" in f:
+                if f["op"] in ("pad", "pocket") and not isinstance(r.get("loops"), list):
                     r = dict(r, loops=f["loops"])      # a summarised sketch stays as it was
                 feats[i] = r
     n = max([int(x[1:]) for x in ids if x[1:].isdigit()] + [0])
@@ -133,7 +133,7 @@ def apply_patch(tree, patch):
         if k is None:
             k = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
         feats.insert(k, a)
-    bad = [f["id"] for f in feats if "loops" in f and not isinstance(f["loops"], list)]
+    bad = [f["id"] for f in feats if f["op"] in ("pad", "pocket") and not isinstance(f.get("loops"), list)]
     if bad:
         raise ValueError(f"features without a sketch: {bad}")
     return {"units": tree.get("units", "mm"), "features": feats}
