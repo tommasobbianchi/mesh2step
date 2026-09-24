@@ -204,7 +204,8 @@ def ask(s: dict, text: str) -> dict:
     r = subprocess.run(cmd + [text], capture_output=True, text=True, timeout=180, cwd=s["dir"])
     d = json.loads(r.stdout)
     s["claude"] = d.get("session_id") or s.get("claude")
-    s["cost"] = max(s.get("cost", 0), d.get("total_cost_usd") or 0)   # a resumed session reports its running total
+    costs = s.setdefault("costs", {})                 # per source; a resumed session reports its running total
+    costs["interview"] = max(costs.get("interview", 0), d.get("total_cost_usd") or 0)
     raw = (d.get("result") or "").strip()
     try:
         rep = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
@@ -213,7 +214,7 @@ def ask(s: dict, text: str) -> dict:
     s["facts"].update(rep.get("record") or {})
     s["log"].append({"t": time.time(), "owner": text, **rep})
     (Path(s["dir"]) / "transcript.json").write_text(json.dumps(
-        {"facts": s["facts"], "log": s["log"], "cost_usd": round(s["cost"], 3)}, indent=1))
+        {"facts": s["facts"], "log": s["log"], "costs": costs, "cost_usd": round(sum(costs.values()), 3)}, indent=1))
     return rep
 
 
@@ -296,8 +297,17 @@ def _refresh(s):
 def _analyse(sid):
     s = SESS[sid]
     try:
-        tree, m, tol = PR.propose(str(Path(s["dir"]) / "mesh.stl"))
-        s.update(tree=tree, mesh=m, tol=tol)
+        d = Path(s["dir"]); an = d / "analysis"
+        # its own process, memory-capped: OCCT on a bad sketch can take tens of GB (measured 44 GB once)
+        subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=8G",
+                        "-p", "MemorySwapMax=0", sys.executable, str(REPO / "tools/tree/analyse.py"),
+                        str(d / "mesh.stl"), str(an)], capture_output=True, text=True, timeout=1800)
+        if not (an / "tree.json").exists():
+            raise RuntimeError("the analysis did not finish (memory cap or timeout)")
+        tree = json.loads((an / "tree.json").read_text()); info = json.loads((an / "analysis.json").read_text())
+        m = trimesh.load(d / "mesh.stl", force="mesh")
+        s.update(tree=tree, mesh=m, tol=info["tol"], analysis=info)
+        s.setdefault("costs", {})["planner"] = info.get("cost_usd", 0)
         v = _refresh(s)
         bb = np.round(m.extents, 3).tolist()
         s["reply"] = ask(s, f"The owner uploaded '{s['name']}'. Mesh bounding box {bb} (units probably mm). "
@@ -316,7 +326,8 @@ def state(sid: str):
         raise HTTPException(404, "unknown session")
     if s["status"] != "ready":
         return {"status": s["status"], "error": s.get("error")}
-    return {"status": "ready", "view": s["view"], "reply": s.get("reply"), "facts": s["facts"]}
+    return {"status": "ready", "view": s["view"], "reply": s.get("reply"), "facts": s["facts"],
+            "analysis": s.get("analysis")}
 
 
 @app.post("/api/dim")
@@ -350,7 +361,7 @@ def turn(sid: str = Form(...), text: str = Form(""), audio: UploadFile | None = 
     out = {"heard": text, "reply": rep, "facts": s["facts"]}
     if (rep.get("fix") or "").strip() and s.get("tree"):
         new, ev, s["fix_sid"], c = FX.fix(s["tree"], s["mesh"], s["tol"], rep["fix"], s.get("fix_sid"), cwd=s["dir"])
-        s["cost"] = s.get("cost", 0) + c - s.get("fix_cost", 0); s["fix_cost"] = c
+        s.setdefault("costs", {})["fix"] = c           # the fixer session's running total
         if new is not None:
             s["tree"] = new; v = _refresh(s)
             out["view"] = v

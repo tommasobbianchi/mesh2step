@@ -29,13 +29,15 @@ def _uv(axis, P2):
     return np.c_[p3[:, mu], p3[:, mv]]
 
 
-def loop_prims(axis, L):
-    """Closed polyline -> exact lines / arcs / one circle (reverse.segment's fit), in tree coordinates."""
+def loop_prims(axis, L, native=False):
+    """Closed polyline -> exact lines / arcs / one circle (reverse.segment's fit), in tree coordinates.
+    native: L is already in tree (u, v) coordinates, not reverse.py's."""
+    conv = (lambda a, P: np.asarray(P, float)) if native else _uv
     L2, prims = reverse.segment(np.asarray(L, float))
-    Q = _uv(axis, L2)
+    Q = conv(axis, L2)
     r2 = lambda p: [round(float(p[0]), 4), round(float(p[1]), 4)]
     if len(prims) == 1 and prims[0][0] == "arc":
-        c = _uv(axis, [prims[0][3]])[0]
+        c = conv(axis, [prims[0][3]])[0]
         return [{"t": "circle", "c": r2(c), "r": round(float(prims[0][4]), 4)}]
     out = []
     for p in prims:
@@ -111,12 +113,16 @@ def main_extrusion(m, stl):
     return feats
 
 
-def cylinders(m, faces, tol):
-    """Cylindrical pieces among the given mesh faces: [(axis_name, centre_uv, r, lo, hi, is_hole, area)]."""
+def cylinders(m, faces, tol, smooth=None):
+    """Cylindrical pieces among the given mesh faces: [(axis_name, centre_uv, r, lo, hi, is_hole, area)].
+    smooth (degrees): split pieces at sharper edges too (needed when `faces` is the whole mesh)."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     sel = np.zeros(len(m.faces), bool); sel[faces] = True
-    adj = m.face_adjacency[sel[m.face_adjacency[:, 0]] & sel[m.face_adjacency[:, 1]]]
+    keep = sel[m.face_adjacency[:, 0]] & sel[m.face_adjacency[:, 1]]
+    if smooth:
+        keep &= m.face_adjacency_angles < np.radians(smooth)
+    adj = m.face_adjacency[keep]
     n = len(m.faces)
     _, lab = connected_components(coo_matrix((np.ones(len(adj)), (adj[:, 0], adj[:, 1])), shape=(n, n)), directed=False)
     out = []
@@ -150,12 +156,12 @@ def cylinders(m, faces, tol):
         closed_lo = bool(len(ends)) and np.abs(ends - lo).min() < tol
         closed_hi = bool(len(ends)) and np.abs(ends - hi).min() < tol
         out.append((name, c, r, lo - (0 if closed_lo else 2 * tol), hi + (0 if closed_hi else 2 * tol), hole,
-                    float(w.sum())))
+                    float(w.sum()), [[round(lo, 3), round(hi, 3)]]))
     merged = []                                        # coaxial, same radius, same kind: one feature
     for cy in sorted(out, key=lambda x: -x[6]):
         for mg in merged:
             if mg[0] == cy[0] and mg[5] == cy[5] and np.linalg.norm(mg[1] - cy[1]) < 2 * tol and abs(mg[2] - cy[2]) < 0.05 * mg[2]:
-                mg[3], mg[4] = min(mg[3], cy[3]), max(mg[4], cy[4]); break
+                mg[3], mg[4] = min(mg[3], cy[3]), max(mg[4], cy[4]); mg[6] += cy[6]; mg[7] += cy[7]; break
         else:
             merged.append(list(cy))
     return merged
@@ -165,14 +171,21 @@ def propose(stl):
     m = trimesh.load(stl, force="mesh")
     # 0.3 % of the diagonal, floored at 0.05: portal STLs are mm, and 0.05 mm is below what a printer resolves
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
-    feats = main_extrusion(m, stl)
-    tree = {"units": "mm", "features": feats}
+    tree = {"units": "mm", "features": main_extrusion(m, stl)}
     _ids(tree)
+    finish(tree, m, tol)
+    return tree, m, tol
+
+
+def finish(tree, m, tol):
+    """The deterministic passes after the base bodies: residual cylinders (holes/bosses on any principal axis, each
+    kept only if the mesh match improves), then modifier sizes fitted to the mesh. Edits tree in place."""
+    feats = tree["features"]
     shape, _ = T.compile_tree(tree, tol)
     dev = T.deviation(m, shape, tol)
     far = np.where(dev["face_dist"] > tol)[0]
     extra = []
-    for name, c, r, lo, hi, hole, _ in cylinders(m, far, tol):
+    for name, c, r, lo, hi, hole, _, _ in cylinders(m, far, tol):
         extra.append({"op": "pocket" if hole else "pad", "label": f"{'Hole' if hole else 'Boss'} ⌀{2 * r:.3g}",
                       "axis": name, "at": round(lo, 4), "length": round(hi - lo, 4),   # open ends already extended
                       "loops": [[{"t": "circle", "c": [round(float(c[0]), 4), round(float(c[1]), 4)], "r": round(r, 4)}]]})
@@ -188,7 +201,7 @@ def propose(stl):
             feats.insert(k, dict(cand, id=f"R{k}")); base = (d["explained"], d["extra"])   # renumbered below
     _ids(tree, keep_refs=True)
     refine(tree, m, tol)
-    return tree, m, tol
+    return tree
 
 
 def score(tree, m, tol):

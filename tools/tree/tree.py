@@ -112,11 +112,25 @@ def prism(f):
     """The pad/pocket body alone: its sketch face swept along the axis."""
     axis, L = f["axis"], f["length"]
     at, L = (f["at"] - BIG / 2, BIG) if L == "through" else (f["at"], float(L))
-    mk = BRepBuilderAPI_MakeFace(_wire(axis, at, f["loops"][0]), True)
+    w0 = _wire(axis, at, f["loops"][0])
+    if _signed_area(f["loops"][0]) < 0:
+        w0.Reverse()
+    mk = BRepBuilderAPI_MakeFace(w0, True)
     for loop in f["loops"][1:]:
-        w = _wire(axis, at, loop); w.Reverse(); mk.Add(w)   # holes run the other way round
+        w = _wire(axis, at, loop)
+        if _signed_area(loop) > 0:                   # holes run clockwise, whatever order their source gave
+            w.Reverse()
+        mk.Add(w)
     v = [0.0, 0.0, 0.0]; v[AX[axis]] = L
     return BRepPrimAPI_MakePrism(mk.Face(), gp_Vec(*v)).Shape()
+
+
+def _signed_area(loop):
+    """Shoelace area of a loop in (u, v): > 0 counter-clockwise. A circle counts as counter-clockwise (OCCT's)."""
+    if len(loop) == 1 and loop[0]["t"] == "circle":
+        return 1.0
+    P = np.concatenate([_arc_pts(*x["p"], n=12)[:-1] if x["t"] == "arc" else np.array(x["p"][:1]) for x in loop])
+    return float(0.5 * np.sum(P[:, 0] * np.roll(P[:, 1], -1) - np.roll(P[:, 0], -1) * P[:, 1]))
 
 
 def _edges(shape):
@@ -251,6 +265,9 @@ def compile_tree(tree, tol=None):
                 if p is not None:
                     tapered_ok.add(f["id"])
                 p = p if p is not None else prism(f)
+                if not BRepCheck_Analyzer(p).IsValid():    # an invalid body makes OCCT booleans explode (44 GB)
+                    notes[f["id"]] = "invalid sketch (self-intersecting outline): skipped"
+                    continue
                 if shape is None:
                     shape = p if f["op"] == "pad" else None
                 else:
@@ -333,6 +350,40 @@ def feature_faces(mesh, tree, shape, tol):
         except Exception:                              # noqa: BLE001 -- highlighting is best effort
             pass
     return owner
+
+
+def section_region(mesh, axis, h):
+    """A trimesh's section across `axis` at h, as a shapely region in (u, v) (even-odd over its loops)."""
+    from shapely.geometry import Polygon
+    k = AX[axis]; nrm = np.zeros(3); nrm[k] = 1; o = np.zeros(3); o[k] = h
+    sec = mesh.section(plane_origin=o, plane_normal=nrm)
+    if sec is None:
+        return Polygon()
+    mu, mv = UV[axis]; acc = Polygon()
+    for P in sec.discrete:
+        P = np.asarray(P)
+        if len(P) >= 4:
+            acc = acc.symmetric_difference(Polygon(np.c_[P[:, mu], P[:, mv]]).buffer(0))
+    return acc.buffer(0)
+
+
+def occupancy(mesh, bounds, n=40):
+    """Inside/outside on a grid (n slices along the longest axis, same spacing across): volume tests that survive
+    sliver triangles (ray tests ran out of memory on the gate mesh)."""
+    import shapely
+    lo, hi = bounds; k = int(np.argmax(hi - lo)); axis = "XYZ"[k]; mu, mv = UV[axis]
+    g = (hi[k] - lo[k]) / n
+    us = np.arange(lo[mu] + g / 2, hi[mu], g); vs = np.arange(lo[mv] + g / 2, hi[mv], g)
+    U, W = np.meshgrid(us, vs, indexing="ij")
+    return np.stack([shapely.contains_xy(section_region(mesh, axis, lo[k] + g * (i + 0.5)), U, W) for i in range(n)])
+
+
+def volume_iou(mesh, shape, tol, occ_mesh=None):
+    import trimesh
+    V, F = tessellate(shape, tol)
+    a = occ_mesh if occ_mesh is not None else occupancy(mesh, mesh.bounds)
+    b = occupancy(trimesh.Trimesh(V, F, process=False), mesh.bounds, n=a.shape[0])   # same grid as the mesh's
+    return float(np.logical_and(a, b).sum() / max(np.logical_or(a, b).sum(), 1))
 
 
 def write_step(shape, path):
