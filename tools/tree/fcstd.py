@@ -79,9 +79,11 @@ def modifier(kind, name, label, base, es, size, expr):
     """Fillet/Chamfer on base's edges es; if OCCT refuses the set, keep the edges that build together (as tree.py)."""
     key = "Radius" if kind == "Fillet" else "Size"
     m = body.newObject("PartDesign::" + kind, name); m.Label = label; m.Base = (base, es); setattr(m, key, size)
-    m.setExpression(key, expr); doc.recompute()
-    if "Invalid" not in m.State and not m.Shape.isNull() and m.Shape.isValid():
-        return m
+    ok = lambda: "Invalid" not in m.State and not m.Shape.isNull() and m.Shape.isValid()
+    for k in (1.0, 0.995, 0.98, 0.95):               # a full round (r = half the thickness) is refused exactly
+        m.setExpression(key, expr if k == 1.0 else "%s * %g" % (expr, k)); doc.recompute()
+        if ok():
+            return m
     keep = []
     for e in es:                                       # ponytail: greedy, one recompute per edge
         m.Base = (base, keep + [e]); doc.recompute()
@@ -217,6 +219,7 @@ def script(tree, out, report, tol):
             on = feats[f["on"]]
             Lf = float(on["length"]); lo, hi = sorted((on["at"], on["at"] + Lf))
             caps = {"top": [hi], "bottom": [lo], "both": [lo, hi]}[f.get("cap", "both")]
+            kind = "Fillet" if f["op"] == "round" else "Chamfer"
             L.append(f"es = edges_on(last, {on['axis']!r}, {caps!r}, {f.get('loops', 'outer')!r}, {tol!r})")
             L.append(f"if es:\n    last = modifier('{kind}', '{i}', {lab}, last, es, {float(f['size'])!r}, "
                      f"param('size_{i}', {float(f['size'])!r}))")

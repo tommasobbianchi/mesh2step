@@ -43,3 +43,16 @@ def test_propose_recovers_the_tree():
     assert ch and abs(ch[0]["size"] - 1.0) < 0.15
     s2, _ = T.compile_tree(tree, tol)
     assert T.deviation(m, s2, tol)["explained"] > 0.98
+
+
+def test_fcstd_script_generates_for_every_op():
+    """The FreeCAD script is generated for pads, pockets, tapered and edge modifiers (no FreeCAD needed): a
+    deleted local once broke every export with an edge round and no check noticed."""
+    import fcstd
+    t = {"units": "mm", "features": PLATE["features"][:3] + [
+        {"id": "F4", "op": "round", "label": "Rims", "size": 1.0, "on": "F1", "cap": "both", "loops": "outer"},
+        {"id": "F5", "op": "chamfer", "label": "Hole mouth", "size": 0.5, "on": "F1", "cap": "top", "loops": "inner"}]}
+    src = fcstd.script(t, "/tmp/x.FCStd", "/tmp/x.json", 0.05)
+    compile(src, "gen", "exec")
+    assert "modifier('Fillet'" in src and "modifier('Chamfer'" in src
+    assert "taper=-45.0" in fcstd.script(PLATE, "/tmp/x.FCStd", "/tmp/x.json", 0.05)

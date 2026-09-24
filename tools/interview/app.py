@@ -366,7 +366,8 @@ def turn(sid: str = Form(...), text: str = Form(""), audio: UploadFile | None = 
             s["tree"] = new; v = _refresh(s)
             out["view"] = v
             rep2 = ask(s, f"(The tree editor applied: {rep['fix']}. New steps: {json.dumps(v['steps'])}. "
-                          f"Match {v['explained']:.1%}; misses: {json.dumps(s['evidence'])}.) Tell the owner what "
+                          f"Match {v['explained']:.1%}; misses: {json.dumps(s['evidence'])}; build notes (say them if "
+                          f"any, they are what was really built): {json.dumps(v['notes'])}.) Tell the owner what "
                           "changed in one sentence and ask if it is right now.")
             out["reply"] = rep2
         else:

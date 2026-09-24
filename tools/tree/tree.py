@@ -231,10 +231,10 @@ def apply_modifier(shape, tree, mod, tol):
             pass
         return None
     size = float(mod["size"])
-    for k in (1.0, 0.95, 0.85):                      # OCCT refuses a round that would eat a whole face: shrink
+    for k in (1.0, 0.995, 0.98, 0.95, 0.85):         # OCCT refuses a round that eats a whole face (a full round): shrink
         s = build(edges, size * k)
         if s is not None:
-            return s, None if k == 1.0 else f"size reduced to {k:.0%}"
+            return s, None if k == 1.0 else f"built at {size * k:.4g} instead of {size:.4g} (OCCT refuses the exact size)"
     # some edges refuse (tangent chains, edges shorter than the size): keep the ones that build together.
     # ponytail: greedy, O(n) builds; fine for tens of edges
     keep = []
