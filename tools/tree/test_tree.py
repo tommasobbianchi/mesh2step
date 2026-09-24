@@ -56,3 +56,17 @@ def test_fcstd_script_generates_for_every_op():
     compile(src, "gen", "exec")
     assert "modifier('Fillet'" in src and "modifier('Chamfer'" in src
     assert "taper=-45.0" in fcstd.script(PLATE, "/tmp/x.FCStd", "/tmp/x.json", 0.05)
+
+
+def test_fix_patch_keeps_summarised_sketches():
+    import fix
+    big = dict(PLATE["features"][0], loops=[[{"t": "line", "p": [[i, 0], [i + 1, 0]]} for i in range(200)]])
+    t = {"units": "mm", "features": [big] + PLATE["features"][1:]}
+    c = fix.compact(t)
+    assert isinstance(c["features"][0]["loops"], str)                          # summarised for the model
+    n = fix.apply_patch(t, {"replace": [dict(c["features"][0], label="Base")], "remove": ["F3"],
+                            "add": [{"op": "pocket", "label": "Slot", "axis": "Z", "at": 0, "length": "through",
+                                     "loops": [[{"t": "circle", "c": [30, 10], "r": 2}]]}]})
+    assert n["features"][0]["label"] == "Base" and n["features"][0]["loops"] == big["loops"]
+    assert [f["id"] for f in n["features"]] == ["F1", "F2", "F5", "F4"]        # added before the chamfer
+    assert fix.first_json('ok {"add": []} and {braces} after', "add") == {"add": []}

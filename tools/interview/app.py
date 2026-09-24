@@ -360,8 +360,12 @@ def turn(sid: str = Form(...), text: str = Form(""), audio: UploadFile | None = 
     rep = ask(s, text)
     out = {"heard": text, "reply": rep, "facts": s["facts"]}
     if (rep.get("fix") or "").strip() and s.get("tree"):
-        new, ev, s["fix_sid"], c = FX.fix(s["tree"], s["mesh"], s["tol"], rep["fix"], s.get("fix_sid"), cwd=s["dir"])
-        s.setdefault("costs", {})["fix"] = c           # the fixer session's running total
+        try:
+            new, ev, s["fix_sid"], c = FX.fix(s["tree"], s["mesh"], s["tol"], rep["fix"], s.get("fix_sid"), cwd=s["dir"])
+            s.setdefault("costs", {})["fix"] = c       # the fixer session's running total
+        except Exception as e:                         # noqa: BLE001 -- a failed edit is said, never a 500
+            (Path(s["dir"]) / "fix_error.txt").write_text(f"{type(e).__name__}: {e}")
+            new = None
         if new is not None:
             s["tree"] = new; v = _refresh(s)
             out["view"] = v

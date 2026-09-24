@@ -12,7 +12,6 @@ usage: plan.py <mesh> <out_tree.json>
 """
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -104,11 +103,8 @@ def ask_plan(stl, F, wd):
 def _call(cmd, wd):
     d = json.loads(subprocess.run(cmd, capture_output=True, text=True, timeout=900, cwd=str(wd)).stdout)
     raw = d.get("result") or ""
-    mt = re.search(r"\{.*\}", raw, re.S)
-    try:
-        plan = json.loads(mt.group(0)) if mt else {"bodies": []}
-    except ValueError:
-        plan = {"bodies": []}
+    import fix as FX
+    plan = FX.first_json(raw, "bodies") or {"bodies": []}
     return plan, float(d.get("total_cost_usd") or 0), raw, d.get("session_id")
 
 
