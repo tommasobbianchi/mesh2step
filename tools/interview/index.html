@@ -30,7 +30,7 @@
   #bar { display:flex; gap:10px; align-items:center; }
   button { font:inherit; font-weight:600; min-height:48px; padding:0 18px; border-radius:999px; border:0; cursor:pointer; }
   #talk { background:var(--ink); color:#f4f2ec; flex:1; } #talk.rec { background:var(--hi); }
-  #talk:disabled, #build:disabled { opacity:.45; cursor:default; }
+  #talk:disabled, #build:disabled, #export:disabled { opacity:.45; cursor:default; }
   #build { background:var(--acc); color:var(--ink); }
   #text { flex:1; font:inherit; padding:10px 12px; border:1px solid #bdb8ab; border-radius:10px; min-height:44px; }
   #status { font-size:13px; color:var(--soft); min-height:18px; }
@@ -90,8 +90,10 @@ view.append(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe7e3d8);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1e6);
 const controls = new OrbitControls(camera, renderer.domElement);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x8a857a, 1.2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(1, 2, 3); scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9c978b, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(1, 2, 3); scene.add(sun);
+const head = new THREE.DirectionalLight(0xffffff, 1.1);   // a headlight: the side you look at is always lit
+head.position.set(0.3, 0.4, 1); camera.add(head); scene.add(camera);
 function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(view);
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); placeDims(); });
@@ -179,6 +181,7 @@ function show(stlB64) {
   geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geom.attributes.position.count * 3), 3));
   mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 }));
   scene.add(mesh);
+  paint([]);                           // colours start at 0 (black): paint now, not when the analysis answers
   const s = geom.boundingSphere; controls.target.copy(s.center);
   camera.position.copy(s.center.clone().add(new THREE.Vector3(1, 0.8, 1.2).normalize().multiplyScalar(s.radius * 3)));
   camera.near = s.radius / 100; camera.far = s.radius * 100; camera.updateProjectionMatrix();
