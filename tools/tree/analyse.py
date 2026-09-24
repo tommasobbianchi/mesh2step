@@ -27,6 +27,9 @@ import propose as PR                                   # noqa: E402
 import tree as T                                       # noqa: E402
 
 GOOD = 0.97
+# from the start: past it the planner is dropped and the proposal stands, so an upload is
+# answered in time whatever the part (SV08 shroud: planner 6 min, and hopeless)
+PLANNER_DEADLINE_S = 240
 
 
 def measure(tree, m, tol, occ):
@@ -40,6 +43,7 @@ def measure(tree, m, tol, occ):
 
 
 def _planner_child(stl, out, q):
+    os.setpgrp()                                       # its own group: a deadline kill reaches its workers too
     np.random.seed(1)
     try:
         t2, _, _, pi = PL.plan_tree(stl, out)
@@ -80,7 +84,14 @@ def main(stl, out):
     if child is None and info["proposal"].get("explained", 0) < GOOD:
         q, child = _start_planner(stl, out)
     if child is not None:
-        t2, pi, err = q.get()                          # before join: a full pipe blocks the child
+        import queue
+        import signal
+        try:                                           # before join: a full pipe blocks the child
+            left = max(5.0, PLANNER_DEADLINE_S - (time.time() - t0))
+            t2, pi, err = q.get(timeout=left)
+        except queue.Empty:
+            os.killpg(child.pid, signal.SIGKILL)
+            t2, pi, err = None, None, f"no answer within {PLANNER_DEADLINE_S} s: dropped"
         child.join()
         if err:
             info["planner"] = {"error": err}
