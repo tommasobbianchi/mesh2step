@@ -19,6 +19,17 @@ pure faceted output, one wastes its own indexed mesh data on a build-then-sew
 anti-pattern, and FreeCAD's own core routine is the origin of a well-documented
 tolerance-confusion bug (issue #20455) this design sidesteps by construction.
 
+## Docker (via docker compose)
+
+This will build and bring up an image using the checked out codebase.
+See `docker-compose.yml` to set any env vars or change ports.
+
+```sh
+docker compose up -d
+```
+
+Then access via http://localhost:8000/
+
 ## Install
 
 ```sh

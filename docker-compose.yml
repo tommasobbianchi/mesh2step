@@ -1,0 +1,14 @@
+services:
+  mesh2step:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      MESH2STEP_SLOTS: 2
+      # MESH2STEP_ADMIN_TOKEN: ""
+      # MESH2STEP_FEATURE: ""
+      # MESH2STEP_EDGEBUILD: ""
+      # MESH2STEP_RECON: ""
+    restart: unless-stopped
