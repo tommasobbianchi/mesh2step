@@ -185,7 +185,7 @@ def propose(stl):
             continue
         d = T.deviation(m, sh, tol)
         if d["explained"] > base[0] + 0.003 and d["extra"] < base[1] + 0.003:
-            feats.insert(k, cand); base = (d["explained"], d["extra"])   # after extrusions, before modifiers
+            feats.insert(k, dict(cand, id=f"R{k}")); base = (d["explained"], d["extra"])   # renumbered below
     _ids(tree, keep_refs=True)
     refine(tree, m, tol)
     return tree, m, tol
