@@ -353,7 +353,8 @@ def tessellate(shape, defl):
                 a, b, c = t.Triangle(i).Get()
                 F.append((o + a - 1, o + c - 1, o + b - 1) if face.Orientation().value == 1 else (o + a - 1, o + b - 1, o + c - 1))
         ex.Next()
-    return np.array(V), np.array(F)
+    # (0, 3) when the shape is empty: 1-D empties broke trimesh in deviation (mechparts/7, a residual trial)
+    return np.array(V, dtype=float).reshape(-1, 3), np.array(F, dtype=int).reshape(-1, 3)
 
 
 _MESH_KD = {}

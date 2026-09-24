@@ -90,3 +90,12 @@ def test_multibody_split_and_compile():
         n += 1; ex.Next()
     assert n == 2 and not notes
     assert abs(T.volume(s) - (2 * 40 * 20 * 6 - np.pi * 16 * 6)) < 1
+
+
+def test_deviation_of_an_empty_shape_scores_as_a_miss():
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.BRep import BRep_Builder
+    empty = TopoDS_Compound(); BRep_Builder().MakeCompound(empty)
+    m = trimesh.creation.box([10, 10, 10])
+    d = T.deviation(m, empty, 0.05)
+    assert d["explained"] == 0.0
