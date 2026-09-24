@@ -23,6 +23,11 @@ from fastapi.responses import FileResponse
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+sys.path.insert(0, str(REPO / "tools" / "tree"))
+import fcstd as FC                                    # noqa: E402
+import fix as FX                                      # noqa: E402
+import propose as PR                                  # noqa: E402
+import tree as T                                      # noqa: E402
 RUNS = REPO / "runs" / "interview"            # nativedev, project dir; runs/ is excluded from git
 CLAUDE = os.path.expanduser("~/.local/bin/claude")
 MODEL = os.environ.get("INTERVIEW_MODEL", "sonnet")
@@ -30,32 +35,27 @@ MAX_REGIONS = 40
 SESS: dict = {}
 app = FastAPI()
 
-SYSTEM = """You interview the OWNER of a physical part, by voice, for about 5 minutes. You see the part only as its
-3D mesh, summarised as REGIONS: areas bounded by sharp edges (kind plane / cylinder / curved, area, size, centre,
-normal or axis, radius). The goal: learn the design intent so the part can be rebuilt as editable CAD.
+SYSTEM = """You help the OWNER of a part confirm HOW IT IS BUILT, by voice, in a few turns. The part may be a
+download with no physical object: never ask for measurements, never ask about micro details (screw sizes, fits).
 
-How to run the interview. The goal is the CONSTRUCTION HISTORY, not details: on a STEP a diameter is trivial to
-adjust afterwards, but the path sketch -> extrude -> modify must be right. General shape first, micro details never.
-- Start with what the whole part is and what it does.
-- Real size: NEVER ask for measurements. The owner types sizes straight onto the dimensions drawn on the model
-  (pink until one is typed, then all turn green); you are told when they do, and "scale" is set for you.
-  If they SAY an overall size, record "scale" = real_mm / mesh_units yourself.
-- FEW QUESTIONS. Do the reading yourself and only ask the owner to confirm or correct. Build the history biggest
-  shape first, from basic shapes: prisms (extruded profiles), tubes, holes; then modifiers (fillets, chamfers,
-  pockets, patterns). Propose several steps in one turn when the regions make them obvious, highlighting them:
-  "I read a block extruded along its length, a tube along the top, and holes cut through here: right?".
-  Record each confirmed step as "step1", "step2", ... in order.
-- Ask about symmetry and repeated features (they collapse many steps into one).
-- Skip micro details: screw sizes, small hole diameters, fits, tolerances, materials. Do not ask about them.
-- Before finishing, read the whole history back in one sentence and record the confirmed "construction".
-- One short question per turn, spoken style (it is read aloud): at most two sentences, no lists, no markdown.
-- Speak the language the owner speaks (default English). Read back numbers you record ("eight millimetres, got it").
-- After about 4 questions, or when the owner says they are done, give a one-sentence summary and set done=true.
+A deterministic analysis has ALREADY proposed the construction as a feature tree (sketch -> extrude -> modify:
+pads, pockets, holes, rounds, chamfers; ids F1, F2, ...) and measured how much of the mesh it explains. You get the
+steps, the match, and where it misses. Your job is to get the STRUCTURE right, cheaply:
+- First turn: say in one or two sentences how you read the part ("a plate extruded 6 units, a cross hole, chamfered
+  rims; it matches 99.9 percent"), highlighting the features, and ask if that is how they would model it.
+- The "misses" are hints, not features: a miss whose max_dist is under about 3x the tolerance is surface noise or a
+  slightly-off round, never a ledge, step or groove. Do not invent features from them; mention a miss only when it
+  is large (a whole missing boss, hole or cut).
+- Then only what is uncertain: a poor match somewhere, or a feature whose role is ambiguous. Ask yes/no or
+  "which of these", highlighting it. Never make the owner describe geometry you already have.
+- When the owner corrects the structure ("the ring and the tail are separate extrusions", "that is a slot, not two
+  holes", "mirror it") or the match is poor where they point, write ONE precise instruction for the tree editor in
+  "fix" (it edits the tree; you will be told the new steps and match). Otherwise leave "fix" empty.
+- At most 4 questions. When the owner agrees, or says done, one-sentence summary and done=true.
+- Spoken style, at most two sentences, no lists or markdown. Speak the owner's language (default English).
 
-Reply with ONLY a JSON object, nothing else:
-{"say": "<what you say aloud>", "lang": "<BCP-47 like en-US or it-IT>", "highlight": [<region ids>],
- "record": {"<short key>": "<value with unit>"}, "done": false}
-`record` holds only facts established in THIS turn (may be empty). `highlight` is the region(s) you ask about."""
+Reply with ONLY a JSON object:
+{"say": "<spoken>", "lang": "<BCP-47>", "highlight": ["F1", ...], "record": {"<key>": "<value>"}, "fix": "", "done": false}"""
 
 
 def regions(m: trimesh.Trimesh):
@@ -246,12 +246,77 @@ def start(file: UploadFile = File(...)):
     s = SESS[sid] = {"dir": str(d), "facts": {}, "log": [], "name": file.filename, "regions": regs,
                      "dims": dims(m, regs), "measured": {}}
     (d / "regions.json").write_text(json.dumps(regs))
-    bb = np.round(m.extents, 3).tolist()
-    rep = ask(s, f"The owner uploaded '{file.filename}'. Mesh bounding box {bb} (mesh units, maybe not mm), "
-                 f"{len(m.faces)} triangles, watertight={m.is_watertight}. Regions:\n{json.dumps(regs)}\n"
-                 "Greet them in one sentence and ask your first question.")
+    s["status"] = "analysing"
+    threading.Thread(target=_analyse, args=(sid,), daemon=True).start()
     return {"sid": sid, "stl_b64": base64.b64encode(m.export(file_type="stl")).decode(),
-            "face_region": face_region.tolist(), "regions": regs, "dims": s["dims"], "reply": rep, "facts": s["facts"]}
+            "face_region": face_region.tolist(), "regions": regs, "dims": s["dims"], "facts": s["facts"]}
+
+
+def steps(tree):
+    """The tree in words, one line per feature: what the owner hears about and the interviewer reads."""
+    out = []
+    for f in tree["features"]:
+        if f["op"] in ("pad", "pocket"):
+            kinds = [x["t"] for lp in f["loops"] for x in lp]
+            k0 = [x["t"] for x in f["loops"][0]]
+            shp = ("circle \u2300%.3g" % (2 * f["loops"][0][0]["r"]) if k0 == ["circle"] else
+                   f"outline of {k0.count('line')} lines and {k0.count('arc')} arcs")
+            shp = (shp
+                   + (f", {len(f['loops']) - 1} holes" if len(f["loops"]) > 1 else ""))
+            L = f["length"]
+            ext = "through all" if L == "through" else f"{abs(float(L)):.4g} along {'-' if float(L) < 0 else '+'}{f['axis']}"
+            txt = f"sketch ({shp}) on the plane across {f['axis']} at {f['at']:.4g}, {'extruded' if f['op'] == 'pad' else 'cut'} {ext}"
+        else:
+            txt = f"{f['op']} {float(f['size']):.3g} on the {f.get('cap', 'both')} {f.get('loops', 'outer')} edges of {f['on']}"
+        out.append({"id": f["id"], "label": f.get("label", f["id"]), "text": txt})
+    return out
+
+
+def _b64(a, dtype):
+    return base64.b64encode(np.asarray(a).astype(dtype).tobytes()).decode()
+
+
+def _refresh(s):
+    """Compile the session's tree, measure it against the mesh, and cache what the page draws."""
+    m, tol, tree = s["mesh"], s["tol"], s["tree"]
+    shape, notes = T.compile_tree(tree, tol)
+    dev = T.deviation(m, shape, tol)
+    owner = T.feature_faces(m, tree, shape, tol)
+    V, F = dev["solid_mesh"].vertices, dev["solid_mesh"].faces
+    (Path(s["dir"]) / "tree.json").write_text(json.dumps(tree, indent=1))
+    s["view"] = {"steps": steps(tree), "notes": notes, "explained": round(dev["explained"], 4),
+                 "extra": round(dev["extra"], 4), "tol": round(tol, 4),
+                 "face_err": _b64(np.clip(dev["face_dist"] / tol * 64, 0, 255), np.uint8),   # 64 = at tolerance
+                 "face_feature": _b64(owner, np.int16),
+                 "solid_stl": base64.b64encode(trimesh.Trimesh(V, F, process=False).export(file_type="stl")).decode()}
+    s["evidence"] = FX.clusters(m, dev, tol, k=5)
+    return s["view"]
+
+
+def _analyse(sid):
+    s = SESS[sid]
+    try:
+        tree, m, tol = PR.propose(str(Path(s["dir"]) / "mesh.stl"))
+        s.update(tree=tree, mesh=m, tol=tol)
+        v = _refresh(s)
+        bb = np.round(m.extents, 3).tolist()
+        s["reply"] = ask(s, f"The owner uploaded '{s['name']}'. Mesh bounding box {bb} (units probably mm). "
+                            f"Proposed construction:\n{json.dumps(v['steps'])}\nMatch: {v['explained']:.1%} of the "
+                            f"mesh explained within {tol:.3g}; where it misses: {json.dumps(s['evidence'])}\n"
+                            "Greet them in one sentence and read the construction back.")
+        s["status"] = "ready"
+    except Exception as e:                             # noqa: BLE001 -- shown to the tester as-is
+        s["status"] = "failed"; s["error"] = f"{type(e).__name__}: {e}"[:300]
+
+
+@app.get("/api/state/{sid}")
+def state(sid: str):
+    s = SESS.get(sid)
+    if s is None:
+        raise HTTPException(404, "unknown session")
+    if s["status"] != "ready":
+        return {"status": s["status"], "error": s.get("error")}
+    return {"status": "ready", "view": s["view"], "reply": s.get("reply"), "facts": s["facts"]}
 
 
 @app.post("/api/dim")
@@ -282,7 +347,77 @@ def turn(sid: str = Form(...), text: str = Form(""), audio: UploadFile | None = 
     if not text:
         return {"heard": "", "reply": {"say": "Sorry, I didn't catch that.", "highlight": [], "record": {}}}
     rep = ask(s, text)
-    return {"heard": text, "reply": rep, "facts": s["facts"]}
+    out = {"heard": text, "reply": rep, "facts": s["facts"]}
+    if (rep.get("fix") or "").strip() and s.get("tree"):
+        new, ev, s["fix_sid"], c = FX.fix(s["tree"], s["mesh"], s["tol"], rep["fix"], s.get("fix_sid"), cwd=s["dir"])
+        s["cost"] = s.get("cost", 0) + c - s.get("fix_cost", 0); s["fix_cost"] = c
+        if new is not None:
+            s["tree"] = new; v = _refresh(s)
+            out["view"] = v
+            rep2 = ask(s, f"(The tree editor applied: {rep['fix']}. New steps: {json.dumps(v['steps'])}. "
+                          f"Match {v['explained']:.1%}; misses: {json.dumps(s['evidence'])}.) Tell the owner what "
+                          "changed in one sentence and ask if it is right now.")
+            out["reply"] = rep2
+        else:
+            out["reply"]["say"] = (rep.get("say") or "") + " I could not apply that change; let's try it another way."
+    return out
+
+
+def _export(sid):
+    s = SESS[sid]; d = Path(s["dir"])
+    s["export"] = {"status": "running"}
+    try:
+        k = 1.0
+        try:
+            k = float(str(s["facts"].get("scale") or 1).split()[0])
+        except ValueError:
+            pass
+        tree = scale_tree(s["tree"], k)
+        (d / "final_tree.json").write_text(json.dumps(tree, indent=1))
+        shape, _ = T.compile_tree(tree, s["tol"] * k)
+        T.write_step(shape, d / "part.step")
+        r = FC.build(tree, d / "part.FCStd", s["tol"] * k)
+        s["export"] = {"status": "done", "scale": k, "fcstd_ok": bool(r.get("ok") and r.get("valid")),
+                       "edit_breaks": r.get("edit_breaks"), "params": r.get("params"), "symdiff": r.get("symdiff"),
+                       "error": r.get("error")}
+    except Exception as e:                             # noqa: BLE001
+        s["export"] = {"status": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
+
+
+def scale_tree(tree, k):
+    """Every length in the tree times k (the owner's scale; 1 when the mesh is already in mm)."""
+    t = json.loads(json.dumps(tree))
+    if k == 1.0:
+        return t
+    sc = lambda p: [x * k for x in p]
+    for f in t["features"]:
+        for key in ("at", "size"):
+            if key in f:
+                f[key] = f[key] * k
+        if f.get("length") not in (None, "through"):
+            f["length"] = float(f["length"]) * k
+        for lp in f.get("loops", []):
+            for e in lp:
+                if "p" in e:
+                    e["p"] = [sc(q) for q in e["p"]]
+                if "c" in e:
+                    e["c"] = sc(e["c"]); e["r"] = e["r"] * k
+    return t
+
+
+@app.post("/api/export")
+def export(sid: str = Form(...)):
+    s = SESS.get(sid)
+    if s is None or not s.get("tree"):
+        raise HTTPException(404, "nothing to export yet")
+    if (s.get("export") or {}).get("status") != "running":
+        threading.Thread(target=_export, args=(sid,), daemon=True).start()
+    return {"status": "running"}
+
+
+@app.get("/api/export/{sid}")
+def export_status(sid: str):
+    return (SESS.get(sid) or {}).get("export") or {"status": "none"}
 
 
 def _build(sid: str):
@@ -343,6 +478,8 @@ def result(sid: str, kind: str):
     b = (SESS.get(sid) or {}).get("build") or {}
     if kind == "step" and b.get("step"):
         return FileResponse(b["step"], filename=Path(SESS[sid]["name"]).stem + ".step")
+    if kind in ("part.step", "part.FCStd") and (Path(SESS[sid]["dir"]) / kind).exists():
+        return FileResponse(Path(SESS[sid]["dir"]) / kind, filename=Path(SESS[sid]["name"]).stem + kind[4:])
     if kind == "stl" and (Path(SESS[sid]["dir"]) / "result.stl").exists():
         return FileResponse(Path(SESS[sid]["dir"]) / "result.stl")
     raise HTTPException(404, "no result yet")

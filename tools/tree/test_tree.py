@@ -1,0 +1,45 @@
+"""Closed loop: a known tree -> its solid -> a mesh of it -> propose() must find the same construction.
+run: python3 -m pytest -q tools/tree/test_tree.py   (about a minute)"""
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import trimesh
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import propose as PR                                   # noqa: E402
+import tree as T                                       # noqa: E402
+
+RECT = [[0, 0], [40, 0], [40, 20], [0, 20]]
+PLATE = {"units": "mm", "features": [
+    {"id": "F1", "op": "pad", "label": "Plate", "axis": "Z", "at": 0.0, "length": 6.0,
+     "loops": [[{"t": "line", "p": [RECT[i], RECT[(i + 1) % 4]]} for i in range(4)]]},
+    {"id": "F2", "op": "pocket", "label": "Hole", "axis": "Z", "at": 0.0, "length": "through",
+     "loops": [[{"t": "circle", "c": [12, 10], "r": 4.0}]]},
+    {"id": "F3", "op": "pocket", "label": "Cross hole", "axis": "X", "at": 30.0, "length": 10.5,
+     "loops": [[{"t": "circle", "c": [10, 3], "r": 1.5}]]},                  # u = Y, v = Z around X
+    {"id": "F4", "op": "chamfer", "label": "Rims", "size": 1.0, "on": "F1", "cap": "both", "loops": "outer"}]}
+
+
+def test_compile_is_exact():
+    s, notes = T.compile_tree(PLATE, 0.05)
+    assert not notes
+    v = 40 * 20 * 6 - np.pi * 16 * 6 - np.pi * 1.5 ** 2 * 10
+    assert abs(T.volume(s) - v) / v < 0.03                  # the rim chamfers take the rest
+
+
+def test_propose_recovers_the_tree():
+    s, _ = T.compile_tree(PLATE, 0.05)
+    V, F = T.tessellate(s, 0.01)
+    with tempfile.TemporaryDirectory() as d:
+        stl = Path(d) / "plate.stl"
+        trimesh.Trimesh(V, F).export(stl)
+        tree, m, tol = PR.propose(str(stl))
+    ops = [(f["op"], f.get("axis")) for f in tree["features"]]
+    assert ops[0] == ("pad", "Z")
+    assert ("pocket", "Z") in ops and ("pocket", "X") in ops         # the through hole and the cross hole
+    ch = [f for f in tree["features"] if f["op"] == "chamfer"]
+    assert ch and abs(ch[0]["size"] - 1.0) < 0.15
+    s2, _ = T.compile_tree(tree, tol)
+    assert T.deviation(m, s2, tol)["explained"] > 0.98

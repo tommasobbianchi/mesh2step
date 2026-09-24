@@ -38,6 +38,15 @@
          padding:4px 4px; border-radius:8px; border:1.5px solid #c2185b; background:#f8c8dc; color:#6a0f35; }
   .dim.ok { border-color:#2e7d32; background:#c8ebcb; color:#14451a; } .dim.typed { border-width:3px; }
   #dims-hint { position:absolute; left:12px; bottom:10px; font-size:13px; color:var(--soft); background:#faf9f5cc; padding:4px 8px; border-radius:8px; }
+  #modes { position:absolute; left:12px; top:10px; display:flex; gap:6px; z-index:2; }
+  #modes button { min-height:36px; padding:0 14px; font-size:13px; background:#faf9f5; color:var(--ink); border:1px solid var(--line); }
+  #modes button[aria-pressed=true] { background:var(--ink); color:#f4f2ec; }
+  #steps { display:flex; flex-direction:column; gap:6px; font-size:14px; }
+  #steps button { min-height:0; padding:8px 12px; border-radius:10px; text-align:left; font-weight:400; background:#f6f4ee; color:var(--ink); border:1px solid var(--line); }
+  #steps button b { font-weight:650; } #steps button small { display:block; color:var(--soft); }
+  #steps button.on { border-color:var(--hi); background:#fbe6dc; }
+  #match { font-size:13px; color:var(--soft); margin-top:4px; }
+  #export { background:#2e7d32; color:#fff; }
   #result a { color:var(--blue); font-weight:600; }
   @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
 </style>
@@ -50,16 +59,18 @@
       <div style="color:var(--soft)">Then talk: about 5 minutes. Keep a caliper handy for one size.</div></div>
   </div>
   <aside>
+    <div class="card" id="stepsCard" hidden><div style="font-weight:600;margin-bottom:6px">How it is built</div><div id="steps"></div><div id="match"></div></div>
     <div class="card" id="log" aria-live="polite"></div>
     <div class="card"><div style="font-weight:600;margin-bottom:6px">What we have so far</div><div id="facts"></div></div>
     <div id="bar">
       <button id="talk" disabled>Tap to talk</button>
-      <button id="build" disabled>Rebuild</button>
+      <button id="export" disabled>Looks right: STEP + FreeCAD</button>
     </div>
     <form id="tform" style="display:flex;gap:8px"><label for="text" style="position:absolute;left:-9999px">Type instead</label>
       <input id="text" placeholder="…or type your answer" disabled><button type="submit" style="background:var(--blue);color:#fff">Send</button></form>
     <div id="status"></div>
     <div id="result" class="card" hidden></div>
+    <button id="build" disabled style="min-height:36px;font-size:13px;background:transparent;color:var(--soft);text-decoration:underline">Deep rebuild with Opus (slow, costly)</button>
   </aside>
 </main>
 <script type="module">
@@ -71,6 +82,7 @@ const $ = (id) => document.getElementById(id);
 const view = $('view'), logEl = $('log'), factsEl = $('facts'), statusEl = $('status');
 let sid = null, faceRegion = [], regionsById = {}, geom, mesh, started = 0, lang = 'en-US', resultMesh;
 let dims = [], scale = null, measured = {};
+let mode = 'mesh', faceErr = null, faceFeat = null, featIdx = {}, solidMesh = null, lastHi = [];
 
 // ---- viewer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -130,17 +142,32 @@ function makeDims(list) {
 }
 
 const BASE = [0.78, 0.76, 0.72], HI = [0.85, 0.28, 0.06];
+function errColor(e) {                 // 64 = at tolerance: green below, yellow to red above
+  const t = Math.min(1, Math.max(0, (e - 48) / 120));
+  return t <= 0 ? [0.36, 0.72, 0.42] : t < 0.5 ? [0.36 + t * 1.2, 0.72, 0.42 - t * 0.6] : [0.96, 0.72 - (t - 0.5) * 1.2, 0.12];
+}
 function paint(ids) {
-  const col = geom.attributes.color, sel = new Set(ids || []);
+  if (!geom) return;
+  lastHi = ids || [];
+  const col = geom.attributes.color, sel = new Set((ids || []).filter((x) => typeof x === 'number'));
+  const fsel = new Set((ids || []).filter((x) => typeof x === 'string' && x in featIdx).map((x) => featIdx[x]));
+  let nsel = 0;                         // a highlight over most of the part says nothing: skip it
+  if (faceFeat) for (let f = 0; f < faceFeat.length; f++) if (fsel.has(faceFeat[f])) nsel++;
+  if (mode === 'errors' || nsel > 0.6 * faceRegion.length) { sel.clear(); fsel.clear(); }
   for (let f = 0; f < faceRegion.length; f++) {
-    const r = faceRegion[f], c = sel.has(r) ? HI : (r < 0 ? [0.7, 0.68, 0.64] : BASE.map((v, k) => v - ((r * 37 + k * 11) % 7) * 0.012));
+    const r = faceRegion[f];
+    let c = mode === 'errors' && faceErr ? errColor(faceErr[f]) : (r < 0 ? [0.7, 0.68, 0.64] : BASE.map((v, k) => v - ((r * 37 + k * 11) % 7) * 0.012));
+    if (sel.has(r) || (faceFeat && fsel.has(faceFeat[f]))) c = HI;
     for (let v = 0; v < 3; v++) col.setXYZ(f * 3 + v, c[0], c[1], c[2]);
   }
   col.needsUpdate = true;
+  document.querySelectorAll('#steps button').forEach((b) => b.classList.toggle('on', (ids || []).includes(b.dataset.id)));
   const area = [...sel].reduce((t, id) => t + (regionsById[id]?.area || 0), 0), all = Object.values(regionsById).reduce((t, r) => t + r.area, 0);
-  if (sel.size && area < 0.5 * all) {  // turn the camera toward what is being asked about (not when it is most of the part)
+  if ((sel.size || fsel.size) && area < 0.5 * all) {  // turn the camera toward what is being asked about (not when it is most of the part)
     const c = new THREE.Vector3(); let n = 0;
     for (const id of sel) if (regionsById[id]) { c.add(new THREE.Vector3(...regionsById[id].center)); n++; }
+    if (!n && fsel.size && faceFeat) { const p = geom.attributes.position; const v = new THREE.Vector3();
+      for (let f = 0; f < faceFeat.length; f += 7) if (fsel.has(faceFeat[f])) { v.fromBufferAttribute(p, f * 3); c.add(v); n++; } }
     if (n) { c.divideScalar(n); const d = camera.position.distanceTo(controls.target);
       const dir = c.clone().sub(geom.boundingSphere.center).normalize(); if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
       controls.target.copy(c); camera.position.copy(c.clone().add(dir.multiplyScalar(d))); }
@@ -157,6 +184,32 @@ function show(stlB64) {
   camera.near = s.radius / 100; camera.far = s.radius * 100; camera.updateProjectionMatrix();
 }
 
+// ---- the proposed construction: steps, error map, the rebuilt solid
+const b64 = (s, T) => new T(Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)).buffer);
+function setMode(m) {
+  mode = m; document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.m === m));
+  if (mesh) mesh.visible = m !== 'rebuild'; if (solidMesh) solidMesh.visible = m === 'rebuild';
+  paint(lastHi);
+}
+function applyView(v) {
+  faceErr = b64(v.face_err, Uint8Array); faceFeat = b64(v.face_feature, Int16Array);
+  featIdx = {}; v.steps.forEach((st, i) => { featIdx[st.id] = i; });
+  $('steps').replaceChildren(...v.steps.map((st) => { const b = document.createElement('button'); b.dataset.id = st.id;
+    b.innerHTML = '<b></b><small></small>'; b.firstChild.textContent = `${st.id} · ${st.label}`; b.lastChild.textContent = st.text;
+    b.addEventListener('click', () => paint([st.id])); return b; }));
+  $('match').textContent = `Matches ${(v.explained * 100).toFixed(1)}% of your mesh (within ${v.tol}).` +
+    (Object.keys(v.notes || {}).length ? ' Notes: ' + Object.entries(v.notes).map(([k, n]) => `${k} ${n}`).join('; ') : '');
+  $('stepsCard').hidden = false;
+  if (solidMesh) scene.remove(solidMesh);
+  const g = new STLLoader().parse(b64(v.solid_stl, Uint8Array).buffer);
+  solidMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1f5f8b, roughness: 0.5 })); scene.add(solidMesh);
+  if (!$('modes')) { const m = document.createElement('div'); m.id = 'modes';
+    for (const [k, t] of [['mesh', 'Your mesh'], ['rebuild', 'Rebuild'], ['errors', 'Errors']]) {
+      const b = document.createElement('button'); b.dataset.m = k; b.textContent = t; b.addEventListener('click', () => setMode(k)); m.append(b); }
+    view.append(m); }
+  $('export').disabled = false; setMode(mode);
+}
+
 // ---- conversation
 function say(text, l) {
   if (!text) return Promise.resolve();
@@ -170,8 +223,8 @@ function facts(f) { factsEl.replaceChildren(...Object.entries(f || {}).flatMap((
 async function handle(rep, f) {
   if (rep.lang) lang = rep.lang;
   addLog('q', rep.say || ''); facts(f); setScale(f); paint(rep.highlight);
-  if (rep.done) { $('build').disabled = false; statusEl.textContent = 'Interview complete: press Rebuild when ready.'; }
-  $('build').disabled = !rep.done && Object.keys(f || {}).length < 3;
+  if (rep.done) statusEl.textContent = 'Done: press "Looks right" to get the STEP and the FreeCAD model.';
+  $('build').disabled = false;
   await say(rep.say, rep.lang);
   $('talk').disabled = false; $('text').disabled = false;
 }
@@ -186,8 +239,16 @@ $('file').addEventListener('change', async (e) => {
   sid = d.sid; faceRegion = d.face_region; d.regions.forEach((x) => { regionsById[x.id] = x; });
   $('drop').remove(); resize(); show(d.stl_b64); makeDims(d.dims || []);
   started = Date.now(); setInterval(() => { const s = Math.round((Date.now() - started) / 1000); $('clock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} / ~5:00`; }, 1000);
-  handle(d.reply, d.facts);
+  $('talk').disabled = true; $('text').disabled = true; statusEl.textContent = 'Reading how your part is built…';
+  const poll = setInterval(async () => {
+    const st = await (await fetch('api/state/' + sid)).json();
+    if (st.status === 'analysing') return;
+    clearInterval(poll); statusEl.textContent = '';
+    if (st.status !== 'ready') { showErr('Could not read the construction: ' + (st.error || st.status)); return; }
+    applyView(st.view); handle(st.reply, st.facts);
+  }, 2000);
 });
+function showErr(t) { const box = $('result'); box.hidden = false; box.textContent = t; }
 
 async function send(fd, typed) {
   $('talk').disabled = true; $('text').disabled = true; statusEl.textContent = 'Thinking…';
@@ -197,6 +258,7 @@ async function send(fd, typed) {
   if (!r.ok) { statusEl.textContent = 'Error: ' + (await r.text()); $('talk').disabled = false; $('text').disabled = false; return; }
   const d = await r.json();
   if (!typed) addLog('a', d.heard || '(nothing heard)');
+  if (d.view) applyView(d.view);
   handle(d.reply, d.facts);
 }
 $('tform').addEventListener('submit', (e) => { e.preventDefault(); const t = $('text').value.trim(); if (!t || !sid) return;
@@ -215,6 +277,22 @@ $('talk').addEventListener('click', async () => {
     $('talk').classList.remove('rec'); $('talk').textContent = 'Tap to talk';
     const fd = new FormData(); fd.append('audio', new Blob(chunks, { type: 'audio/webm' }), 'a.webm'); send(fd, false); };
   rec.start(); $('talk').classList.add('rec'); $('talk').textContent = 'Listening… tap when done';
+});
+
+$('export').addEventListener('click', async () => {
+  $('export').disabled = true; const fd = new FormData(); fd.append('sid', sid);
+  await fetch('api/export', { method: 'POST', body: fd });
+  const t0 = Date.now();
+  const poll = setInterval(async () => {
+    const e = await (await fetch('api/export/' + sid)).json();
+    if (e.status === 'running') { statusEl.textContent = `Writing STEP and FreeCAD… ${Math.round((Date.now() - t0) / 1000)} s`; return; }
+    clearInterval(poll); statusEl.textContent = ''; $('export').disabled = false;
+    const box = $('result'); box.hidden = false;
+    if (e.status !== 'done') { box.textContent = 'Export failed: ' + (e.error || e.status); return; }
+    const edit = e.fcstd_ok ? (e.edit_breaks?.length ? `FreeCAD model: ${e.params.length} editable sizes, ${e.edit_breaks.length} break on edit.` : `FreeCAD model: ${e.params.length} editable sizes, all survive an edit.`) : 'FreeCAD model could not be built: ' + (e.error || '');
+    box.innerHTML = `<div style="font-weight:600">Your part${e.scale !== 1 ? ` (scaled ×${(+e.scale).toFixed(4)} to mm)` : ''}</div><div style="font-size:13px;color:var(--soft)"></div><a href="api/result/${sid}/part.step">Download STEP</a> · ${e.fcstd_ok ? `<a href="api/result/${sid}/part.FCStd">Download FreeCAD</a>` : ''}`;
+    box.children[1].textContent = edit;
+  }, 3000);
 });
 
 $('build').addEventListener('click', async () => {

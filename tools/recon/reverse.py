@@ -255,11 +255,11 @@ def level_section(mesh, ax, h):
              "holes": [np.asarray(hp.exterior.coords)[:-1] for hp in sh["holes"]]} for sh in shapes]
 
 
-def reverse(stl):
+def reverse(stl, axis=None):
     m = trimesh.load(stl, force="mesh")
     tri = np.asarray(m.triangles, float)
     lo, hi = m.bounds
-    ax = pick_axis(tri, lo, hi)
+    ax = pick_axis(tri, lo, hi) if axis is None else axis     # tools/tree/propose.py picks its own
     sil = silhouette(tri, ax)
     if sil.geom_type != "Polygon":                              # several islands: keep the largest (report it)
         sil = max(sil.geoms, key=lambda g: g.area)
