@@ -251,7 +251,29 @@ _PREFIX_MAX = 96
 
 
 def compile_tree(tree, tol=None):
-    """Tree -> (solid, notes per feature id). A feature that fails is skipped and noted.
+    """Tree -> (shape, notes per feature id). Features tagged with different "body" values are
+    separate solids (a print-in-place assembly): each body is compiled on its own and the result
+    is their compound."""
+    groups = {}
+    for f in tree["features"]:
+        groups.setdefault(f.get("body", ""), []).append(f)
+    if len(groups) <= 1:
+        return _compile_body(tree, tol)
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+    comp, bld, notes, n = TopoDS_Compound(), BRep_Builder(), {}, 0
+    bld.MakeCompound(comp)
+    for fs in groups.values():
+        s, nt = _compile_body({"units": tree.get("units", "mm"), "features": fs}, tol)
+        notes.update(nt)
+        if s is not None:
+            bld.Add(comp, s)
+            n += 1
+    return (comp if n else None), notes
+
+
+def _compile_body(tree, tol=None):
+    """One body's tree -> (solid, notes per feature id). A feature that fails is skipped and noted.
     Compiled prefixes are cached: a candidate that appends or inserts one feature rebuilds only
     from there (the analysis compiles ~40 trees that mostly share their first features). Same
     booleans on the same inputs, so the result equals a fresh compile."""

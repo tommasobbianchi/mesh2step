@@ -269,7 +269,8 @@ def steps(tree):
             txt = f"sketch ({shp}) on the plane across {f['axis']} at {f['at']:.4g}, {'extruded' if f['op'] == 'pad' else 'cut'} {ext}"
         else:
             txt = f"{f['op']} {float(f['size']):.3g} on the {f.get('cap', 'both')} {f.get('loops', 'outer')} edges of {f['on']}"
-        out.append({"id": f["id"], "label": f.get("label", f["id"]), "text": txt})
+        lab = f.get("label", f["id"])
+        out.append({"id": f["id"], "label": f"{f['body']} · {lab}" if f.get("body") else lab, "text": txt})
     return out
 
 

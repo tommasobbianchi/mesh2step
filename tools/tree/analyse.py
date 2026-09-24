@@ -43,7 +43,11 @@ def measure(tree, m, tol, occ):
 
 
 def _planner_child(stl, out, q):
+    import resource
     os.setpgrp()                                       # its own group: a deadline kill reaches its workers too
+    # its own memory ceiling (workers inherit it): an OCCT blowup here (7.8 GB seen) raises
+    # inside the child and drops the planner, instead of taking the capped analysis down
+    resource.setrlimit(resource.RLIMIT_AS, (5 << 30, 5 << 30))
     np.random.seed(1)
     try:
         t2, _, _, pi = PL.plan_tree(stl, out)
@@ -62,11 +66,9 @@ def _start_planner(stl, out):
     return q, child
 
 
-def main(stl, out):
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    np.random.seed(0)                                  # surface sampling is random: same mesh, same decisions
-    t0 = time.time()
+def analyse_one(stl, out, t0, planner=True):
+    """One closed body's mesh -> (tree, info): the free proposal, the planner when useful
+    (forked early for a layer stack), the better tree kept."""
     m = trimesh.load(stl, force="mesh")
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
     tree = {"units": "mm", "features": PR.main_extrusion(m, stl)}
@@ -75,13 +77,13 @@ def main(stl, out):
     # Known right after the extrusion pass, so it starts now, forked, while the proposal finishes
     layered = sum(f["op"] == "pad" and f.get("label", "").startswith("Level") for f in tree["features"]) > 3
     q, child = None, None
-    if layered:
+    if layered and planner:
         q, child = _start_planner(stl, out)
     PR.finish(tree, m, tol)
     occ = T.occupancy(m, m.bounds, n=60)
     info = {"tol": tol, "proposal": measure(tree, m, tol, occ), "planner": None, "chosen": "proposal",
             "cost_usd": 0.0, "layered": layered}
-    if child is None and info["proposal"].get("explained", 0) < GOOD:
+    if child is None and planner and info["proposal"].get("explained", 0) < GOOD:
         q, child = _start_planner(stl, out)
     if child is not None:
         import queue
@@ -106,6 +108,56 @@ def main(stl, out):
                 better = info["planner"]["score"] > info["proposal"]["score"]
                 if better or (layered and info["planner"].get("iou", 0) >= 0.9):
                     tree, info["chosen"] = t2, "planner"
+    return tree, info
+
+
+def bodies(m):
+    """The mesh's closed bodies worth a tree: (mesh, full analysis?). A print-in-place part is
+    several closed bodies (broom holder: 3, 0.34 mm apart); zero-volume shards are debris (the
+    gate has 298)."""
+    parts = [p for p in m.split(only_watertight=False) if p.is_watertight and abs(p.volume) > 0]
+    total = sum(abs(p.volume) for p in parts) or 1.0
+    keep = [p for p in parts if abs(p.volume) >= 1e-4 * total]
+    keep.sort(key=lambda p: -abs(p.volume))
+    return [(p, bool(abs(p.volume) >= 0.01 * total)) for p in keep]   # small: free proposal only
+
+
+def main(stl, out):
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    np.random.seed(0)                                  # surface sampling is random: same mesh, same decisions
+    t0 = time.time()
+    m = trimesh.load(stl, force="mesh")
+    bs = bodies(m)
+    if len(bs) <= 1:
+        tree, info = analyse_one(stl, out, t0)
+    else:                                              # one tree per body, tagged, ids renumbered
+        feats, infos, n = [], [], 0
+        for i, (b, full) in enumerate(bs):
+            bstl = out / f"body{i + 1}.stl"
+            b.export(bstl)
+            t, inf = analyse_one(str(bstl), out / f"body{i + 1}", t0, planner=full)
+            ren = {}
+            for f in t["features"]:
+                n += 1
+                ren[f["id"]] = f"F{n}"
+            for f in t["features"]:
+                g = dict(f, id=ren[f["id"]], body=f"B{i + 1}")
+                if "on" in g:
+                    g["on"] = ren.get(g["on"], g["on"])
+                feats.append(g)
+            infos.append(dict(inf, body=f"B{i + 1}", volume=round(abs(b.volume), 2), full=full))
+            import resource
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+            print(f"[analyse] body {i + 1}/{len(bs)} done at {time.time() - t0:.0f} s, "
+                  f"peak rss {rss} MB", file=sys.stderr, flush=True)
+        tree = {"units": "mm", "features": feats}
+        tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
+        occ = T.occupancy(m, m.bounds, n=60)
+        whole = measure(tree, m, tol, occ)             # the merged tree against the whole mesh
+        info = {"tol": tol, "bodies": infos, "proposal": whole, "planner": None,
+                "chosen": "+".join(x["chosen"] for x in infos),
+                "cost_usd": round(sum(x["cost_usd"] for x in infos), 4)}
     info["seconds"] = round(time.time() - t0, 1)
     (out / "tree.json").write_text(json.dumps(tree, indent=1))
     (out / "analysis.json").write_text(json.dumps(info, indent=1))

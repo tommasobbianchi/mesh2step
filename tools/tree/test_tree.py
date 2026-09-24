@@ -70,3 +70,23 @@ def test_fix_patch_keeps_summarised_sketches():
     assert n["features"][0]["label"] == "Base" and n["features"][0]["loops"] == big["loops"]
     assert [f["id"] for f in n["features"]] == ["F1", "F2", "F5", "F4"]        # added before the chamfer
     assert fix.first_json('ok {"add": []} and {braces} after', "add") == {"add": []}
+
+
+def test_multibody_split_and_compile():
+    """A print-in-place part is several closed bodies: each gets its own tree, compiled to its own solid."""
+    import analyse
+    a = trimesh.creation.box([10, 10, 10])
+    b = trimesh.creation.box([4, 4, 4]); b.apply_translation([20, 0, 0])          # 13 mm apart
+    dust = trimesh.creation.box([0.05, 0.05, 0.05]); dust.apply_translation([40, 0, 0])
+    bs = analyse.bodies(trimesh.util.concatenate([a, b, dust]))
+    assert [round(abs(m.volume)) for m, _ in bs] == [1000, 64] and all(full for _, full in bs)
+    t = {"units": "mm", "features": [dict(f, body="B1") for f in PLATE["features"][:2]] +
+         [dict(f, id="G" + f["id"], body="B2", at=20.0) for f in PLATE["features"][:1]]}
+    s, notes = T.compile_tree(t, 0.05)
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    ex, n = TopExp_Explorer(s, TopAbs_SOLID), 0
+    while ex.More():
+        n += 1; ex.Next()
+    assert n == 2 and not notes
+    assert abs(T.volume(s) - (2 * 40 * 20 * 6 - np.pi * 16 * 6)) < 1

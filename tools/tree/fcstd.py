@@ -60,6 +60,7 @@ def sketch(name, label, axis, at, loops, drive=None):
     return sk
 def pad(name, label, sk, length, expr, reversed_=False, taper=0.0):
     f = body.newObject("PartDesign::Pad", name); f.Label = label; f.Profile = sk
+    f.Refine = True                                    # unify coplanar faces: bodies meeting face to face
     f.Length = abs(length); f.Reversed = reversed_
     if taper:
         f.TaperAngle = taper
@@ -68,6 +69,7 @@ def pad(name, label, sk, length, expr, reversed_=False, taper=0.0):
     return f
 def pocket(name, label, sk, length, expr, through=False):
     f = body.newObject("PartDesign::Pocket", name); f.Label = label; f.Profile = sk
+    f.Refine = True
     if through:
         f.Type = "ThroughAll"; f.Midplane = True
     else:
@@ -117,7 +119,9 @@ TAIL = r'''
 res = {"ok": False}
 try:
     doc.recompute()
-    bad = [o.Label for o in body.Group if "Invalid" in o.State or "Error" in o.State]
+    BODIES = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"]   # one per body of the part
+    GROUP = [o for b in BODIES for o in b.Group]
+    bad = [o.Label for o in GROUP if "Invalid" in o.State or "Error" in o.State]
     def info(o):
         d = {"state": list(o.State)}
         try:
@@ -130,15 +134,17 @@ try:
         except Exception as e:
             d["err"] = str(e)[:120]
         return d
-    diag = {o.Label: info(o) for o in body.Group if not o.TypeId.startswith("App::")}
-    sh = body.Shape
+    diag = {o.Label: info(o) for o in GROUP if not o.TypeId.startswith("App::")}
+    shapes = [b.Shape for b in BODIES if not b.Shape.isNull()]
+    sh = shapes[0] if len(shapes) == 1 else Part.makeCompound(shapes) if shapes else Part.Shape()
     doc.saveAs(OUT)
     res = {"ok": False, "invalid_features": bad, "diag": diag}
     if sh.isNull():
         raise RuntimeError("Body has no shape")
     sh.exportStep(OUT[:-6] + ".fc.step")
-    res = {"ok": not sh.isNull(), "diag": diag, "valid": sh.isValid(), "volume": sh.Volume, "solids": len(sh.Solids),
-           "features": [(o.TypeId.split("::")[-1], o.Label) for o in body.Group if not o.TypeId.startswith("App::")],
+    res = {"ok": not sh.isNull(), "diag": diag, "valid": sh.isValid(), "volume": sh.Volume,
+           "solids": len(sh.Solids), "bodies": len(BODIES),
+           "features": [(o.TypeId.split("::")[-1], o.Label) for o in GROUP if not o.TypeId.startswith("App::")],
            "invalid_features": bad}
     aliases = [P.getAlias(c) for c in P.getUsedCells() if P.getAlias(c)]
     res["params"] = aliases
@@ -151,10 +157,12 @@ try:
         if time.time() - t_gate > 180:                  # a 98-pad tree recomputes for minutes per size: budget it
             break
         res["edit_checked"] += 1
-        d2 = App.openDocument(OUT); P2, b2 = d2.getObject("Params"), d2.getObject("Body")
+        d2 = App.openDocument(OUT); P2 = d2.getObject("Params")
+        B2 = [o for o in d2.Objects if o.TypeId == "PartDesign::Body"]
         x = P2.get(a); P2.set(P2.getCellFromAlias(a), repr(x * 1.03)); d2.recompute()
-        broke = [o.Label for o in b2.Group if "Invalid" in o.State or "Error" in o.State or "Touched" in o.State]
-        if broke or not b2.Shape.isValid():
+        broke = [o.Label for b in B2 for o in b.Group
+                 if "Invalid" in o.State or "Error" in o.State or "Touched" in o.State]
+        if broke or not all(b.Shape.isValid() for b in B2):
             breaks.append({"param": a, "broken": broke})
         App.closeDocument(d2.Name)
     res["edit_breaks"] = breaks
@@ -175,9 +183,13 @@ def script(tree, out, report, tol):
                 and feats[f["on"]]["length"] != "through" and sum(g["op"] == "pad" for g in tree["features"]) == 1:
             for cap in (("top", "bottom") if f.get("cap", "both") == "both" else (f["cap"],)):
                 taper.setdefault(f["on"], {})[cap] = (float(f["size"]), f["id"])
-    last = None
+    last, cur = None, None
     for f in tree["features"]:
         i, lab = f["id"], json.dumps(f.get("label", f["id"]))
+        tag = f.get("body", "")
+        if cur is not None and tag != cur:             # the next body of a multi-body part: its own Body
+            L.append(f"body = doc.addObject('PartDesign::Body', 'Body_{tag}')\nlast = None")
+        cur = tag
         if f["op"] in ("pad", "pocket"):
             circ = len(f["loops"]) == 1 and len(f["loops"][0]) == 1 and f["loops"][0][0]["t"] == "circle"
             drive = "None"
@@ -240,7 +252,7 @@ def build(tree, out, tol=0.05):
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
-    if r.get("ok") and r.get("valid") and r.get("solids") == 1:   # same solid as the STEP compile? (an invalid
+    if r.get("ok") and r.get("valid") and r.get("solids") == r.get("bodies", 1):   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
         from OCP.STEPControl import STEPControl_Reader
