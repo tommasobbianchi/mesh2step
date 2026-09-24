@@ -314,30 +314,47 @@ def residual_prisms(tree, m, F, tol, max_blobs=6):
             for j, kk in enumerate(order):
                 bmin[kk] = lo[kk] + idx[:, j].min() * g; bmax[kk] = lo[kk] + (idx[:, j].max() + 1) * g
             blobs.append((len(idx), op, bmin, bmax))
+    global _CTX
+    import multiprocessing as mp
     for _, op, bmin, bmax in sorted(blobs, key=lambda x: -x[0])[:max_blobs]:
-        best = None
-        for axis in AXN:
-            k = AXN.index(axis); a, b = snap(axis, bmin[k]), snap(axis, bmax[k])
-            if b - a < 2 * tol:
-                continue
-            pu, pv = T.UV[axis]
-            clip = box(bmin[pu] - g, bmin[pv] - g, bmax[pu] + g, bmax[pv] + g)
-            hs = [a + f * (b - a) for f in (0.25, 0.5, 0.75)]
-            diffs = [(T.solid_region(shape, axis, h).difference(_section(m, axis, h)) if op == "pocket" else
-                      _section(m, axis, h).difference(T.solid_region(shape, axis, h))).intersection(clip) for h in hs]
-            region = _majority(diffs, tol)
-            for poly in _polys(region, tol)[:1]:
-                cand = {"op": op, "label": ("Pocket" if op == "pocket" else "Boss") + f" across {axis}", "axis": axis,
-                        "at": round(a, 4), "length": round(b - a, 4), "loops": _loops(axis, poly, tol)}
-                k_ins = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
-                sc, _ = score(feats[:k_ins] + [cand] + feats[k_ins:])
-                if best is None or sc > best[0]:
-                    best = (sc, cand, k_ins)
+        # the three axis trials are independent: forked workers inherit shape, mesh and caches
+        # copy-on-write (OCCT shapes cannot be pickled; OCP holds the GIL: threads ran 0.34x)
+        _CTX = dict(shape=shape, m=m, tol=tol, g=g, snap=snap, op=op, bmin=bmin, bmax=bmax,
+                    feats=list(feats), score=score)
+        with mp.get_context("fork").Pool(3) as pool:
+            trials = [t for t in pool.map(_axis_trial, AXN) if t]
+        best = max(trials, key=lambda t: t[0], default=None)
         if best and best[0] > base + 0.002:
             base = best[0]; feats.insert(best[2], best[1])
             _log("residual", best[1]["label"], "->", round(base, 4))
     PR._ids(tree, keep_refs=True)
     return tree
+
+
+_CTX = {}
+
+
+def _axis_trial(axis):
+    """One residual candidate across `axis` for the current blob (a forked worker; reads _CTX)."""
+    c = _CTX
+    op, bmin, bmax, g, tol = c["op"], c["bmin"], c["bmax"], c["g"], c["tol"]
+    m, shape, feats = c["m"], c["shape"], c["feats"]
+    k = AXN.index(axis)
+    a, b = c["snap"](axis, bmin[k]), c["snap"](axis, bmax[k])
+    if b - a < 2 * tol:
+        return None
+    pu, pv = T.UV[axis]
+    clip = box(bmin[pu] - g, bmin[pv] - g, bmax[pu] + g, bmax[pv] + g)
+    hs = [a + f * (b - a) for f in (0.25, 0.5, 0.75)]
+    diffs = [(T.solid_region(shape, axis, h).difference(_section(m, axis, h)) if op == "pocket" else
+              _section(m, axis, h).difference(T.solid_region(shape, axis, h))).intersection(clip) for h in hs]
+    for poly in _polys(_majority(diffs, tol), tol)[:1]:
+        cand = {"op": op, "label": ("Pocket" if op == "pocket" else "Boss") + f" across {axis}", "axis": axis,
+                "at": round(a, 4), "length": round(b - a, 4), "loops": _loops(axis, poly, tol)}
+        k_ins = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
+        sc, _ = c["score"](feats[:k_ins] + [cand] + feats[k_ins:])
+        return (sc, cand, k_ins)
+    return None
 
 
 def plan_tree(stl, wd=None):

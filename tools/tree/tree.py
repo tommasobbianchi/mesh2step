@@ -246,43 +246,70 @@ def apply_modifier(shape, tree, mod, tol):
     return shape, f"{mod['op']} refused on {len(edges)} edges"
 
 
+_PREFIX = {}                                  # prefix hash -> (shape, notes, tapered_ok), oldest first
+_PREFIX_MAX = 96
+
+
 def compile_tree(tree, tol=None):
-    """Tree -> (solid, notes per feature id). A feature that fails is skipped and noted, never fatal."""
-    shape, notes = None, {}
+    """Tree -> (solid, notes per feature id). A feature that fails is skipped and noted.
+    Compiled prefixes are cached: a candidate that appends or inserts one feature rebuilds only
+    from there (the analysis compiles ~40 trees that mostly share their first features). Same
+    booleans on the same inputs, so the result equals a fresh compile."""
+    import hashlib
+    import json as _json
+    feats = tree["features"]
     taper = {}                                         # pad id -> {cap: chamfer}: rim chamfers built into the pad
-    for f in tree["features"]:
+    for f in feats:
         if f["op"] == "chamfer" and f.get("loops", "outer") == "outer":
-            on = next((g for g in tree["features"] if g["id"] == f.get("on")), None)
-            pads = [g for g in tree["features"] if g["op"] == "pad"]
+            on = next((g for g in feats if g["id"] == f.get("on")), None)
+            pads = [g for g in feats if g["op"] == "pad"]
             if on and on["op"] == "pad" and on["length"] != "through" and len(pads) == 1:   # one pad: its own rim
                 for cap in (("top", "bottom") if f.get("cap", "both") == "both" else (f["cap"],)):
                     taper.setdefault(on["id"], {})[cap] = float(f["size"])
-    tapered_ok = set()
-    for f in tree["features"]:
-        try:
-            if f["op"] in ("pad", "pocket"):
-                p = tapered(f, taper[f["id"]]) if f["id"] in taper else None
-                if p is not None:
-                    tapered_ok.add(f["id"])
-                p = p if p is not None else prism(f)
-                if not BRepCheck_Analyzer(p).IsValid():    # an invalid body makes OCCT booleans explode (44 GB)
-                    notes[f["id"]] = "invalid sketch (self-intersecting outline): skipped"
-                    continue
-                if shape is None:
-                    shape = p if f["op"] == "pad" else None
-                else:
-                    shape = (BRepAlgoAPI_Fuse if f["op"] == "pad" else BRepAlgoAPI_Cut)(shape, p).Shape()
-            elif f["op"] == "chamfer" and f.get("on") in tapered_ok and f.get("loops", "outer") == "outer":
-                pass                                   # already in the pad
-            elif f["op"] in ("round", "chamfer") and shape is not None:
-                shape, n = apply_modifier(shape, tree, f, tol or 1e-3)
-                if n:
-                    notes[f["id"]] = n
-        except Exception as e:                        # noqa: BLE001
-            notes[f["id"]] = f"failed: {e}"[:200]
+    h = hashlib.sha1((_json.dumps(taper, sort_keys=True) + f"|{tol}").encode())
+    keys = []
+    for f in feats:                          # a pad's body depends on the taper map: in every key
+        h.update(_json.dumps(f, sort_keys=True).encode())
+        keys.append(h.hexdigest())
+    shape, notes, tapered_ok, start = None, {}, set(), 0
+    for i in range(len(feats) - 1, -1, -1):
+        if keys[i] in _PREFIX:
+            shape, notes, tapered_ok = _PREFIX[keys[i]]
+            notes, tapered_ok, start = dict(notes), set(tapered_ok), i + 1
+            break
+    for i in range(start, len(feats)):
+        shape = _step(feats[i], shape, tree, taper, tapered_ok, notes, tol)
+        _PREFIX[keys[i]] = (shape, dict(notes), set(tapered_ok))
+        while len(_PREFIX) > _PREFIX_MAX:
+            _PREFIX.pop(next(iter(_PREFIX)))
     if shape is not None:
         u = ShapeUpgrade_UnifySameDomain(shape, True, True, True); u.Build(); shape = u.Shape()
     return shape, notes
+
+
+def _step(f, shape, tree, taper, tapered_ok, notes, tol):
+    """One feature applied to the shape so far (notes and tapered_ok updated in place)."""
+    try:
+        if f["op"] in ("pad", "pocket"):
+            p = tapered(f, taper[f["id"]]) if f["id"] in taper else None
+            if p is not None:
+                tapered_ok.add(f["id"])
+            p = p if p is not None else prism(f)
+            if not BRepCheck_Analyzer(p).IsValid():    # an invalid body makes OCCT booleans explode (44 GB)
+                notes[f["id"]] = "invalid sketch (self-intersecting outline): skipped"
+                return shape
+            if shape is None:
+                return p if f["op"] == "pad" else None
+            return (BRepAlgoAPI_Fuse if f["op"] == "pad" else BRepAlgoAPI_Cut)(shape, p).Shape()
+        if f["op"] == "chamfer" and f.get("on") in tapered_ok and f.get("loops", "outer") == "outer":
+            return shape                               # already in the pad
+        if f["op"] in ("round", "chamfer") and shape is not None:
+            shape, n = apply_modifier(shape, tree, f, tol or 1e-3)
+            if n:
+                notes[f["id"]] = n
+    except Exception as e:                            # noqa: BLE001
+        notes[f["id"]] = f"failed: {e}"[:200]
+    return shape
 
 
 def volume(shape):
@@ -290,7 +317,8 @@ def volume(shape):
 
 
 def tessellate(shape, defl):
-    BRepMesh_IncrementalMesh(shape, defl, False, 0.3, True)
+    # sequential: the parallel mesher's thread pool outlives the call and deadlocks a later fork
+    BRepMesh_IncrementalMesh(shape, defl, False, 0.3, False)
     V, F = [], []
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():
