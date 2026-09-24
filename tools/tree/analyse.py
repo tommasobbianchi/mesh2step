@@ -68,7 +68,8 @@ def _start_planner(stl, out):
 
 def analyse_one(stl, out, t0, planner=True):
     """One closed body's mesh -> (tree, info): the free proposal, the planner when useful
-    (forked early for a layer stack), the better tree kept."""
+    (forked early for a layer stack), the better tree kept. ANALYSE_NO_PLANNER=1: free path only."""
+    planner = planner and not os.environ.get("ANALYSE_NO_PLANNER")
     m = trimesh.load(stl, force="mesh")
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
     tree = {"units": "mm", "features": PR.main_extrusion(m, stl)}
