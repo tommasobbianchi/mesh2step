@@ -240,7 +240,8 @@ def build(tree, out, tol=0.05):
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
-    if r.get("ok"):                                    # same solid as the STEP compile?
+    if r.get("ok") and r.get("valid") and r.get("solids") == 1:   # same solid as the STEP compile? (an invalid
+        # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
         from OCP.STEPControl import STEPControl_Reader
         rd = STEPControl_Reader(); rd.ReadFile(str(out)[:-6] + ".fc.step"); rd.TransferRoots(); fc = rd.OneShape()
