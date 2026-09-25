@@ -33,6 +33,13 @@ PLANNER_DEADLINE_S = 240
 THREE_PLANES_GRACE_S = 3                              # the three-plane candidate's wait past the other paths
 THREE_PLANES_EARLY_S = 260                            # ... or until this, from the body's start, when they end sooner
 THREE_PLANES_EARLY_SMALL_S = 30                       # ... for a small body (proposal only)
+STEP_COST = 0.001                                      # score a step must earn: the owner graded 20-50-step trees 1-3
+                                                       # where 2-5 steps (extrude + round) matched within 0.02
+
+
+def merit(r):
+    """A candidate's score less STEP_COST per step: fewest steps wins among near-equal matches."""
+    return r.get("score", -1) - STEP_COST * r.get("steps", 0)
 
 
 def measure(tree, m, tol, occ):
@@ -41,7 +48,7 @@ def measure(tree, m, tol, occ):
         return {"score": -1.0}
     d = T.deviation(m, s, tol)
     iou = T.volume_iou(m, s, tol, occ)
-    return {"score": round(iou + 0.5 * (d["explained"] - d["extra"]), 4), "iou": round(iou, 4),
+    return {"score": round(iou + 0.5 * (d["explained"] - d["extra"]), 4), "steps": len(tree["features"]), "iou": round(iou, 4),
             "explained": round(d["explained"], 4), "extra": round(d["extra"], 4), "notes": notes}
 
 
@@ -52,18 +59,25 @@ def _three_planes_child(emit, m, tol):
     os.nice(10)                                        # spare CPU only: it slowed the gate's planner path 50 s
     np.random.seed(2)
     occ = T.occupancy(m, m.bounds, n=60)
-    best = None
+    best, raw = None, []
     for mid in (False, True):
         t = PR.three_planes(m, tol, mid=mid)
         r = measure(t, m, tol, occ)
-        if best is None or r["score"] > best[1]["score"]:
+        raw.append((merit(r), mid, t))
+        if best is None or merit(r) > merit(best[1]):
             best = (t, dict(r, mid=mid, finished=False))
             emit(best)
-    t = best[0]
-    PR.finish(t, m, tol, scan=False)
-    r = measure(t, m, tol, occ)
-    if r["score"] > best[1]["score"]:
-        emit((t, dict(r, mid=best[1]["mid"], finished=True)))
+    # both finished, projections first: finishing decides, not the raw match (part 10: the mid-section outline won
+    # raw, and its holes take no chamfer; the projection one finished to 3 steps). Edge finishes and pruning first:
+    # they take a three-plane tree from ~25 steps to ~3, which makes every later pass cheap, and are emitted at
+    # once (parts 7 and 10 ran out of the 260 s window finishing in the other order)
+    for _, mid, t in sorted(raw, key=lambda x: x[1]):
+        for stage in (lambda: (PR.edge_mods(t, m, tol), PR.prune(t, m, tol)), lambda: PR.finish(t, m, tol, scan=False)):
+            stage()
+            r = measure(t, m, tol, occ)
+            if merit(r) > merit(best[1]):
+                best = (json.loads(json.dumps(t)), dict(r, mid=mid, finished=True))
+                emit(best)
 
 
 def _planner_child(stl, out, q):
@@ -137,7 +151,7 @@ def analyse_one(stl, out, t0, planner=True):
                 info["planner"] = dict(measure(t2, m, tol, occ), skipped=pi["skipped"])
                 # the history matters more than the last points of match: a planner tree that holds the volume
                 # (IoU >= 0.9) replaces a layer stack even when the stack traces the surface closer
-                better = info["planner"]["score"] > info["proposal"]["score"]
+                better = merit(info["planner"]) > merit(info["proposal"])
                 if better or (layered and info["planner"].get("iou", 0) >= 0.9):
                     tree, info["chosen"] = t2, "planner"
     # waited for only a short grace past the proposal and planner paths: it must not extend the wall (the gate
@@ -149,7 +163,7 @@ def analyse_one(stl, out, t0, planner=True):
           f"{'finished' if r3 and r3[1].get('finished') else 'raw' if r3 else 'not ready'}", file=sys.stderr, flush=True)
     info["three_planes"] = r3[1] if r3 else {"error": "crashed or not ready in time"}
     held = info["planner"] if info["chosen"] == "planner" else info["proposal"]
-    if r3 and r3[1].get("score", -1) > held.get("score", -1):
+    if r3 and merit(r3[1]) > merit(held):
         tree, info["chosen"] = r3[0], "three_planes"
     return tree, info
 

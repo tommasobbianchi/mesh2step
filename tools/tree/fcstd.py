@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -95,9 +96,11 @@ def modifier(kind, name, label, base, es, size, expr):
         body.removeObject(m); doc.removeObject(m.Name); return base
     m.Base = (base, keep); doc.recompute()
     return m
-def edges_on(feat, axis, caps, which, tol):
-    """Edge names of the rims of feat's flat faces in the cap planes (outer wire / holes), as tree.modifier_edges."""
+def edges_on(feat, axis, caps, which, tol, near=None):
+    """Edge names of the rims of feat's flat faces in the cap planes (outer wire / holes), as tree.modifier_edges;
+    near: (u, v) points along the named holes (a modifier's `holes`), only edges on them."""
     k = "XYZ".index(axis); out = []
+    mu, mv = ((1, 2), (2, 0), (0, 1))[k]
     edges = feat.Shape.Edges
     for f in feat.Shape.Faces:
         if f.Surface.TypeId != "Part::GeomPlane":
@@ -109,6 +112,10 @@ def edges_on(feat, axis, caps, which, tol):
             is_outer = w.isSame(f.OuterWire)
             if which == "all" or (which == "outer") == is_outer:
                 for e in w.Edges:
+                    if near:
+                        q = e.valueAt((e.FirstParameter + e.LastParameter) / 2)
+                        if min((((q.x, q.y, q.z)[mu] - u) ** 2 + ((q.x, q.y, q.z)[mv] - v) ** 2) for u, v in near) > (2 * tol) ** 2:
+                            continue
                     i = next(j for j, x in enumerate(edges) if x.isSame(e))
                     if "Edge%d" % (i + 1) not in out:
                         out.append("Edge%d" % (i + 1))
@@ -238,7 +245,15 @@ def script(tree, out, report, tol):
             Lf = float(on["length"]); lo, hi = sorted((on["at"], on["at"] + Lf))
             caps = {"top": [hi], "bottom": [lo], "both": [lo, hi]}[f.get("cap", "both")]
             kind = "Fillet" if f["op"] == "round" else "Chamfer"
-            L.append(f"es = edges_on(last, {on['axis']!r}, {caps!r}, {f.get('loops', 'outer')!r}, {tol!r})")
+            near = None
+            if f.get("holes"):                         # the named holes only: points along them, <= tol apart
+                near = []
+                for j in f["holes"]:
+                    P = np.array(T.loop_polygon(on["loops"][j]) + T.loop_polygon(on["loops"][j])[:1], float)
+                    for a, b in zip(P[:-1], P[1:]):
+                        n = max(1, int(np.ceil(np.linalg.norm(b - a) / tol)))
+                        near += [[round(float(x), 4) for x in a + (b - a) * t] for t in np.arange(n) / n]
+            L.append(f"es = edges_on(last, {on['axis']!r}, {caps!r}, {f.get('loops', 'outer')!r}, {tol!r}, {near!r})")
             L.append(f"if es:\n    last = modifier('{kind}', '{i}', {lab}, last, es, {float(f['size'])!r}, "
                      f"param('size_{i}', {float(f['size'])!r}))")
         L.append("doc.recompute()")

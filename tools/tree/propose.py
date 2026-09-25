@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import shapely
 import trimesh
 
 HERE = Path(__file__).resolve().parent
@@ -592,6 +593,20 @@ def _coord_snap(polys, tol):
     return lambda g: transform(lambda x, y: (one(x, rx), one(y, ry)), g).buffer(0)
 
 
+def _live_pockets(feats, tol):
+    """Drop a pocket that cuts nothing out of the pads: the complement of one view often lies wholly outside the
+    other views already (exact: the prism's common with the pad solid has no volume)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    pads = [f for f in feats if f["op"] == "pad"]
+    t = {"units": "mm", "features": [dict(f) for f in pads]}
+    _ids(t)
+    base, _ = T.compile_tree(t, tol)
+    if base is None:
+        return feats
+    eps = 1e-6 * T.volume(base)
+    return [f for f in feats if f["op"] != "pocket" or T.volume(BRepAlgoAPI_Common(T.prism(f), base).Shape()) > eps]
+
+
 def three_planes(m, tol, snap=None, mid=False):
     """The part sketched on three planes and intersected (the owner: 'reconstruct the object from 3 planes and
     intersect that'). Along each axis the part is cut into slabs (wall_heights); each slab's outline seen along that
@@ -619,27 +634,154 @@ def three_planes(m, tol, snap=None, mid=False):
             else:
                 slabs.append([z0, z1, reg])
         fix = _coord_snap([g for _, _, reg in slabs for g in _polys(reg)], tol) if snap else (lambda g: g)
+        frame = rect.exterior.buffer(tol / 10)
+        chains, live = [], []                          # one sketch per piece that holds its shape across slabs
         for k, (z0, z1, reg) in enumerate(slabs):
             reg = fix(reg)
             if a == first:
-                parts, at, length, op = _polys(reg), round(z0, 4), _span(z0, z1), "pad"
+                parts, e0, e1 = _polys(reg), z0, z1
             else:
                 e0 = z0 - (2 * tol if k == 0 else 0)
                 e1 = z1 + (2 * tol if k == len(slabs) - 1 else 0)
-                parts, at, length, op = (_polys(rect.difference(reg.buffer(tol / 4, join_style=2))), round(e0, 4),
-                                         round(e1 - e0, 4), "pocket")
-            for j, g in enumerate(x for x in parts if x.area > tol * tol):
-                f = {"op": op, "label": f"Sketch on {PLANE[axis]}, slab {k + 1}" + (f".{j + 1}" if j else ""),
-                     "axis": axis, "at": at, "length": length}
-                f["loops"] = safe_loops(axis, g, tol, f)
-                feats.append(f)
+                parts = _polys(rect.difference(reg.buffer(tol / 4, join_style=2)))
+            nxt = []
+            for g in (x for x in parts if x.area > tol * tol):
+                edge = g.boundary.difference(frame).length    # the part's outline only: the frame is no wall
+                c = next((c for c in live if c["g"].symmetric_difference(g).area < 0.25 * tol * max(edge, tol)), None)
+                if c is None:
+                    c = {"g": g, "e0": e0, "k0": k}
+                    chains.append(c)
+                else:
+                    live.remove(c)
+                c["e1"], c["k1"] = e1, k
+                nxt.append(c)
+            live = nxt
+        op = "pad" if a == first else "pocket"
+        for c in chains:
+            f = {"op": op, "label": f"Sketch on {PLANE[axis]}, slab {c['k0'] + 1}" + (f"-{c['k1'] + 1}" if c["k1"] > c["k0"] else ""),
+                 "axis": axis, "at": round(c["e0"], 4), "length": _span(c["e0"], c["e1"])}
+            f["loops"] = safe_loops(axis, c["g"], tol, f)
+            feats.append(f)
+    feats = _live_pockets(feats, tol)
     tree = {"units": "mm", "features": feats}
     _ids(tree)
     if snap is None:                                   # walls snapped only when the plain outlines break a boolean:
-        _, notes = T.compile_tree(tree, tol)           # snapping bends other outlines (part 5 split in two solids)
-        if T.broken_steps(notes):
+        sh, notes = T.compile_tree(tree, tol)          # snapping bends other outlines (part 5 split in two solids)
+        # a fuse on 1e-4-misaligned slab walls can also fail SILENTLY: no note, the volume just goes (part 6: 64k
+        # of 280k mm3). Every view contains the part, so a rebuild far below the mesh volume is a broken one.
+        if T.broken_steps(notes) or sh is None or T.volume(sh) < 0.8 * m.volume:
             return three_planes(m, tol, snap=True, mid=mid)
     return tree
+
+
+def _pad_polygon(f):
+    from shapely.geometry import Polygon
+    L = [T.loop_polygon(lp) for lp in f["loops"]]
+    return Polygon(L[0], L[1:]).buffer(0)
+
+
+def _edge_size(secs, g, ring, tol):
+    """How a sketch edge `ring` is finished, from mesh sections secs = [(h, region)] going into the part from its
+    cap: i(h) = the area between sketch and section near the edge per edge length. A chamfer of size d has
+    i = d - h, a round of radius r has i = r - sqrt(r^2 - (r - h)^2), i.e. r = (i + h) + sqrt(2 i h); each measured
+    depth gives an estimate and the model whose estimates agree best wins. A sharp edge is ~0 from the start.
+    -> (preferred op, {op: size}) or None; both sizes, since the better finish is decided by trying both."""
+    band = ring.buffer(8 * tol)
+    prof = [(h, g.difference(sec).intersection(band).area / max(ring.length, 1e-9)) for h, sec in secs]
+    if len(prof) < 3 or prof[0][1] < tol / 2:
+        return None
+    pts = [(h, i) for h, i in prof if i > tol / 8]
+    ch = np.array([h + i for h, i in pts])
+    rd = np.array([(i + h) + np.sqrt(2 * i * h) for h, i in pts])
+    spread = lambda e: np.std(e) / max(np.mean(e), 1e-9)
+    return ("chamfer" if spread(ch) <= spread(rd) else "round"), {"chamfer": float(np.median(ch)),
+                                                                  "round": float(np.median(rd))}
+
+
+_OCC = {}
+
+
+def _occ(m):
+    """The mesh's occupancy grid, once per mesh (warm it before forking: children inherit it)."""
+    if id(m) not in _OCC:
+        _OCC.clear(); _OCC[id(m)] = T.occupancy(m, m.bounds)
+    return _OCC[id(m)]
+
+
+def pick_score(tree, m, tol):
+    """The analysis' own measure, iou + 0.5 (explained - extra), with the solid sampled from a fixed seed so two
+    candidates are compared on the same draw (run in a fork: the seed never leaks). -1 if nothing compiles."""
+    np.random.seed(0)
+    shape, _ = T.compile_tree(tree, tol)
+    if shape is None:
+        return -1.0
+    d = T.deviation(m, shape, tol)
+    return float(T.volume_iou(m, shape, tol, _occ(m)) + 0.5 * (d["explained"] - d["extra"]))
+
+
+def edge_mods(tree, m, tol, budget=90.0):
+    """The last step of a design: rounds and chamfers on the first view's cap edges (the owner: 'on a hole, fillet
+    is not applied'; part 10's chamfers; part 11's rounded rim). Every hole and the rim of each pad cap is measured
+    on its own (part 7 rounds one hole of eleven); holes finished alike share one modifier, naming their loops
+    (`holes`). A round and a chamfer are both tried, each sized from the profile, and the better kept unless it
+    lowers the match (part 22's dish reads chamfer-like on the profile, and is a round). Time-boxed."""
+    import time
+    from shapely.geometry import LinearRing
+    end = time.time() + budget
+    feats = tree["features"]
+    pads = [f for f in feats if f["op"] == "pad" and f["length"] != "through"]
+    if not pads:
+        return
+    axis = pads[0]["axis"]
+    seen, n0 = set(), len(feats)
+    _occ(m)
+    best = _forked(pick_score, tree, m, tol, default=-1.0)
+    for f in pads:
+        g = _pad_polygon(f)
+        L = float(f["length"])
+        for cap, z, sgn in (("bottom", f["at"], +1), ("top", f["at"] + L, -1)):
+            if round(z, 3) in seen:
+                continue                               # one cap plane: its faces are matched by plane, not by pad
+            seen.add(round(z, 3))
+            secs = [(h, T.section_region(m, axis, z + sgn * h))
+                    for h in [tol * k for k in (0.3, 0.6, 1, 1.5, 2, 3, 4, 6, 8, 11, 16, 22, 32) if tol * k < L]]
+            groups = {}
+            rings = [LinearRing(T.loop_polygon(lp)) for lp in f["loops"]]     # loop order: the index is the name
+            for i, ring in enumerate(rings):
+                which = "outer" if i == 0 else "inner"
+                es = _edge_size(secs, g, ring, tol)
+                if es is None:
+                    continue
+                op, sz = es
+                d = sz[op]
+                k = next((k for k in groups if k[0] == which and k[1] == op and abs(k[2] - d) < 0.25 * max(k[2], d)),
+                         (which, op, d))
+                groups.setdefault(k, []).append((i, sz))
+            for (which, pref, _), members in groups.items():
+                if time.time() > end:
+                    break
+                # before the other views' pockets: they split a hole's circle into arcs OCCT will not round
+                # (part 7's main hole: 8 edges, refused); on the pads alone it is one clean edge
+                k = max(j for j, x in enumerate(feats) if x["op"] == "pad") + 1
+                while k < len(feats) and feats[k]["op"] in ("round", "chamfer"):
+                    k += 1
+                tried = []
+                for op in (pref, "chamfer" if pref == "round" else "round"):
+                    mod = {"op": op, "label": f"{'Rounded' if op == 'round' else 'Chamfered'} "
+                           f"{'rim' if which == 'outer' else 'hole'} edges",
+                           "size": round(float(np.median([sz[op] for _, sz in members])), 4), "on": f["id"],
+                           "cap": cap, "loops": which, "id": f"M{len(feats) + 1}"}
+                    if which == "inner":
+                        mod["holes"] = [i for i, _ in members]
+                    feats.insert(k, mod)
+                    tried.append((_forked(pick_score, tree, m, tol, default=-1.0), mod))   # a fillet can SIGSEGV
+                    feats.pop(k)
+                sc, mod = max(tried, key=lambda x: x[0])
+                if sc >= best - 2e-4:                  # measured on the mesh, so kept unless it hurts: a 1.2 mm round
+                    best = max(best, sc)               # sits below what the score resolves (part 10's small holes)
+                    feats.insert(k, mod)
+    if len(feats) > n0:
+        _ids(tree, keep_refs=True)
 
 
 def finish(tree, m, tol, scan=True):
@@ -673,8 +815,34 @@ def finish(tree, m, tol, scan=True):
         if d["explained"] > base[0] + 0.003 and d["extra"] < base[1] + 0.003:
             feats.insert(k, dict(cand, id=f"R{k}")); base = (d["explained"], d["extra"])   # renumbered below
     _ids(tree, keep_refs=True)
-    refine(tree, m, tol)
+    refine(tree, m, tol)                               # the modifiers found so far; edge_mods' are measured exactly
+    edge_mods(tree, m, tol)
+    prune(tree, m, tol)
     return tree
+
+
+def prune(tree, m, tol, budget=90.0):
+    """Fewest steps (the owner: 'part 7 is 3 steps: sketch, extrude, fillet'): drop each step, last first, whose
+    removal does not lower the match; finishes (they earned their place in edge_mods) and the steps a finish is
+    anchored on stay. Time-boxed: the last steps first (the three-plane pockets), the rest kept when it runs out."""
+    import time
+    end = time.time() + budget
+    feats = tree["features"]
+    _occ(m)
+    best = _forked(pick_score, tree, m, tol, default=-1.0)
+    for i in range(len(feats) - 1, 0, -1):
+        if time.time() > end:
+            break
+        f = feats[i]
+        if f["op"] in ("round", "chamfer") or any(g.get("on") == f.get("id") for g in feats):
+            continue
+        feats.pop(i)
+        s = _forked(pick_score, tree, m, tol, default=-1.0)
+        if s >= best - 1e-5:
+            best = max(best, s)
+        else:
+            feats.insert(i, f)
+    _ids(tree, keep_refs=True)
 
 
 def score(tree, m, tol):
@@ -694,8 +862,8 @@ def refine(tree, m, tol, evals=7):
         if f["op"] not in ("round", "chamfer"):
             continue
         s0 = float(f["size"]); a, b = 0.4 * s0, 2.5 * s0
-        def at(x):
-            f["size"] = round(x, 4); return score(tree, m, tol)
+        def at(x):                                     # forked: a fillet build can SIGSEGV
+            f["size"] = round(x, 4); return _forked(score, tree, m, tol, default=1e9)
         c, d = b - g * (b - a), a + g * (b - a); fc, fd = at(c), at(d)
         for _ in range(evals - 2):
             if fc < fd:

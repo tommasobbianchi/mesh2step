@@ -212,6 +212,11 @@ def modifier_edges(shape, tree, mod, tol):
                 for e in _edges(w):
                     if not any(e.IsSame(x) for x in out):
                         out.append(e)
+    if mod.get("holes"):                               # only these loops of feature `on`: one hole's round
+        on = next(x for x in tree["features"] if x["id"] == mod["on"])
+        mu, mv = UV[axis]
+        out = [e for e in out if any(_loop_dist(on["loops"][i], _mid(e)[[mu, mv]]) < 2 * (tol or 1e-3)
+                                     for i in mod["holes"])]
     return out
 
 
