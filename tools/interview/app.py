@@ -508,6 +508,49 @@ def _grade_tree(part):
     return None, {}, None
 
 
+def _feature_geometry(tree, m, tol):
+    """What each step IS, for drawing it: a pad/pocket's body (STL) and its sketch outline at the sketch plane;
+    a round/chamfer's edges on the solid built so far (polylines). 'through' cuts are clipped to the part."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    lo, hi = m.bounds
+    out = []
+    for i, f in enumerate(tree["features"]):
+        g = {"id": f["id"], "op": f["op"], "body_stl": "", "lines": []}
+        try:
+            if f["op"] in ("pad", "pocket"):
+                k = T.AX[f["axis"]]
+                ff = dict(f)
+                if f["length"] == "through":
+                    ff.update(at=float(lo[k] - tol), length=float(hi[k] - lo[k] + 2 * tol))
+                V, F = T.tessellate(T.prism(ff), tol / 2)
+                g["body_stl"] = base64.b64encode(trimesh.Trimesh(V, F, process=False).export(file_type="stl")).decode()
+                for loop in ff["loops"]:                # the sketch, at the plane it is drawn on
+                    pts = []
+                    for x in loop:
+                        if x["t"] == "circle":
+                            t = np.linspace(0, 2 * np.pi, 49)
+                            q = np.c_[x["c"][0] + x["r"] * np.cos(t), x["c"][1] + x["r"] * np.sin(t)]
+                        elif x["t"] == "arc":
+                            q = T._arc_pts(*x["p"], n=16)
+                        else:
+                            q = np.array(x["p"], float)
+                        pts += [T.to3(f["axis"], u, v, ff["at"]) for u, v in q]
+                    g["lines"].append(np.round(pts, 4).tolist())
+            elif f["op"] in ("round", "chamfer"):
+                sofar, _ = T.compile_tree({"units": "mm", "features": tree["features"][:i]}, tol)
+                for e in (T.modifier_edges(sofar, tree, f, tol) if sofar is not None else []):
+                    c = BRepAdaptor_Curve(e)
+                    d = GCPnts_QuasiUniformDeflection(c, tol / 4)
+                    if d.IsDone():
+                        g["lines"].append([[round(d.Value(j).X(), 4), round(d.Value(j).Y(), 4), round(d.Value(j).Z(), 4)]
+                                           for j in range(1, d.NbPoints() + 1)])
+        except Exception as ex:                          # noqa: BLE001 -- drawing is best effort
+            g["error"] = str(ex)[:120]
+        out.append(g)
+    return out
+
+
 @app.get("/grade")
 def grade_page():
     return FileResponse(HERE / "grade.html")
@@ -544,12 +587,17 @@ def grade_part(part: str):
         shape, notes = T.compile_tree(tree, tol)
         V, F = T.tessellate(shape, tol / 2) if shape is not None else (np.zeros((0, 3)), np.zeros((0, 3), int))
         owner = T.feature_faces(m, tree, shape, tol) if shape is not None else np.full(len(m.faces), -1)
+        err = T.deviation(m, shape, tol)["face_dist"] if shape is not None else np.full(len(m.faces), 9 * tol)
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps({
+        cache.write_text(json.dumps({"v": 2, "features": _feature_geometry(tree, m, tol),
+            "face_err": _b64(np.clip(err / tol * 64, 0, 255), np.uint8), "tol": tol,
             "mesh_stl": base64.b64encode(m.export(file_type="stl")).decode(),
             "solid_stl": base64.b64encode(trimesh.Trimesh(V, F, process=False).export(file_type="stl")).decode()
             if len(F) else "", "face_feature": _b64(owner, np.int16), "steps": steps(tree), "notes": notes}))
     v = json.loads(cache.read_text())
+    if v.get("v") != 2:                                # an older cache without step geometry: rebuild once
+        cache.unlink()
+        return grade_part(part)
     g = GRADE_DIR / "grades" / f"{part}.json"
     v.update(part=part, info={k: info.get(k) for k in ("chosen", "cost_usd", "seconds", "layered")},
              proposal=info.get("proposal"), planner=info.get("planner"),

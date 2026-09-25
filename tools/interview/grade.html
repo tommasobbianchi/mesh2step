@@ -25,6 +25,8 @@
   #modes { position:absolute; left:10px; top:10px; display:flex; gap:6px; z-index:2; }
   #modes button, .seg button { min-height:34px; padding:0 12px; font:inherit; font-size:13px; border-radius:999px; border:1px solid var(--line); background:#faf9f5; cursor:pointer; }
   #modes button[aria-pressed=true] { background:var(--ink); color:#f4f2ec; }
+  #legend { position:absolute; right:10px; top:10px; font-size:12px; background:#faf9f5dd; padding:6px 8px; border-radius:8px; display:none; }
+  #legend i { display:inline-block; width:12px; height:12px; border-radius:3px; margin:0 4px -2px 8px; }
   #stats { position:absolute; left:10px; bottom:10px; font-size:12px; color:var(--soft); background:#faf9f5cc; padding:4px 8px; border-radius:8px; }
   aside { display:flex; flex-direction:column; gap:10px; min-height:0; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
@@ -49,13 +51,13 @@
 <header><h1>mesh2step · feature-tree grading <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="progress"></span></header>
 <main>
   <nav id="parts" aria-label="Parts"></nav>
-  <div id="view"><div id="modes"></div><div id="stats"></div></div>
+  <div id="view"><div id="modes"></div><div id="legend">distance from the rebuild:<i style="background:#5cb86b"></i>fits<i style="background:#f5b82e"></i>~2× tol<i style="background:#f55a1e"></i>missing</div><div id="stats"></div></div>
   <aside>
     <div class="card" id="steps" aria-label="Construction steps"></div>
     <div class="card">
       <label class="q" id="ovl">Would you model it this way? (keys 1–5)</label>
       <div class="seg" id="overall" role="group" aria-labelledby="ovl"></div>
-      <div style="font-size:12px;color:var(--soft);margin-top:4px">1 wrong approach · 3 right idea, wrong details · 5 as I would</div>
+      <div style="font-size:12px;color:var(--soft);margin-top:4px">Click a step to draw it; click the part to find its step. 1 wrong approach · 3 right idea, wrong details · 5 as I would</div>
     </div>
     <div class="card"><label class="q" for="note">Note (what is missing or wrong)</label><textarea id="note"></textarea></div>
     <button id="save" disabled>Save &amp; next (Enter)</button>
@@ -70,7 +72,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = (id) => document.getElementById(id);
 const view = $('view');
 let parts = [], cur = null, data = null, marks = {}, overall = null, mode = 'both';
-let mesh = null, solid = null, faceFeat = null, featIdx = {}, sel = null;
+let mesh = null, solid = null, faceFeat = null, faceErr = null, featIdx = {}, sel = null, stepObjs = [];
 
 const renderer = new THREE.WebGLRenderer({ antialias: true }); view.append(renderer.domElement);
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe7e3d8);
@@ -83,24 +85,73 @@ function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.w
 new ResizeObserver(resize).observe(view);
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 
+// click on the part: select the step that made that surface (a click, not the end of an orbit drag)
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(); let down = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5 || !mesh || !faceFeat) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObject(mesh, false)[0];
+  if (!hit) return;
+  const f = hit.faceIndex, i = faceFeat[f];
+  const err = faceErr ? (faceErr[f] / 64 * (data.tol || 0)).toFixed(2) : '?';
+  if (i >= 0) selectStep(i, `This surface is made by ${data.steps[i].id} · ${data.steps[i].label} (off by ${err}).`);
+  else selectStep(null, `No step makes this surface (off by ${err}): a missing feature — note it, e.g. "fillet missing here".`);
+});
+function selectStep(i, why) {
+  sel = i;
+  document.querySelectorAll('.step').forEach((x, j) => x.classList.toggle('on', j === sel));
+  if (sel != null) document.querySelectorAll('.step')[sel]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  paint(); focusStep(); if (why) $('msg').textContent = why;
+}
 const b64 = (s, T) => new T(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)).buffer);
+function errColor(e) {                 // 64 = at tolerance: green below, yellow to red above
+  const t = Math.min(1, Math.max(0, (e - 48) / 120));
+  return t <= 0 ? [0.36, 0.72, 0.42] : t < 0.5 ? [0.36 + t * 1.2, 0.72, 0.42 - t * 0.6] : [0.96, 0.72 - (t - 0.5) * 1.2, 0.12];
+}
 function paint() {
   if (!mesh) return;
   const col = mesh.geometry.attributes.color;
   for (let f = 0; f < faceFeat.length; f++) {
     const hit = sel != null && faceFeat[f] === sel;
-    const c = hit ? [0.85, 0.28, 0.06] : [0.78, 0.76, 0.72];
+    const c = hit ? [0.85, 0.28, 0.06] : (mode === 'errors' && faceErr ? errColor(faceErr[f]) : [0.78, 0.76, 0.72]);
     for (let v = 0; v < 3; v++) col.setXYZ(f * 3 + v, c[0], c[1], c[2]);
   }
   col.needsUpdate = true;
 }
+function clearStep() { for (const o of stepObjs) { scene.remove(o); o.geometry.dispose(); } stepObjs = []; }
+function drawStep(i) {                 // the step itself: its body, its sketch, or the edges a rim modifier acts on
+  clearStep();
+  const g = data.features?.[i]; if (!g) return;
+  if (g.body_stl) {
+    const bg = new STLLoader().parse(b64(g.body_stl, Uint8Array).buffer);
+    const cut = g.op === 'pocket';
+    const o = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({ color: cut ? 0xc62828 : 0xe8740c, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
+    scene.add(o); stepObjs.push(o);
+  }
+  for (const line of g.lines || []) {
+    const lg = new THREE.BufferGeometry().setFromPoints(line.map((q) => new THREE.Vector3(...q)));
+    const o = new THREE.Line(lg, new THREE.LineBasicMaterial({ color: g.body_stl ? 0x7a3200 : 0xd00000, depthTest: false }));
+    o.renderOrder = 10; scene.add(o); stepObjs.push(o);
+  }
+}
+function focusStep() {                 // a selected step is drawn over a faded part; none selected: the chosen view
+  const on = sel != null;
+  if (mesh) { mesh.visible = on || mode !== 'rebuild'; mesh.material.transparent = on; mesh.material.opacity = on ? 0.22 : 1; mesh.material.depthWrite = !on; mesh.material.needsUpdate = true; }
+  if (solid) solid.visible = !on && mode !== 'mesh' && mode !== 'errors';
+  if (on) drawStep(sel); else clearStep();
+}
 function setMode(m) {
   mode = m; document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.m === m));
   if (mesh) mesh.visible = m !== 'rebuild';              // the mesh stays opaque: step highlights show on it
-  if (solid) { solid.visible = m !== 'mesh'; solid.material.transparent = m === 'both'; solid.material.opacity = m === 'both' ? 0.4 : 1;
+  if (solid) { solid.visible = m === 'rebuild' || m === 'both'; solid.material.transparent = m === 'both'; solid.material.opacity = m === 'both' ? 0.4 : 1;
     solid.material.depthWrite = m !== 'both'; solid.material.needsUpdate = true; }
+  $('legend').style.display = m === 'errors' ? 'block' : 'none';
+  paint(); focusStep();
 }
-for (const [k, t] of [['mesh', 'Your mesh'], ['rebuild', 'Rebuild'], ['both', 'Both']]) {
+for (const [k, t] of [['mesh', 'Your mesh'], ['rebuild', 'Rebuild'], ['both', 'Both'], ['errors', 'Errors']]) {
   const b = document.createElement('button'); b.dataset.m = k; b.textContent = t; b.addEventListener('click', () => setMode(k)); $('modes').append(b);
 }
 for (let i = 1; i <= 5; i++) {
@@ -120,7 +171,8 @@ function show(d) {
     const sg = new STLLoader().parse(b64(d.solid_stl, Uint8Array).buffer);
     solid = new THREE.Mesh(sg, new THREE.MeshStandardMaterial({ color: 0x1f5f8b, roughness: 0.5 })); scene.add(solid);
   }
-  faceFeat = b64(d.face_feature, Int16Array); featIdx = {}; d.steps.forEach((s, i) => { featIdx[s.id] = i; });
+  faceFeat = b64(d.face_feature, Int16Array); faceErr = d.face_err ? b64(d.face_err, Uint8Array) : null;
+  featIdx = {}; d.steps.forEach((s, i) => { featIdx[s.id] = i; }); clearStep();
   const s = g.boundingSphere; controls.target.copy(s.center);
   camera.position.copy(s.center.clone().add(new THREE.Vector3(1, 0.8, 1.2).normalize().multiplyScalar(s.radius * 3)));
   camera.near = s.radius / 100; camera.far = s.radius * 100; camera.updateProjectionMatrix();
@@ -138,7 +190,7 @@ function renderSteps(d) {
       b.addEventListener('click', (e) => { e.stopPropagation(); marks[st.id] = v; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b)); });
       seg.append(b);
     }
-    div.addEventListener('click', () => { sel = sel === i ? null : i; document.querySelectorAll('.step').forEach((x, j) => x.classList.toggle('on', j === sel)); paint(); });
+    div.addEventListener('click', () => selectStep(sel === i ? null : i));
     return div;
   }));
 }
