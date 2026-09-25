@@ -194,10 +194,14 @@ function renderSteps(d) {
     return div;
   }));
 }
+const gfetch = (u, o = {}) => {       // a grader Tailscale does not name gives a name once: grades stay theirs
+  let n = ''; try { n = localStorage.getItem('grader') || ''; } catch (e) {}
+  return fetch(u, { ...o, headers: { ...(o.headers || {}), 'X-Grader': n } });
+};
 async function load(p) {
   cur = p; $('msg').textContent = 'Loading…'; $('save').disabled = true;
   renderList();
-  const r = await fetch('api/grade/part/' + p);
+  const r = await gfetch('api/grade/part/' + p);
   if (!r.ok) { $('msg').textContent = 'Could not load: ' + (await r.text()); return; }
   data = await r.json();
   marks = data.grade?.steps || {}; overall = data.grade?.overall || null; $('note').value = data.grade?.note || '';
@@ -211,7 +215,7 @@ async function load(p) {
 }
 function renderList() {
   const done = parts.filter((x) => x.grade).length;
-  $('progress').textContent = `${done} of ${parts.length} graded`;
+  $('progress').textContent = `${done} of ${parts.length} graded · as ${$('progress').title.replace('grading as ', '')}`;
   $('parts').replaceChildren(...parts.map((x) => {
     const b = document.createElement('button'); if (x.part === cur) b.className = 'cur';
     b.innerHTML = '<span></span><span class="m"></span>';
@@ -222,7 +226,7 @@ function renderList() {
 async function save() {
   if (!overall || !cur) return;
   const fd = new FormData(); fd.append('overall', overall); fd.append('steps_json', JSON.stringify(marks)); fd.append('note', $('note').value);
-  const r = await fetch('api/grade/' + cur, { method: 'POST', body: fd });
+  const r = await gfetch('api/grade/' + cur, { method: 'POST', body: fd });
   if (!r.ok) { $('msg').textContent = 'Save failed: ' + (await r.text()); return; }
   parts.find((x) => x.part === cur).grade = overall; $('msg').textContent = `Saved part ${cur}.`;
   const i = parts.findIndex((x) => x.part === cur);
@@ -240,7 +244,13 @@ document.addEventListener('keydown', (e) => {
   }
 });
 (async () => {
-  parts = await (await fetch('api/grade/parts')).json();
+  let me = await (await gfetch('api/grade/whoami')).json();
+  if (me.grader === 'anonymous') {
+    const n = (prompt('Your name (your grades are kept apart from everyone else\'s):') || '').trim();
+    if (n) { try { localStorage.setItem('grader', n); } catch (e) {} me = await (await gfetch('api/grade/whoami')).json(); }
+  }
+  $('progress').title = 'grading as ' + me.grader;
+  parts = await (await gfetch('api/grade/parts')).json();
   renderList();
   const first = parts.find((x) => !x.grade) || parts[0];
   if (first) load(first.part); else $('msg').textContent = 'No trees to grade yet.';

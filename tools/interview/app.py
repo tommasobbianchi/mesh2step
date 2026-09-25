@@ -510,13 +510,25 @@ def _tailnet_owner():
 OWNER = _tailnet_owner()
 
 
-def _grade_file(part, request):
-    """Each grader's own file: `tailscale serve` names the visitor (Tailscale-User-Login), so a colleague on a
-    shared node never overwrites the owner's grade. The owner (or a header-less local call) keeps <part>.json."""
+def _grader(request):
+    """Who is grading: `tailscale serve` names the visitor (Tailscale-User-Login); without it, the name the page
+    asked for (X-Grader), else "anonymous". Only the tailnet owner's login is the owner: a missing header never is."""
     who = request.headers.get("Tailscale-User-Login") or ""
-    if not who or who == OWNER:
-        return GRADE_DIR / "grades" / f"{part}.json", "owner"
-    return GRADE_DIR / "grades" / f"{part}@{''.join(c if c.isalnum() or c in '.-_' else '_' for c in who)}.json", who
+    if who and who == OWNER:
+        return "owner"
+    who = who or request.headers.get("X-Grader", "").strip()[:60] or "anonymous"
+    return "".join(c if c.isalnum() or c in ".-_@" else "_" for c in who)
+
+
+def _grade_file(part, request):
+    """Each grader's own file, so graders never overwrite each other; the owner keeps <part>.json."""
+    who = _grader(request)
+    return GRADE_DIR / "grades" / (f"{part}.json" if who == "owner" else f"{part}@{who}.json"), who
+
+
+@app.get("/api/grade/whoami")
+def grade_whoami(request: Request):
+    return {"grader": _grader(request), "named_by_tailscale": bool(request.headers.get("Tailscale-User-Login"))}
 GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
 
 
