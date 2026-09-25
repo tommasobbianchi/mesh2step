@@ -334,6 +334,11 @@ def _step(f, shape, tree, taper, tapered_ok, notes, tol):
     return shape
 
 
+def broken_steps(notes):
+    """How many steps a compile could not build (refused, failed, invalid)."""
+    return sum(1 for n in notes.values() if any(w in n for w in ("refused", "failed", "invalid")))
+
+
 def volume(shape):
     g = GProp_GProps(); BRepGProp.VolumeProperties_s(shape, g); return g.Mass()
 

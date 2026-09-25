@@ -297,14 +297,13 @@ def residual_prisms(tree, m, F, tol, max_blobs=6):
         if sh is None:
             return -1.0, None
         d = T.deviation(m, sh, tol)
-        broken = sum(1 for n in notes.values() if any(w in n for w in ("refused", "failed", "invalid")))
-        if broken > base_broken[0]:                    # it breaks a step that built before (mechparts/16: pockets
-            return -1.0, sh                            # at the ends made the full-round rim refuse on 34 edges)
+        if T.broken_steps(notes) > base_broken[0]:     # it breaks a step that built (mechparts/16: end
+            return -1.0, sh                            # pockets made the full round refuse on 34 edges)
         return T.volume_iou(m, sh, tol, occ_m) + 0.5 * (d["explained"] - d["extra"]), sh
 
     base_broken = [10 ** 9]
     _, base_notes = T.compile_tree({"units": "mm", "features": list(feats)}, tol)
-    base_broken[0] = sum(1 for n in base_notes.values() if any(w in n for w in ("refused", "failed", "invalid")))
+    base_broken[0] = T.broken_steps(base_notes)
     base, shape = score(feats)
     occ_s = T.occupancy(None, m.bounds, n=60, region=lambda ax, h: T.solid_region(shape, ax, h))
     flats = {a: sorted(x["at"] for x in F["flat"] if x["axis"] == a) for a in AXN}

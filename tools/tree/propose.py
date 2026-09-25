@@ -178,12 +178,13 @@ def propose(stl):
 
 
 def side_cuts(tree, m, tol, per_axis=8):
-    """Sketches on the OTHER planes. A designer sketches on two or three planes: the main profile, then cuts seen
-    from the side or front (chamfers, slopes, rounds, slots running along another axis). For each axis other than
-    the main one: project the part along it; wherever the part's bounding rectangle has no material through the
-    whole depth, that region is a through cut sketched on that plane (lines and arcs fitted exactly). Each cut is
-    kept only if the mesh match improves. The owner, grading: 'the algo tends to choose only a plane in which to
-    find the sketches, where usually there are at least 2 or 3 in complex parts'. Edits tree in place."""
+    """Sketches on the OTHER planes. A designer sketches on two or three planes: the main profile,
+    then cuts seen from the side or front (chamfers, slopes, rounds, slots along another axis). For
+    each non-main axis: project the part along it; wherever the part's bounding rectangle has no
+    material through the whole depth, that region is a through cut sketched on that plane (lines and
+    arcs fitted exactly). Kept only if the match improves. The owner, grading: 'the algo tends to
+    choose only a plane in which to find the sketches, where usually there are at least 2 or 3 in
+    complex parts'. Edits tree in place."""
     from shapely.geometry import box
     feats = tree["features"]
     main = next((f["axis"] for f in feats if f["op"] in ("pad", "pocket")), None)
@@ -196,8 +197,8 @@ def side_cuts(tree, m, tol, per_axis=8):
         sh, notes = T.compile_tree(t, tol)
         if sh is None:
             return -1.0, 0
-        broken = sum(1 for n in notes.values() if any(w in n for w in ("refused", "failed", "invalid")))
-        if allowed is not None and broken > allowed:   # a cut that breaks a step that built before is no gain
+        broken = T.broken_steps(notes)
+        if allowed is not None and broken > allowed:   # breaking a step that built is no gain
             return -1.0, broken
         d = T.deviation(m, sh, tol)
         return d["explained"] - d["extra"], broken
@@ -206,7 +207,8 @@ def side_cuts(tree, m, tol, per_axis=8):
     for axis in AXN:
         if axis == main:
             continue
-        a = AXN.index(axis); ru, rv = reverse.plane_axes(a)
+        a = AXN.index(axis)
+        ru, rv = reverse.plane_axes(a)
         sil = reverse.silhouette(tri, a)
         rect = box(lo[ru] - 2 * tol, lo[rv] - 2 * tol, hi[ru] + 2 * tol, hi[rv] + 2 * tol)
         empty = rect.difference(sil).buffer(-tol / 2, join_style=2).buffer(tol / 2, join_style=2)
@@ -219,10 +221,12 @@ def side_cuts(tree, m, tol, per_axis=8):
             cand = {"op": "pocket", "label": f"Side cut across {axis}", "axis": axis,
                     "at": round(float(lo[a] - 2 * tol), 4), "length": "through", "loops": loops}
             k = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
-            trial = {"units": tree.get("units", "mm"), "features": feats[:k] + [dict(cand, id=f"S{k}")] + feats[k:]}
+            new = dict(cand, id=f"S{k}")
+            trial = {"units": tree.get("units", "mm"), "features": [*feats[:k], new, *feats[k:]]}
             sc, _ = fit(trial, base_broken)
             if sc > base + 0.002:
-                feats.insert(k, dict(cand, id=f"S{k}")); base = sc
+                feats.insert(k, new)
+                base = sc
     _ids(tree, keep_refs=True)
     return tree
 
@@ -233,13 +237,13 @@ def Polygon_area(ring):
 
 
 def finish(tree, m, tol):
-    """The deterministic passes after the base bodies: through cuts sketched on the other planes, partial-depth
-    pockets/bosses on any plane, residual cylinders (holes/bosses on any principal axis), each kept only if the
-    mesh match improves, then modifier sizes fitted to the mesh. Edits tree in place."""
+    """The deterministic passes after the base bodies: through cuts sketched on the other planes,
+    partial-depth pockets/bosses on any plane, residual cylinders (holes/bosses on any principal
+    axis), each kept only if the match improves, then modifier sizes fitted. Edits tree in place."""
     side_cuts(tree, m, tol)
-    import plan as PL                                  # (plan imports this module: import here, not at the top)
-    # partial-depth features on any plane: where model and mesh volumes disagree, a pocket or boss sketched across
-    # the best axis over its own range (snapped to measured flat faces); was only run after the planner
+    import plan as PL                                  # plan imports this module: import here
+    # partial-depth features on any plane: where model and mesh volumes disagree, a pocket or boss
+    # across the best axis over its own range (snapped to flat faces); ran only after the planner
     PL.residual_prisms(tree, m, PL.facts(m, tol), tol)
     feats = tree["features"]
     shape, _ = T.compile_tree(tree, tol)
