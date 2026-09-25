@@ -10,6 +10,10 @@
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
 </script>
 <style>
+  #login[hidden] { display:none !important; }
+  #login .who { min-height:48px; min-width:120px; padding:0 22px; font:inherit; font-size:16px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  #login .who:hover { border-color:var(--ink); }
+  #logout { margin-left:8px; min-height:30px; padding:0 12px; font:inherit; font-size:12px; border-radius:999px; border:1px solid var(--line); background:none; color:var(--soft); cursor:pointer; }
   :root { --bg:#f4f2ec; --ink:#1d1c1a; --soft:#5b5953; --line:#d9d5ca; --card:#fff; --hi:#d9480f; --ok:#2e7d32; --bad:#c62828; --uns:#b7791f; --blue:#1f5f8b; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
@@ -48,7 +52,14 @@
 </style>
 </head>
 <body>
-<header><h1>mesh2step · feature-tree grading <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="progress"></span></header>
+<header><h1>mesh2step · feature-tree grading <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="progress"></span> <button id="logout" hidden>switch user</button></header>
+<div id="login" hidden style="position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9">
+  <h2 style="margin:0">Who is grading?</h2>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
+    <button class="who" data-n="tommaso">Tommaso</button><button class="who" data-n="andrea">Andrea</button><button class="who" data-n="marc">Marc</button>
+  </div>
+  <p style="color:var(--soft);margin:0">Each person's grades are kept separately.</p>
+</div>
 <main>
   <nav id="parts" aria-label="Parts"></nav>
   <div id="view"><div id="modes"></div><div id="legend">distance from the rebuild:<i style="background:#5cb86b"></i>fits<i style="background:#f5b82e"></i>~2× tol<i style="background:#f55a1e"></i>missing</div><div id="stats"></div></div>
@@ -194,10 +205,8 @@ function renderSteps(d) {
     return div;
   }));
 }
-const gfetch = (u, o = {}) => {       // a grader Tailscale does not name gives a name once: grades stay theirs
-  let n = ''; try { n = localStorage.getItem('grader') || ''; } catch (e) {}
-  return fetch(u, { ...o, headers: { ...(o.headers || {}), 'X-Grader': n } });
-};
+const grader = () => { try { return localStorage.getItem('grader') || ''; } catch (e) { return window._grader || ''; } };
+const gfetch = (u, o = {}) => fetch(u, { ...o, headers: { ...(o.headers || {}), 'X-Grader': grader() } });
 async function load(p) {
   cur = p; $('msg').textContent = 'Loading…'; $('save').disabled = true;
   renderList();
@@ -243,18 +252,25 @@ document.addEventListener('keydown', (e) => {
     if (parts[i]) load(parts[i].part);
   }
 });
-(async () => {
-  let me = await (await gfetch('api/grade/whoami')).json();
-  if (me.grader === 'anonymous') {
-    const n = (prompt('Your name (your grades are kept apart from everyone else\'s):') || '').trim();
-    if (n) { try { localStorage.setItem('grader', n); } catch (e) {} me = await (await gfetch('api/grade/whoami')).json(); }
-  }
-  $('progress').title = 'grading as ' + me.grader;
+async function start() {
+  const r = await gfetch('api/grade/whoami');
+  if (!r.ok) { $('login').hidden = false; return; }
+  $('login').hidden = true; $('logout').hidden = false;
+  $('progress').title = 'grading as ' + (await r.json()).grader;
   parts = await (await gfetch('api/grade/parts')).json();
   renderList();
   const first = parts.find((x) => !x.grade) || parts[0];
   if (first) load(first.part); else $('msg').textContent = 'No trees to grade yet.';
-})();
+}
+document.querySelectorAll('#login .who').forEach((b) => b.addEventListener('click', () => {
+  try { localStorage.setItem('grader', b.dataset.n); } catch (e) { window._grader = b.dataset.n; }
+  start();
+}));
+$('logout').addEventListener('click', () => {
+  try { localStorage.removeItem('grader'); } catch (e) { window._grader = ''; }
+  location.reload();
+});
+start();
 </script>
 </body>
 </html>

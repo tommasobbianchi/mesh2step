@@ -499,36 +499,27 @@ def build_status(sid: str):
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
 
 
-def _tailnet_owner():
-    try:
-        st = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10).stdout)
-        return st["User"][str(st["Self"]["UserID"])]["LoginName"]
-    except Exception:                                  # noqa: BLE001 -- no tailscale: everyone is the owner
-        return None
-
-
-OWNER = _tailnet_owner()
+GRADERS = ("tommaso", "andrea", "marc")              # the login page's names; no password (tailnet-only page)
 
 
 def _grader(request):
-    """Who is grading: `tailscale serve` names the visitor (Tailscale-User-Login); without it, the name the page
-    asked for (X-Grader), else "anonymous". Only the tailnet owner's login is the owner: a missing header never is."""
-    who = request.headers.get("Tailscale-User-Login") or ""
-    if who and who == OWNER:
-        return "owner"
-    who = who or request.headers.get("X-Grader", "").strip()[:60] or "anonymous"
-    return "".join(c if c.isalnum() or c in ".-_@" else "_" for c in who)
+    """Who is grading: the name chosen on the login page (X-Grader). Anything else is refused, so no grade is ever
+    saved under a name nobody picked."""
+    who = request.headers.get("X-Grader", "").strip().lower()
+    if who not in GRADERS:
+        raise HTTPException(401, "log in first")
+    return who
 
 
 def _grade_file(part, request):
-    """Each grader's own file, so graders never overwrite each other; the owner keeps <part>.json."""
+    """Each grader's own file, so graders never overwrite each other; tommaso keeps <part>.json (his earlier grades)."""
     who = _grader(request)
-    return GRADE_DIR / "grades" / (f"{part}.json" if who == "owner" else f"{part}@{who}.json"), who
+    return GRADE_DIR / "grades" / (f"{part}.json" if who == "tommaso" else f"{part}@{who}.json"), who
 
 
 @app.get("/api/grade/whoami")
 def grade_whoami(request: Request):
-    return {"grader": _grader(request), "named_by_tailscale": bool(request.headers.get("Tailscale-User-Login"))}
+    return {"grader": _grader(request)}
 GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
 
 
