@@ -359,7 +359,10 @@ def _axis_trial(axis):
         cand = {"op": op, "label": ("Pocket" if op == "pocket" else "Boss") + f" across {axis}", "axis": axis,
                 "at": round(a, 4), "length": round(b - a, 4), "loops": _loops(axis, poly, tol)}
         k_ins = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
-        sc, _ = c["score"](feats[:k_ins] + [cand] + feats[k_ins:])
+        try:
+            sc, _ = c["score"](feats[:k_ins] + [cand] + feats[k_ins:])
+        except Exception:                               # noqa: BLE001 -- OCCT out of memory on a wild candidate (part 2)
+            return None
         return (sc, cand, k_ins)
     return None
 

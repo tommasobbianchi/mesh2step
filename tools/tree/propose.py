@@ -6,6 +6,7 @@
    (normals toward the axis) or bosses, coaxial pieces merged (a screw hole through two jaws is one hole).
 usage: propose.py <mesh> <out_tree.json>
 """
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ import reverse                                        # noqa: E402
 import tree as T                                      # noqa: E402
 
 AXN = "XYZ"
+MAX_CUTS = 16                                          # orthogonal-scan cuts kept per tree, biggest bites first
 
 
 def _uv(axis, P2):
@@ -177,63 +179,189 @@ def propose(stl):
     return tree, m, tol
 
 
-def side_cuts(tree, m, tol, per_axis=8):
-    """Sketches on the OTHER planes. A designer sketches on two or three planes: the main profile,
-    then cuts seen from the side or front (chamfers, slopes, rounds, slots along another axis). For
-    each non-main axis: project the part along it; wherever the part's bounding rectangle has no
-    material through the whole depth, that region is a through cut sketched on that plane (lines and
-    arcs fitted exactly). Kept only if the match improves. The owner, grading: 'the algo tends to
-    choose only a plane in which to find the sketches, where usually there are at least 2 or 3 in
-    complex parts'. Edits tree in place."""
+def slab_region(m, a, z0, z1):
+    """What the part covers seen along axis a within the slab z0..z1: one CT slice of the scan. The projection of the
+    sliced triangles alone misses the walls parallel to a (zero area) and the cut ends, so the end sections are added:
+    a closed slab's projection is its sides' plus its two caps'. A superset of the material: a cut outside it is safe."""
+    import shapely
+    from shapely.geometry import Polygon
+    n = np.zeros(3)
+    n[a] = 1.0
+    sl = trimesh.intersections.slice_mesh_plane(m, n, n * (z0 + 1e-6))
+    sl = trimesh.intersections.slice_mesh_plane(sl, -n, n * (z1 - 1e-6))
+    g = Polygon()
+    if len(sl.faces):                                  # reverse.silhouette, vectorised: its per-triangle loop was
+        u, v = reverse.plane_axes(a)
+        t2 = np.asarray(sl.triangles, float)[:, :, [u, v]]
+        polys = shapely.polygons(np.concatenate([t2, t2[:, :1]], axis=1))
+        polys = polys[shapely.area(polys) > 1e-9]
+        eps = 1e-4 * float(np.linalg.norm(np.ptp(t2.reshape(-1, 2), axis=0)))
+        g = shapely.union_all(polys).buffer(eps, join_style=2).buffer(-eps, join_style=2)
+    for h in (z0 + 1e-4 * (z1 - z0), z1 - 1e-4 * (z1 - z0)):
+        r = reverse._region(reverse.level_section(m, a, h))
+        if r is not None:
+            g = g.union(r)
+    return g
+
+
+def _polys(g):
+    return [x for x in (g.geoms if hasattr(g, "geoms") else [g]) if x.geom_type == "Polygon"]
+
+
+def _loops(axis, g, tol):
+    return [loop_prims(axis, np.asarray(g.exterior.coords)[:-1])] + \
+           [loop_prims(axis, np.asarray(r.coords)[:-1]) for r in g.interiors if Polygon_area(r) > 4 * tol * tol]
+
+
+def ct_scan(tree, m, tol):
+    """Three CT scans. A designer sketches on two or three planes, and the owner, grading, found the tree using one
+    ('you completely missed a plane, orthogonal to the plane you used'). Once the main plane is known, the part is
+    sliced along the two orthogonal axes too, at its level heights (flat faces across that axis); in each slab,
+    whatever lies outside the slab's projection is a cut sketched on that plane, over that range. Every such cut
+    is outside the material by construction, so they are all kept, unless they break a modifier or the match.
+    A layer stack on the main axis is also tried rebuilt from slab projections, judged with the cuts applied.
+    Edits tree in place."""
     from shapely.geometry import box
+    from shapely.ops import unary_union
     feats = tree["features"]
     main = next((f["axis"] for f in feats if f["op"] in ("pad", "pocket")), None)
     if main is None:
         return tree
-    tri = np.asarray(m.triangles, float)
     lo, hi = m.bounds
+    tri = np.asarray(m.triangles, float)
 
-    def fit(t, allowed=None):
+    def fit(t, iou=False):
         sh, notes = T.compile_tree(t, tol)
         if sh is None:
-            return -1.0, 0
-        broken = T.broken_steps(notes)
-        if allowed is not None and broken > allowed:   # breaking a step that built is no gain
-            return -1.0, broken
+            return (-1.0, 0.0, 99, 0.0) if iou else (-1.0, 0.0, 99)
         d = T.deviation(m, sh, tol)
-        return d["explained"] - d["extra"], broken
+        sc = d["explained"] - d["extra"], d["explained"], T.broken_steps(notes)
+        return (*sc, T.volume_iou(m, sh, tol, occ) if occ is not None else 0.0) if iou else sc
 
-    base, base_broken = fit(tree)
-    for axis in AXN:
+    def scan(a):
+        zs = reverse.level_heights(m, a, lo, hi, 1e-3 * reverse.silhouette(tri, a).area)
+        return list(itertools.pairwise(zs))
+
+    _t0 = __import__("time").time()
+
+    def with_(t_feats, add):
+        k = next((i for i, f in enumerate(t_feats) if f["op"] in ("round", "chamfer")), len(t_feats))
+        t = {"units": tree.get("units", "mm"), "features": [*t_feats[:k], *add, *t_feats[k:]]}
+        _ids(t, keep_refs=True)
+        return t
+
+    groups = []
+    for a, axis in enumerate(AXN):
         if axis == main:
             continue
-        a = AXN.index(axis)
-        ru, rv = reverse.plane_axes(a)
-        sil = reverse.silhouette(tri, a)
-        rect = box(lo[ru] - 2 * tol, lo[rv] - 2 * tol, hi[ru] + 2 * tol, hi[rv] + 2 * tol)
-        empty = rect.difference(sil).buffer(-tol / 2, join_style=2).buffer(tol / 2, join_style=2)
-        geoms = [g for g in (empty.geoms if hasattr(empty, "geoms") else [empty])
-                 if g.geom_type == "Polygon" and g.area > max(25 * tol * tol, 2e-3 * rect.area)]
-        for g in sorted(geoms, key=lambda x: -x.area)[:per_axis]:
-            loops = [loop_prims(axis, np.asarray(g.exterior.coords)[:-1])]
-            loops += [loop_prims(axis, np.asarray(r.coords)[:-1]) for r in g.interiors
-                      if abs(Polygon_area(r)) > 25 * tol * tol]
-            cand = {"op": "pocket", "label": f"Side cut across {axis}", "axis": axis,
-                    "at": round(float(lo[a] - 2 * tol), 4), "length": "through", "loops": loops}
-            k = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
-            new = dict(cand, id=f"S{k}")
-            trial = {"units": tree.get("units", "mm"), "features": [*feats[:k], new, *feats[k:]]}
-            sc, _ = _forked(fit, trial, base_broken, default=(-1.0, 0))
-            if sc > base + 0.002:
-                feats.insert(k, new)
-                base = sc
+        u, v = reverse.plane_axes(a)
+        rect = box(lo[u] - 2 * tol, lo[v] - 2 * tol, hi[u] + 2 * tol, hi[v] + 2 * tol)
+        inner = box(lo[u] + tol, lo[v] + tol, hi[u] - tol, hi[v] - tol)
+        lv = scan(a)
+        prev = None
+        for k, (z0, z1) in enumerate(lv):
+            empty = rect.difference(slab_region(m, a, z0, z1).buffer(tol / 4, join_style=2))
+            empty = empty.buffer(-tol / 2, join_style=2).buffer(tol / 2, join_style=2)
+            cut = [g for g in _polys(empty) if g.intersection(inner).area > 4 * tol * tol]   # the margin ring cuts nothing
+            e0 = z0 - (2 * tol if k == 0 else 0)
+            e1 = z1 + (2 * tol if k == len(lv) - 1 else 0)
+            if not cut:
+                prev = None
+                continue
+            u_cut = unary_union(cut)
+            if prev is not None and prev[0].symmetric_difference(u_cut).area < 0.1 * tol * max(u_cut.length, tol):
+                for f in prev[1]:                        # the same sketch continues through this slab: one cut
+                    f["length"] = round(e1 - f["at"], 4)
+                continue
+            fs = [({"op": "pocket", "label": f"Cut on {axis} plane", "axis": axis, "at": round(e0, 4),
+                    "length": round(e1 - e0, 4)}, g) for g in cut]   # loops fitted only if kept
+            groups.append((fs, a))
+            prev = (u_cut, [f for f, _ in fs])
+    cuts = [(f, a, g) for fs, a in groups for f, g in fs]
+
+    def bite(sh, a, g, f):
+        """How much material the model has that this cut takes away (0: none)? The mid-slab section of the solid, in reverse.py's
+        plane axes, against the cut sketch. Most slabs cut only air the main stack already left out (the gate:
+        109 cuts, a trial past 90 s); those are dropped before compiling."""
+        z0, z1 = max(f["at"], lo[a]), min(f["at"] + f["length"], hi[a])
+        key = (a, round((z0 + z1) / 2, 6))
+        if key not in _sec:                            # the cuts of one slab share its section
+            _sec[key] = T.sketch_section(sh, AXN[a], key[1])   # plane_axes order, as the cut sketches
+        reg = _sec[key]
+        if reg is None:
+            return 1.0
+        # a real bite, thicker than the modifiers: sections ignore rounds and chamfers, and a sliver along an
+        # edge is theirs to take (the refine pass sizes them)
+        thick = max([tol] + [float(x["size"]) for x in sh if x["op"] in ("round", "chamfer")])
+        b = reg.intersection(g)
+        return b.area * (min(f["length"], hi[a] - lo[a])) if b.buffer(-thick, join_style=2).area > 0 else 0.0
+    stacks = [feats]
+    ma = AXN.index(main)
+    if 1 < sum(f["op"] == "pad" and f.get("label", "").startswith("Level") for f in feats) <= 12:
+        # (a taller stack: its slab twin broke a step on the gate and cost 80 s to judge)
+        # a sloped or rounded level is covered, not cut at its mid-height; alone it overfills, so judged with the cuts
+        slabs = [{"op": "pad", "label": f"Level {k + 1}.{j + 1}", "axis": main, "at": round(z0, 4),
+                  "length": round(z1 - z0, 4), "loops": _loops(main, g, tol)}
+                 for k, (z0, z1) in enumerate(scan(ma)) for j, g in enumerate(_polys(slab_region(m, ma, z0, z1)))
+                 if g.area > 4 * tol * tol]
+        stacks.append(slabs + [f for f in feats if not (f["op"] == "pad" and f.get("label", "").startswith("Level"))])
+    occ = T.occupancy(m, m.bounds, n=60) if len(stacks) > 1 else None
+
+    _sec = {}
+
+    def measure(t):
+        return fit(t, iou=True)
+
+    def stack_trial(st):
+        """One main stack with the cuts that bite on it: (score, explained, broken, iou, tree, kept cuts).
+        The biggest bites only (MAX_CUTS): a trial's compile grows with its features, 72 on the gate cost 150 s."""
+        import time
+        c1 = time.time()
+        bites = [(bite(st, a, g, f), i) for i, (f, a, g) in enumerate(cuts)]
+        top = sorted(i for b, i in sorted(bites, reverse=True)[:MAX_CUTS] if b > 0)
+        keep = [dict(cuts[i][0], loops=_loops(cuts[i][0]["axis"], cuts[i][2], tol)) for i in top]
+        t = with_(st, keep)
+        c2 = time.time()
+        r = measure(t)
+        print(f"[ct_scan trial] bites {c2 - c1:.1f} s ({len(_sec)} sections), {len(keep)} kept, "
+              f"measure {time.time() - c2:.1f} s -> {r}", file=sys.stderr, flush=True)
+        return (*r, t, keep)
+
+    import time
+    for st in stacks:                                  # compiled here once: the forked trials inherit the prefix
+        T.compile_tree(with_(st, []), tol)             # cache instead of each rebuilding the stack (gate: 120 s+)
+    hb = _fork_start(measure, tree)                    # the base and every stack at once: independent trials
+    hs = [_fork_start(stack_trial, st) for st in stacks]
+    end = time.time() + 120.0
+    base = _fork_collect(hb, end, default=(-1.0, 0.0, 99, 0.0))
+    kb = base[3] if occ is not None else base[0]
+    best, first = None, None
+    for h in hs:
+        r = _fork_collect(h, end)
+        if r is None:
+            continue
+        first = first or r[5]
+        key = r[3] if occ is not None else r[0]
+        # volume overlap decides between stacks (a slope's slab projection fills the cavity, part 2)
+        if r[2] <= base[2] and r[1] > base[1] - 0.005 and key > kb and (best is None or key > best[0]):
+            best = (key, r[4])
+    if best is not None:
+        feats[:] = best[1]["features"]
+    elif first:                                        # one cut at a time, each kept only if the match improves
+        for f in first[:24]:
+            trial = with_(feats, [f])
+            sc = _forked(fit, trial, default=(-1.0, 0.0, 99))
+            if sc[2] <= base[2] and sc[0] > base[0] + 0.001:
+                feats[:] = trial["features"]
+                base = (*sc, base[3])
     _ids(tree, keep_refs=True)
+    print(f"[ct_scan] {__import__('time').time() - _t0:.1f} s, {len(cuts)} cuts scanned, "
+          f"{sum(f.get('label', '').startswith('Cut on') for f in feats)} kept, {len(stacks)} stacks", file=sys.stderr, flush=True)
     return tree
 
 
-def _forked(fn, *args, default=None):
-    """fn(*args) in a forked child: OCCT's fillet builder can SIGSEGV on a trial tree (part 23),
-    and a crash must only reject that candidate. Returns `default` if the child dies."""
+def _fork_start(fn, *args):
+    """fn(*args) in a forked child; returns a handle for _fork_collect. Children started together run in parallel."""
     import os
     import pickle
     r, w = os.pipe()
@@ -245,10 +373,37 @@ def _forked(fn, *args, default=None):
         finally:
             os._exit(0)
     os.close(w)
-    with os.fdopen(r, "rb") as f:
-        data = f.read()
+    return pid, r
+
+
+def _fork_collect(handle, end, default=None):
+    """The child's result, or `default` if it died or is still running at time `end` (then killed)."""
+    import os
+    import pickle
+    import select
+    import signal
+    import time
+    pid, r = handle
+    data = b""
+    with os.fdopen(r, "rb", buffering=0) as f:
+        while (left := end - time.time()) > 0 and select.select([f], [], [], left)[0]:
+            chunk = f.read(1 << 16)
+            if not chunk:
+                break
+            data += chunk
+        else:
+            os.kill(pid, signal.SIGKILL)
+            print("[propose] trial over its time: rejected", file=sys.stderr, flush=True)
+            data = b""
     os.waitpid(pid, 0)
     return pickle.loads(data) if data else default
+
+
+def _forked(fn, *args, default=None, timeout=90.0):
+    """fn(*args) in a forked child: OCCT's fillet builder can SIGSEGV on a trial tree (part 23) or never return
+    (the gate), and either must only reject that candidate."""
+    import time
+    return _fork_collect(_fork_start(fn, *args), time.time() + timeout, default)
 
 
 def Polygon_area(ring):
@@ -257,10 +412,10 @@ def Polygon_area(ring):
 
 
 def finish(tree, m, tol):
-    """The deterministic passes after the base bodies: through cuts sketched on the other planes,
+    """The deterministic passes after the base bodies: the orthogonal-plane scans (ct_scan),
     partial-depth pockets/bosses on any plane, residual cylinders (holes/bosses on any principal
     axis), each kept only if the match improves, then modifier sizes fitted. Edits tree in place."""
-    side_cuts(tree, m, tol)
+    ct_scan(tree, m, tol)
     import plan as PL                                  # plan imports this module: import here
     # partial-depth features on any plane: where model and mesh volumes disagree, a pocket or boss
     # across the best axis over its own range (snapped to flat faces); ran only after the planner

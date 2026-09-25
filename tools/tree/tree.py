@@ -431,6 +431,58 @@ def section_region(mesh, axis, h):
     return acc.buffer(0)
 
 
+def loop_polygon(loop):
+    """A sketch loop as a closed 2D point list (arcs and circles sampled)."""
+    pts = []
+    for s in loop:
+        if s["t"] == "line":
+            pts.append(s["p"][0])
+        elif s["t"] == "arc":
+            pts.extend(_arc_pts(*s["p"])[:-1].tolist())
+        else:
+            t = np.linspace(0, 2 * np.pi, 97)[:-1]
+            pts.extend(np.c_[s["c"][0] + s["r"] * np.cos(t), s["c"][1] + s["r"] * np.sin(t)].tolist())
+    return pts
+
+
+def sketch_section(feats, axis, h):
+    """The section at `axis` = h of the pads and pockets alone (modifiers ignored), exact and in 2D: a prism along
+    that axis cuts as its sketch, one along another axis as its sketch's chords at h swept over its range. Coordinates
+    are the two other axes in index order. 0.5 s an OCCT section on the gate's layer stack, milliseconds here."""
+    from shapely.geometry import LineString, Polygon, box
+    from shapely.ops import unary_union
+    k = AX[axis]
+    P, Q = [i for i in range(3) if i != k]
+    acc = Polygon()
+    for f in feats:
+        if f["op"] not in ("pad", "pocket") or not f.get("loops"):
+            continue
+        b = AX[f["axis"]]
+        z0, z1 = (-BIG, BIG) if f["length"] == "through" else (f["at"], f["at"] + float(f["length"]))
+        R = Polygon(loop_polygon(f["loops"][0]), [loop_polygon(lp) for lp in f["loops"][1:]]).buffer(0)
+        mu, mv = UV[f["axis"]]
+        if b == k:
+            if not z0 <= h <= z1:
+                continue
+            piece = R if (mu, mv) == (P, Q) else Polygon([(y, x) for x, y in R.exterior.coords],
+                                                         [[(y, x) for x, y in r.coords] for r in R.interiors])
+        else:
+            line = LineString([(h, -BIG), (h, BIG)]) if mu == k else LineString([(-BIG, h), (BIG, h)])
+            w = mv if mu == k else mu                  # the in-sketch coordinate along the chord
+            rects = []
+            for seg in getattr(R.intersection(line), "geoms", [R.intersection(line)]):
+                if seg.is_empty or seg.geom_type != "LineString":
+                    continue
+                c = np.asarray(seg.coords)[:, 1 if mu == k else 0]
+                w0, w1 = float(c.min()), float(c.max())
+                rects.append(box(w0, z0, w1, z1) if (w, b) == (P, Q) else box(z0, w0, z1, w1))
+            if not rects:
+                continue
+            piece = unary_union(rects)
+        acc = acc.union(piece) if f["op"] == "pad" else acc.difference(piece)
+    return acc
+
+
 def solid_region(shape, axis, h, defl=0.02):
     return _solid_region(shape, axis, h, defl)[0]
 
