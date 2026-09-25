@@ -305,6 +305,9 @@ def _compile_body(tree, tol=None):
         while len(_PREFIX) > _PREFIX_MAX:
             _PREFIX.pop(next(iter(_PREFIX)))
     if shape is not None:
+        if not BRepCheck_Analyzer(shape).IsValid():    # near-coincident faces (part 6's slabs): unifying an invalid
+            notes["result"] = "invalid solid: faces not unified"   # solid blew past 10 GB; checked once, not per
+            return shape, notes                                     # boolean (that cost the gate ~30 s)
         u = ShapeUpgrade_UnifySameDomain(shape, True, True, True); u.Build(); shape = u.Shape()
     return shape, notes
 

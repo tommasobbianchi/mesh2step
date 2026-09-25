@@ -80,6 +80,13 @@ def sketch_axis(m):
     return int(np.argmax([score(k) for k in range(3)]))
 
 
+def _span(z0, z1):
+    """A level's length from its rounded ends: rounding at and length apart leaves 1e-4 gaps between stacked
+    levels (177.7892 + 3.1476 vs 180.9369), OCCT keeps face-touching solids apart, and part 1 compiled to 4
+    solids whose buried faces the deviation sampled as 29 % 'extra' surface."""
+    return round(round(z1, 4) - round(z0, 4), 4)
+
+
 def main_extrusion(m, stl):
     R = reverse.reverse(stl, axis=sketch_axis(m))
     axis, ax = R["axis"], AXN.index(R["axis"])
@@ -89,7 +96,7 @@ def main_extrusion(m, stl):
         for k, lv in enumerate(R["levels"]):
             for j, sh in enumerate(lv["shapes"]):
                 feats.append({"op": "pad", "label": f"Level {k + 1}" + (f".{j + 1}" if len(lv["shapes"]) > 1 else ""),
-                              "axis": axis, "at": round(lv["z0"], 4), "length": round(lv["z1"] - lv["z0"], 4),
+                              "axis": axis, "at": round(lv["z0"], 4), "length": _span(lv["z0"], lv["z1"]),
                               "loops": [loop_prims(axis, sh["outer"])] + [loop_prims(axis, h) for h in sh["holes"]]})
         return feats
     feats.append({"op": "pad", "label": "Base extrusion", "axis": axis, "at": round(R["z0"], 4),
@@ -304,7 +311,7 @@ def ct_scan(tree, m, tol):
         # (a taller stack: its slab twin broke a step on the gate and cost 80 s to judge)
         # a sloped or rounded level is covered, not cut at its mid-height; alone it overfills, so judged with the cuts
         slabs = [{"op": "pad", "label": f"Level {k + 1}.{j + 1}", "axis": main, "at": round(z0, 4),
-                  "length": round(z1 - z0, 4), "loops": _loops(main, g, tol)}
+                  "length": _span(z0, z1), "loops": _loops(main, g, tol)}
                  for k, (z0, z1) in enumerate(scan(ma)) for j, g in enumerate(_polys(slab_region(m, ma, z0, z1)))
                  if g.area > 4 * tol * tol]
         stacks.append(slabs + [f for f in feats if not (f["op"] == "pad" and f.get("label", "").startswith("Level"))])
@@ -410,6 +417,59 @@ def _fork_collect(handle, end, default=None):
     return pickle.loads(data) if data else default
 
 
+def _fork_stream(fn, *args):
+    """fn(emit, *args) in a forked child; each emit(obj) sends a result as it becomes available (a raw candidate
+    first, then its finished version). _fork_latest reads the last complete one."""
+    import os
+    import pickle
+    import struct
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+
+        def emit(obj):
+            b = pickle.dumps(obj)
+            os.write(w, struct.pack("<Q", len(b)))
+            view = memoryview(b)
+            while view:
+                view = view[os.write(w, view):]
+        try:
+            fn(emit, *args)
+        finally:
+            os._exit(0)
+    os.close(w)
+    return pid, r
+
+
+def _fork_latest(handle, end, need=1):
+    """The last result a _fork_stream child emitted by time `end`, or None. Waits past `end` for nothing; once it
+    holds `need` results it stops early only when the child is done. The child is killed if still running."""
+    import os
+    import pickle
+    import select
+    import signal
+    import struct
+    import time
+    pid, r = handle
+    buf, got, done = b"", [], False
+    with os.fdopen(r, "rb", buffering=0) as f:
+        while (left := end - time.time()) > 0 and select.select([f], [], [], left)[0]:
+            chunk = f.read(1 << 16)
+            if not chunk:
+                done = True
+                break
+            buf += chunk
+            while len(buf) >= 8 and len(buf) >= 8 + struct.unpack("<Q", buf[:8])[0]:
+                n = struct.unpack("<Q", buf[:8])[0]
+                got.append(pickle.loads(buf[8:8 + n]))
+                buf = buf[8 + n:]
+    if not done:
+        os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return got[-1] if got else None
+
+
 def _forked(fn, *args, default=None, timeout=90.0):
     """fn(*args) in a forked child: OCCT's fillet builder can SIGSEGV on a trial tree (part 23) or never return
     (the gate), and either must only reject that candidate."""
@@ -422,11 +482,173 @@ def Polygon_area(ring):
     return Polygon(ring).area
 
 
-def finish(tree, m, tol):
-    """The deterministic passes after the base bodies: the orthogonal-plane scans (ct_scan),
+PLANE = {"X": "YZ", "Y": "XZ", "Z": "XY"}
+
+
+def wall_heights(m, a, min_frac=2e-3):
+    """Slab boundaries along axis a: the flat faces across a (reverse.level_heights) and where the walls parallel
+    to a start and stop. A slab's outline holds only while those walls run through it, and a slope ends a wall
+    without any flat face across a: part 5's end wedge and part 2's sloped channel ran past the slope and the
+    body behind filled their outline (IoU 0.88 and 0.89 without these boundaries, 0.98 with)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    lo, hi = m.bounds
+    wall = np.abs(m.face_normals[:, a]) < 0.02
+    adj = m.face_adjacency
+    keep = wall[adj[:, 0]] & wall[adj[:, 1]] & (m.face_adjacency_angles < np.radians(20))
+    n = len(m.faces)
+    _, lab = connected_components(coo_matrix((np.ones(keep.sum()), (adj[keep, 0], adj[keep, 1])), shape=(n, n)),
+                                  directed=False)
+    ends = []
+    for c in np.unique(lab[wall]):
+        idx = np.where((lab == c) & wall)[0]
+        if m.area_faces[idx].sum() >= min_frac * m.area:
+            z = m.vertices[m.faces[idx].ravel()][:, a]
+            ends += [float(z.min()), float(z.max())]
+    sil = reverse.silhouette(np.asarray(m.triangles, float), a)
+    zs = sorted(set(reverse.level_heights(m, a, lo, hi, 1e-3 * sil.area)) | set(ends))
+    H = float(hi[a] - lo[a])
+    out = [zs[0]]
+    for z in zs[1:]:
+        if z - out[-1] > 2e-3 * H:
+            out.append(z)
+    out[0], out[-1] = float(lo[a]), float(hi[a])
+    return out
+
+
+def safe_loops(axis, g, tol, f):
+    """Sketch loops for polygon g whose prism OCCT accepts: fitted lines/arcs; else plain segments (deduplicated,
+    collinear points and zero-width spikes dropped: part 6); else g opened and closed by tol/50 (a hole touching
+    the outline at a point is valid in shapely, not in OCCT: part 4)."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    def ok(lp):
+        try:
+            return BRepCheck_Analyzer(T.prism(dict(f, loops=lp))).IsValid()
+        except Exception:                               # noqa: BLE001 -- a loop that does not close
+            return False
+
+    def seg(ring):
+        P = [tuple(round(float(x), 4) for x in _uv(axis, [q])[0]) for q in list(ring.coords)[:-1]]
+        P = [q for i, q in enumerate(P) if q != P[i - 1]]
+        changed = True
+        while changed and len(P) > 3:
+            changed = False
+            for i in range(len(P)):
+                a, b, c = np.array(P[i - 1]), np.array(P[i]), np.array(P[(i + 1) % len(P)])
+                if abs(np.cross(b - a, c - b)) < 1e-6 * max(np.linalg.norm(b - a) * np.linalg.norm(c - b), 1e-12):
+                    P.pop(i)
+                    changed = True
+                    break
+        return [{"t": "line", "p": [list(P[i]), list(P[(i + 1) % len(P)])]} for i in range(len(P))]
+
+    def segs(h):
+        return [seg(h.exterior)] + [seg(r) for r in h.interiors if Polygon_area(r) > 4 * tol * tol]
+
+    g = g.simplify(tol / 20, preserve_topology=True)
+    for make in (lambda: _loops(axis, g, tol), lambda: segs(g)):
+        lp = make()
+        if ok(lp):
+            return lp
+    h = g.buffer(-tol / 50, join_style=2).buffer(tol / 50, join_style=2)
+    return segs(max(_polys(h), key=lambda x: x.area) if not h.is_empty else g)
+
+
+def _coord_snap(polys, tol):
+    """A function snapping the axis-parallel walls of these outlines to shared coordinates. Each slab's outline
+    comes from its own projection, so a wall two slabs share lands at 66.3516 in one and 66.3517 in the next, and
+    fusing near-coincident walls left invalid slivers (part 6: 10 steps). Only coordinates of axis-parallel edges
+    make the clusters (all vertices chain through the dense points of an arc and bend it), and only vertices within
+    tol/20 of a cluster move."""
+    from shapely.ops import transform
+    eps = tol / 20
+    xs, ys = [], []
+    for g in polys:
+        for r in [g.exterior, *g.interiors]:
+            c = np.asarray(r.coords)
+            d = np.diff(c, axis=0)
+            vx = np.abs(d[:, 0]) < 1e-6 * tol + 1e-9      # an edge along the second axis: its x is a wall
+            vy = np.abs(d[:, 1]) < 1e-6 * tol + 1e-9
+            xs += c[:-1][vx, 0].tolist()
+            ys += c[:-1][vy, 1].tolist()
+
+    def reps(vals):
+        vals = np.sort(np.asarray(vals))
+        if not len(vals):
+            return vals
+        cut = np.r_[0, np.where(np.diff(vals) > eps)[0] + 1, len(vals)]
+        return np.round(np.array([vals[i:j].mean() for i, j in itertools.pairwise(cut)]), 4)
+
+    rx, ry = reps(xs), reps(ys)
+
+    def one(v, r):
+        v = np.asarray(v, float)
+        if not len(r):
+            return v
+        i = np.clip(np.searchsorted(r, v), 1, len(r) - 1) if len(r) > 1 else np.zeros(len(v), int)
+        near = r[i] if len(r) == 1 else np.where(np.abs(r[i] - v) < np.abs(r[i - 1] - v), r[i], r[i - 1])
+        return np.where(np.abs(near - v) < eps, near, v)
+
+    return lambda g: transform(lambda x, y: (one(x, rx), one(y, ry)), g).buffer(0)
+
+
+def three_planes(m, tol, snap=None, mid=False):
+    """The part sketched on three planes and intersected (the owner: 'reconstruct the object from 3 planes and
+    intersect that'). Along each axis the part is cut into slabs (wall_heights); each slab's outline seen along that
+    axis (slab_region) is a sketch over that range. The first axis' slabs are pads; on the two others, the outline's
+    complement in the bounding rectangle is a pocket: cutting away what lies outside every view IS the intersection.
+    Consecutive slabs with the same outline are one sketch. Hollows no view can see are left to finish()."""
+    from shapely.geometry import box
+    lo, hi = m.bounds
+    first = sketch_axis(m)
+    feats = []
+    for a in [first] + [k for k in range(3) if k != first]:
+        axis = AXN[a]
+        u, v = reverse.plane_axes(a)
+        rect = box(lo[u] - 2 * tol, lo[v] - 2 * tol, hi[u] + 2 * tol, hi[v] + 2 * tol)
+        zs = wall_heights(m, a)
+        slabs = []
+        for z0, z1 in itertools.pairwise(zs):
+            if mid and a == first:                     # the first view from mid-slab sections: a round along a
+                reg = reverse._region(reverse.level_section(m, a, (z0 + z1) / 2))   # curved edge (part 4's clamp
+                reg = reg if reg is not None else slab_region(m, a, z0, z1)          # arcs) no view can trim back
+            else:
+                reg = slab_region(m, a, z0, z1)
+            if slabs and slabs[-1][2].symmetric_difference(reg).area < 0.25 * tol * max(reg.length, tol):
+                slabs[-1][1] = z1                      # the same outline continues: one sketch, no near-coincident faces
+            else:
+                slabs.append([z0, z1, reg])
+        fix = _coord_snap([g for _, _, reg in slabs for g in _polys(reg)], tol) if snap else (lambda g: g)
+        for k, (z0, z1, reg) in enumerate(slabs):
+            reg = fix(reg)
+            if a == first:
+                parts, at, length, op = _polys(reg), round(z0, 4), _span(z0, z1), "pad"
+            else:
+                e0 = z0 - (2 * tol if k == 0 else 0)
+                e1 = z1 + (2 * tol if k == len(slabs) - 1 else 0)
+                parts, at, length, op = (_polys(rect.difference(reg.buffer(tol / 4, join_style=2))), round(e0, 4),
+                                         round(e1 - e0, 4), "pocket")
+            for j, g in enumerate(x for x in parts if x.area > tol * tol):
+                f = {"op": op, "label": f"Sketch on {PLANE[axis]}, slab {k + 1}" + (f".{j + 1}" if j else ""),
+                     "axis": axis, "at": at, "length": length}
+                f["loops"] = safe_loops(axis, g, tol, f)
+                feats.append(f)
+    tree = {"units": "mm", "features": feats}
+    _ids(tree)
+    if snap is None:                                   # walls snapped only when the plain outlines break a boolean:
+        _, notes = T.compile_tree(tree, tol)           # snapping bends other outlines (part 5 split in two solids)
+        if T.broken_steps(notes):
+            return three_planes(m, tol, snap=True, mid=mid)
+    return tree
+
+
+def finish(tree, m, tol, scan=True):
+    """The deterministic passes after the base bodies: the orthogonal-plane scans (ct_scan; not on a three_planes
+    tree, which has every view already),
     partial-depth pockets/bosses on any plane, residual cylinders (holes/bosses on any principal
     axis), each kept only if the match improves, then modifier sizes fitted. Edits tree in place."""
-    ct_scan(tree, m, tol)
+    if scan:
+        ct_scan(tree, m, tol)
     import plan as PL                                  # plan imports this module: import here
     # partial-depth features on any plane: where model and mesh volumes disagree, a pocket or boss
     # across the best axis over its own range (snapped to flat faces); ran only after the planner

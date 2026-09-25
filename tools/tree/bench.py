@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CORPUS = Path.home() / "corpora" / "tree_bench"
-GATE_BUDGET_S = 220                                     # + ~40-60 s live planner: margin under the 300 s goal; 180 -> 220 on 2026-09-25 for the mandatory orthogonal-plane scans (ct_scan, ~20 s on the critical path)
+GATE_BUDGET_S = 240                                     # + ~40-60 s live planner: at the 300 s goal. 180 -> 220 (2026-09-25, ct_scan), -> 240 same day: the three-plane candidate runs beside the planner path (~15 s of shared CPU/memory, never a wait)
 PARTS = {                                               # floors: measured baseline minus a sampling margin
     "gate": {"stl": "gate.stl", "replay": HERE / "bench" / "gate_plans.json", "chosen": "planner",
              "iou": 0.89, "explained": 0.77},

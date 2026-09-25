@@ -30,6 +30,9 @@ GOOD = 0.97
 # from the start: past it the planner is dropped and the proposal stands, so an upload is
 # answered in time whatever the part (SV08 shroud: planner 6 min, and hopeless)
 PLANNER_DEADLINE_S = 240
+THREE_PLANES_GRACE_S = 3                              # the three-plane candidate's wait past the other paths
+THREE_PLANES_EARLY_S = 200                            # ... or until this, from the body's start, when they end sooner
+THREE_PLANES_EARLY_SMALL_S = 30                       # ... for a small body (proposal only)
 
 
 def measure(tree, m, tol, occ):
@@ -40,6 +43,27 @@ def measure(tree, m, tol, occ):
     iou = T.volume_iou(m, s, tol, occ)
     return {"score": round(iou + 0.5 * (d["explained"] - d["extra"]), 4), "iou": round(iou, 4),
             "explained": round(d["explained"], 4), "extra": round(d["extra"], 4), "notes": notes}
+
+
+def _three_planes_child(emit, m, tol):
+    """The three-plane reconstruction, emitted raw then finished (no ct_scan: it has every view already). Its first
+    view from slab projections and from mid-slab sections, the better kept: a slope another view trims vs a round
+    along a curved edge none can (parts 3 and 4 want opposite ones)."""
+    os.nice(10)                                        # spare CPU only: it slowed the gate's planner path 50 s
+    np.random.seed(2)
+    occ = T.occupancy(m, m.bounds, n=60)
+    best = None
+    for mid in (False, True):
+        t = PR.three_planes(m, tol, mid=mid)
+        r = measure(t, m, tol, occ)
+        if best is None or r["score"] > best[1]["score"]:
+            best = (t, dict(r, mid=mid, finished=False))
+            emit(best)
+    t = best[0]
+    PR.finish(t, m, tol, scan=False)
+    r = measure(t, m, tol, occ)
+    if r["score"] > best[1]["score"]:
+        emit((t, dict(r, mid=best[1]["mid"], finished=True)))
 
 
 def _planner_child(stl, out, q):
@@ -69,7 +93,9 @@ def _start_planner(stl, out):
 def analyse_one(stl, out, t0, planner=True):
     """One closed body's mesh -> (tree, info): the free proposal, the planner when useful
     (forked early for a layer stack), the better tree kept. ANALYSE_NO_PLANNER=1: free path only."""
+    full = planner                                     # a body worth the full analysis (bodies(): >= 1 % of volume)
     planner = planner and not os.environ.get("ANALYSE_NO_PLANNER")
+    tb = time.time()                                   # this body's start: t0 is the whole mesh's
     m = trimesh.load(stl, force="mesh")
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
     tree = {"units": "mm", "features": PR.main_extrusion(m, stl)}
@@ -80,6 +106,11 @@ def analyse_one(stl, out, t0, planner=True):
     q, child = None, None
     if layered and planner:
         q, child = _start_planner(stl, out)
+    # the part sketched on three planes and intersected (PR.three_planes), built and finished in a forked child
+    # while the proposal finishes here: an OCCT crash or runaway there only drops the candidate
+    # raw and finished side by side: the finishing passes on a 90-feature tree took 730 s (part 6) where the raw
+    # build already matched 98.8 %; the finished one is taken only if it lands in time
+    h3 = PR._fork_stream(_three_planes_child, m, tol)
     PR.finish(tree, m, tol)
     occ = T.occupancy(m, m.bounds, n=60)
     info = {"tol": tol, "proposal": measure(tree, m, tol, occ), "planner": None, "chosen": "proposal",
@@ -109,6 +140,17 @@ def analyse_one(stl, out, t0, planner=True):
                 better = info["planner"]["score"] > info["proposal"]["score"]
                 if better or (layered and info["planner"].get("iou", 0) >= 0.9):
                     tree, info["chosen"] = t2, "planner"
+    # waited for only a short grace past the proposal and planner paths: it must not extend the wall (the gate
+    # waited 300 s for it, 307 s against a 220 s budget); a part done early gives it until THREE_PLANES_EARLY_S
+    early = THREE_PLANES_EARLY_S if full else THREE_PLANES_EARLY_SMALL_S   # per body: the gate's small bodies
+    grace = max(THREE_PLANES_GRACE_S, early - (time.time() - tb))           # each waited to 200 s from t0
+    r3 = PR._fork_latest(h3, time.time() + grace)
+    print(f"[analyse] three-plane at {time.time() - tb:.0f} s: "
+          f"{'finished' if r3 and r3[1].get('finished') else 'raw' if r3 else 'not ready'}", file=sys.stderr, flush=True)
+    info["three_planes"] = r3[1] if r3 else {"error": "crashed or not ready in time"}
+    held = info["planner"] if info["chosen"] == "planner" else info["proposal"]
+    if r3 and r3[1].get("score", -1) > held.get("score", -1):
+        tree, info["chosen"] = r3[0], "three_planes"
     return tree, info
 
 
