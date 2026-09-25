@@ -200,7 +200,10 @@ def slab_region(m, a, z0, z1):
     for h in (z0 + 1e-4 * (z1 - z0), z1 - 1e-4 * (z1 - z0)):
         r = reverse._region(reverse.level_section(m, a, h))
         if r is not None:
-            g = g.union(r)
+            try:
+                g = g.union(r.buffer(0))
+            except shapely.errors.GEOSException:       # a self-touching section loop (parts 12, 20, 35): snap-rounded
+                g = shapely.union(g.buffer(0), r.buffer(0), grid_size=1e-6 * float(np.linalg.norm(m.extents)))
     return g
 
 
