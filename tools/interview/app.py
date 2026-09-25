@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 HERE = Path(__file__).resolve().parent
@@ -497,6 +497,26 @@ def build_status(sid: str):
 
 # ---- grading: a reviewer grades the corpus trees (structure, not only fit) --------------------------
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
+
+
+def _tailnet_owner():
+    try:
+        st = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10).stdout)
+        return st["User"][str(st["Self"]["UserID"])]["LoginName"]
+    except Exception:                                  # noqa: BLE001 -- no tailscale: everyone is the owner
+        return None
+
+
+OWNER = _tailnet_owner()
+
+
+def _grade_file(part, request):
+    """Each grader's own file: `tailscale serve` names the visitor (Tailscale-User-Login), so a colleague on a
+    shared node never overwrites the owner's grade. The owner (or a header-less local call) keeps <part>.json."""
+    who = request.headers.get("Tailscale-User-Login") or ""
+    if not who or who == OWNER:
+        return GRADE_DIR / "grades" / f"{part}.json", "owner"
+    return GRADE_DIR / "grades" / f"{part}@{''.join(c if c.isalnum() or c in '.-_' else '_' for c in who)}.json", who
 GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
 
 
@@ -557,7 +577,7 @@ def grade_page():
 
 
 @app.get("/api/grade/parts")
-def grade_parts():
+def grade_parts(request: Request):
     out = []
     for f in sorted(GRADE_CORPUS.glob("*.stl"), key=lambda x: (len(x.stem), x.stem)):
         tree, info, _ = _grade_tree(f.stem)
@@ -566,7 +586,7 @@ def grade_parts():
         p = info.get("proposal") or {}
         chosen_planner = str(info.get("chosen", "")).startswith("planner")
         m = (info.get("planner") or {}) if chosen_planner else p
-        g = GRADE_DIR / "grades" / f"{f.stem}.json"
+        g, _ = _grade_file(f.stem, request)
         out.append({"part": f.stem, "features": len(tree["features"]), "chosen": info.get("chosen"),
                     "iou": m.get("iou"), "explained": m.get("explained"),
                     "grade": json.loads(g.read_text()).get("overall") if g.exists() else None})
@@ -574,7 +594,7 @@ def grade_parts():
 
 
 @app.get("/api/grade/part/{part}")
-def grade_part(part: str):
+def grade_part(part: str, request: Request):
     if not part.isalnum():
         raise HTTPException(400, "bad part")
     cache = GRADE_DIR / "view" / f"{part}.json"
@@ -597,8 +617,8 @@ def grade_part(part: str):
     v = json.loads(cache.read_text())
     if v.get("v") != 2:                                # an older cache without step geometry: rebuild once
         cache.unlink()
-        return grade_part(part)
-    g = GRADE_DIR / "grades" / f"{part}.json"
+        return grade_part(part, request)
+    g, _ = _grade_file(part, request)
     v.update(part=part, info={k: info.get(k) for k in ("chosen", "cost_usd", "seconds", "layered")},
              proposal=info.get("proposal"), planner=info.get("planner"),
              grade=json.loads(g.read_text()) if g.exists() else None)
@@ -606,8 +626,7 @@ def grade_part(part: str):
 
 
 @app.post("/api/grade/{part}")
-def grade_save(part: str, overall: int = Form(...), steps_json: str = Form("{}"), note: str = Form(""),
-               reviewer: str = Form("owner")):
+def grade_save(request: Request, part: str, overall: int = Form(...), steps_json: str = Form("{}"), note: str = Form("")):
     if not part.isalnum() or not 1 <= overall <= 5:
         raise HTTPException(400, "bad grade")
     marks = json.loads(steps_json)
@@ -615,13 +634,14 @@ def grade_save(part: str, overall: int = Form(...), steps_json: str = Form("{}")
         raise HTTPException(400, "bad step marks")
     import hashlib
     _, info, src = _grade_tree(part)                   # which tree was judged: trees are regenerated
-    rec = {"part": part, "overall": overall, "steps": marks, "note": note[:2000], "reviewer": reviewer[:40],
+    g, reviewer = _grade_file(part, request)
+    rec = {"part": part, "overall": overall, "steps": marks, "note": note[:2000], "reviewer": reviewer,
            "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "chosen": info.get("chosen"),
            "tree_sha1": hashlib.sha1(src.read_bytes()).hexdigest()[:12] if src else None,
            "tree_file": str(src) if src else None}
     d = GRADE_DIR / "grades"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{part}.json").write_text(json.dumps(rec, indent=1))
+    g.write_text(json.dumps(rec, indent=1))
     with open(d / "log.jsonl", "a") as fh:                # every grade kept, the file per part is the latest
         fh.write(json.dumps(rec) + "\n")
     return {"saved": True}
