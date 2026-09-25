@@ -499,7 +499,7 @@ def build_status(sid: str):
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
 
 
-GRADERS = ("tommaso", "andrea", "marc")              # the login page's names; no password (tailnet-only page)
+GRADERS = ("tommaso", "andrea", "marc", "mirko", "tommym", "davide", "daniel", "carlo")              # the login page's names; no password (tailnet-only page)
 
 
 def _grader(request):
