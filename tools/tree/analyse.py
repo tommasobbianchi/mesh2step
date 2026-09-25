@@ -31,7 +31,7 @@ GOOD = 0.97
 # answered in time whatever the part (SV08 shroud: planner 6 min, and hopeless)
 PLANNER_DEADLINE_S = 240
 THREE_PLANES_GRACE_S = 3                              # the three-plane candidate's wait past the other paths
-THREE_PLANES_EARLY_S = 200                            # ... or until this, from the body's start, when they end sooner
+THREE_PLANES_EARLY_S = 260                            # ... or until this, from the body's start, when they end sooner
 THREE_PLANES_EARLY_SMALL_S = 30                       # ... for a small body (proposal only)
 
 
