@@ -223,12 +223,32 @@ def side_cuts(tree, m, tol, per_axis=8):
             k = next((i for i, f in enumerate(feats) if f["op"] in ("round", "chamfer")), len(feats))
             new = dict(cand, id=f"S{k}")
             trial = {"units": tree.get("units", "mm"), "features": [*feats[:k], new, *feats[k:]]}
-            sc, _ = fit(trial, base_broken)
+            sc, _ = _forked(fit, trial, base_broken, default=(-1.0, 0))
             if sc > base + 0.002:
                 feats.insert(k, new)
                 base = sc
     _ids(tree, keep_refs=True)
     return tree
+
+
+def _forked(fn, *args, default=None):
+    """fn(*args) in a forked child: OCCT's fillet builder can SIGSEGV on a trial tree (part 23),
+    and a crash must only reject that candidate. Returns `default` if the child dies."""
+    import os
+    import pickle
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        try:
+            os.write(w, pickle.dumps(fn(*args)))
+        finally:
+            os._exit(0)
+    os.close(w)
+    with os.fdopen(r, "rb") as f:
+        data = f.read()
+    os.waitpid(pid, 0)
+    return pickle.loads(data) if data else default
 
 
 def Polygon_area(ring):
