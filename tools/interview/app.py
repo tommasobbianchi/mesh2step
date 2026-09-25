@@ -496,7 +496,7 @@ def build_status(sid: str):
 
 
 # ---- grading: a reviewer grades the corpus trees (structure, not only fit) --------------------------
-GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v3")))
+GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v4")))
 GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
 
 

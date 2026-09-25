@@ -308,7 +308,6 @@ def ct_scan(tree, m, tol):
                  for k, (z0, z1) in enumerate(scan(ma)) for j, g in enumerate(_polys(slab_region(m, ma, z0, z1)))
                  if g.area > 4 * tol * tol]
         stacks.append(slabs + [f for f in feats if not (f["op"] == "pad" and f.get("label", "").startswith("Level"))])
-    occ = T.occupancy(m, m.bounds, n=60) if len(stacks) > 1 else None
 
     _sec = {}
 
@@ -331,8 +330,17 @@ def ct_scan(tree, m, tol):
         return (*r, t, keep)
 
     import time
-    for st in stacks:                                  # compiled here once: the forked trials inherit the prefix
-        T.compile_tree(with_(st, []), tol)             # cache instead of each rebuilding the stack (gate: 120 s+)
+    for i, st in enumerate(stacks):                    # compiled here once: the forked trials inherit the prefix
+        c0 = time.time()                               # cache instead of each rebuilding the stack (gate: 120 s+)
+        T.compile_tree(with_(st, []), tol)
+        if i == 0 and time.time() - c0 > 30:           # a tree this heavy cannot afford the trials (part 14: the
+            print(f"[ct_scan] base compile {time.time() - c0:.0f} s: scans skipped",   # compile alone, then three
+                  file=sys.stderr, flush=True)                                          # 120 s trials, 408 s)
+            return tree
+        if i == 0 and time.time() - c0 > 10:
+            stacks = stacks[:1]
+            break
+    occ = T.occupancy(m, m.bounds, n=60) if len(stacks) > 1 else None
     hb = _fork_start(measure, tree)                    # the base and every stack at once: independent trials
     hs = [_fork_start(stack_trial, st) for st in stacks]
     end = time.time() + 120.0
