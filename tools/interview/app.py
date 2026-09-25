@@ -495,6 +495,90 @@ def build_status(sid: str):
     return {k: v for k, v in b.items() if k != "step"}
 
 
+# ---- grading: a reviewer grades the corpus trees (structure, not only fit) --------------------------
+GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v2")))
+GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
+
+
+def _grade_tree(part):
+    for d in (GRADE_DIR / "out" / part, GRADE_DIR.parent / "results" / part):
+        if (d / "tree.json").exists():
+            info = json.loads((d / "analysis.json").read_text()) if (d / "analysis.json").exists() else {}
+            return json.loads((d / "tree.json").read_text()), info, d / "tree.json"
+    return None, {}, None
+
+
+@app.get("/grade")
+def grade_page():
+    return FileResponse(HERE / "grade.html")
+
+
+@app.get("/api/grade/parts")
+def grade_parts():
+    out = []
+    for f in sorted(GRADE_CORPUS.glob("*.stl"), key=lambda x: (len(x.stem), x.stem)):
+        tree, info, _ = _grade_tree(f.stem)
+        if tree is None:
+            continue
+        p = info.get("proposal") or {}
+        chosen_planner = str(info.get("chosen", "")).startswith("planner")
+        m = (info.get("planner") or {}) if chosen_planner else p
+        g = GRADE_DIR / "grades" / f"{f.stem}.json"
+        out.append({"part": f.stem, "features": len(tree["features"]), "chosen": info.get("chosen"),
+                    "iou": m.get("iou"), "explained": m.get("explained"),
+                    "grade": json.loads(g.read_text()).get("overall") if g.exists() else None})
+    return out
+
+
+@app.get("/api/grade/part/{part}")
+def grade_part(part: str):
+    if not part.isalnum():
+        raise HTTPException(400, "bad part")
+    cache = GRADE_DIR / "view" / f"{part}.json"
+    tree, info, src = _grade_tree(part)
+    if tree is None:
+        raise HTTPException(404, "no tree for that part")
+    if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:   # a newer tree: rebuild the view
+        m = trimesh.load(GRADE_CORPUS / f"{part}.stl", force="mesh")
+        tol = info.get("tol") or max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)
+        shape, notes = T.compile_tree(tree, tol)
+        V, F = T.tessellate(shape, tol / 2) if shape is not None else (np.zeros((0, 3)), np.zeros((0, 3), int))
+        owner = T.feature_faces(m, tree, shape, tol) if shape is not None else np.full(len(m.faces), -1)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "mesh_stl": base64.b64encode(m.export(file_type="stl")).decode(),
+            "solid_stl": base64.b64encode(trimesh.Trimesh(V, F, process=False).export(file_type="stl")).decode()
+            if len(F) else "", "face_feature": _b64(owner, np.int16), "steps": steps(tree), "notes": notes}))
+    v = json.loads(cache.read_text())
+    g = GRADE_DIR / "grades" / f"{part}.json"
+    v.update(part=part, info={k: info.get(k) for k in ("chosen", "cost_usd", "seconds", "layered")},
+             proposal=info.get("proposal"), planner=info.get("planner"),
+             grade=json.loads(g.read_text()) if g.exists() else None)
+    return v
+
+
+@app.post("/api/grade/{part}")
+def grade_save(part: str, overall: int = Form(...), steps_json: str = Form("{}"), note: str = Form(""),
+               reviewer: str = Form("owner")):
+    if not part.isalnum() or not 1 <= overall <= 5:
+        raise HTTPException(400, "bad grade")
+    marks = json.loads(steps_json)
+    if not isinstance(marks, dict) or any(v not in ("ok", "wrong", "unsure") for v in marks.values()):
+        raise HTTPException(400, "bad step marks")
+    import hashlib
+    _, info, src = _grade_tree(part)                   # which tree was judged: trees are regenerated
+    rec = {"part": part, "overall": overall, "steps": marks, "note": note[:2000], "reviewer": reviewer[:40],
+           "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "chosen": info.get("chosen"),
+           "tree_sha1": hashlib.sha1(src.read_bytes()).hexdigest()[:12] if src else None,
+           "tree_file": str(src) if src else None}
+    d = GRADE_DIR / "grades"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{part}.json").write_text(json.dumps(rec, indent=1))
+    with open(d / "log.jsonl", "a") as fh:                # every grade kept, the file per part is the latest
+        fh.write(json.dumps(rec) + "\n")
+    return {"saved": True}
+
+
 @app.get("/api/result/{sid}/{kind}")
 def result(sid: str, kind: str):
     b = (SESS.get(sid) or {}).get("build") or {}

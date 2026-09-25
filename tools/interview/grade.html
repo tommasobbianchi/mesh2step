@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mesh2step · tree grading</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
+</script>
+<style>
+  :root { --bg:#f4f2ec; --ink:#1d1c1a; --soft:#5b5953; --line:#d9d5ca; --card:#fff; --hi:#d9480f; --ok:#2e7d32; --bad:#c62828; --uns:#b7791f; --blue:#1f5f8b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui, sans-serif; background:var(--bg); color:var(--ink); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:17px; flex:1; } #progress { color:var(--soft); font-size:14px; }
+  main { flex:1; display:grid; grid-template-columns:200px minmax(0,1fr) 380px; gap:12px; padding:12px; min-height:0; }
+  #parts { overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:6px; }
+  #parts button { display:flex; width:100%; justify-content:space-between; gap:6px; padding:7px 9px; margin:2px 0; border:1px solid transparent; border-radius:8px; background:none; font:inherit; font-size:13px; cursor:pointer; text-align:left; }
+  #parts button.cur { border-color:var(--hi); background:#fbe6dc; }
+  #parts .g { font-weight:700; } #parts .m { color:var(--soft); font-size:12px; }
+  #view { position:relative; background:#e7e3d8; border:1px solid var(--line); border-radius:12px; overflow:hidden; min-height:300px; }
+  #view canvas { display:block; width:100%; height:100%; }
+  #modes { position:absolute; left:10px; top:10px; display:flex; gap:6px; z-index:2; }
+  #modes button, .seg button { min-height:34px; padding:0 12px; font:inherit; font-size:13px; border-radius:999px; border:1px solid var(--line); background:#faf9f5; cursor:pointer; }
+  #modes button[aria-pressed=true] { background:var(--ink); color:#f4f2ec; }
+  #stats { position:absolute; left:10px; bottom:10px; font-size:12px; color:var(--soft); background:#faf9f5cc; padding:4px 8px; border-radius:8px; }
+  aside { display:flex; flex-direction:column; gap:10px; min-height:0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  #steps { flex:1; overflow:auto; display:flex; flex-direction:column; gap:6px; }
+  .step { border:1px solid var(--line); border-radius:10px; padding:8px 10px; cursor:pointer; }
+  .step.on { border-color:var(--hi); background:#fbe6dc; }
+  .step .t { font-weight:600; font-size:14px; } .step small { display:block; color:var(--soft); margin:2px 0 6px; }
+  .seg { display:flex; gap:6px; }
+  .seg button[aria-pressed=true].ok { background:var(--ok); color:#fff; border-color:var(--ok); }
+  .seg button[aria-pressed=true].wrong { background:var(--bad); color:#fff; border-color:var(--bad); }
+  .seg button[aria-pressed=true].unsure { background:var(--uns); color:#fff; border-color:var(--uns); }
+  #overall button { width:44px; } #overall button[aria-pressed=true] { background:var(--blue); color:#fff; border-color:var(--blue); }
+  label.q { font-weight:600; font-size:14px; display:block; margin-bottom:6px; }
+  textarea { width:100%; min-height:64px; font:inherit; font-size:14px; padding:8px; border:1px solid #bdb8ab; border-radius:8px; }
+  #save { min-height:46px; border:0; border-radius:999px; background:var(--ink); color:#f4f2ec; font:inherit; font-weight:600; cursor:pointer; }
+  #save:disabled { opacity:.45; cursor:default; }
+  #msg { font-size:13px; color:var(--soft); min-height:18px; }
+  @media (max-width:1000px) { main { grid-template-columns:1fr; } #parts { max-height:160px; } #view { min-height:360px; } }
+</style>
+</head>
+<body>
+<header><h1>mesh2step · feature-tree grading <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="progress"></span></header>
+<main>
+  <nav id="parts" aria-label="Parts"></nav>
+  <div id="view"><div id="modes"></div><div id="stats"></div></div>
+  <aside>
+    <div class="card" id="steps" aria-label="Construction steps"></div>
+    <div class="card">
+      <label class="q" id="ovl">Would you model it this way? (keys 1–5)</label>
+      <div class="seg" id="overall" role="group" aria-labelledby="ovl"></div>
+      <div style="font-size:12px;color:var(--soft);margin-top:4px">1 wrong approach · 3 right idea, wrong details · 5 as I would</div>
+    </div>
+    <div class="card"><label class="q" for="note">Note (what is missing or wrong)</label><textarea id="note"></textarea></div>
+    <button id="save" disabled>Save &amp; next (Enter)</button>
+    <div id="msg" aria-live="polite"></div>
+  </aside>
+</main>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+const $ = (id) => document.getElementById(id);
+const view = $('view');
+let parts = [], cur = null, data = null, marks = {}, overall = null, mode = 'both';
+let mesh = null, solid = null, faceFeat = null, featIdx = {}, sel = null;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true }); view.append(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe7e3d8);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1e6); scene.add(camera);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9c978b, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(1, 2, 3); scene.add(sun);
+const head = new THREE.DirectionalLight(0xffffff, 1.1); head.position.set(0.3, 0.4, 1); camera.add(head);
+function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(view);
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+const b64 = (s, T) => new T(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)).buffer);
+function paint() {
+  if (!mesh) return;
+  const col = mesh.geometry.attributes.color;
+  for (let f = 0; f < faceFeat.length; f++) {
+    const hit = sel != null && faceFeat[f] === sel;
+    const c = hit ? [0.85, 0.28, 0.06] : [0.78, 0.76, 0.72];
+    for (let v = 0; v < 3; v++) col.setXYZ(f * 3 + v, c[0], c[1], c[2]);
+  }
+  col.needsUpdate = true;
+}
+function setMode(m) {
+  mode = m; document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.m === m));
+  if (mesh) mesh.visible = m !== 'rebuild';              // the mesh stays opaque: step highlights show on it
+  if (solid) { solid.visible = m !== 'mesh'; solid.material.transparent = m === 'both'; solid.material.opacity = m === 'both' ? 0.4 : 1;
+    solid.material.depthWrite = m !== 'both'; solid.material.needsUpdate = true; }
+}
+for (const [k, t] of [['mesh', 'Your mesh'], ['rebuild', 'Rebuild'], ['both', 'Both']]) {
+  const b = document.createElement('button'); b.dataset.m = k; b.textContent = t; b.addEventListener('click', () => setMode(k)); $('modes').append(b);
+}
+for (let i = 1; i <= 5; i++) {
+  const b = document.createElement('button'); b.textContent = i; b.dataset.v = i;
+  b.addEventListener('click', () => setOverall(i)); $('overall').append(b);
+}
+function setOverall(i) { overall = i; document.querySelectorAll('#overall button').forEach((b) => b.setAttribute('aria-pressed', +b.dataset.v === i)); $('save').disabled = false; }
+
+function show(d) {
+  for (const o of [mesh, solid]) if (o) { scene.remove(o); o.geometry.dispose(); }
+  const g = new STLLoader().parse(b64(d.mesh_stl, Uint8Array).buffer); g.computeBoundingSphere();
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3), 3));
+  mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, depthWrite: true }));
+  scene.add(mesh);
+  solid = null;
+  if (d.solid_stl) {
+    const sg = new STLLoader().parse(b64(d.solid_stl, Uint8Array).buffer);
+    solid = new THREE.Mesh(sg, new THREE.MeshStandardMaterial({ color: 0x1f5f8b, roughness: 0.5 })); scene.add(solid);
+  }
+  faceFeat = b64(d.face_feature, Int16Array); featIdx = {}; d.steps.forEach((s, i) => { featIdx[s.id] = i; });
+  const s = g.boundingSphere; controls.target.copy(s.center);
+  camera.position.copy(s.center.clone().add(new THREE.Vector3(1, 0.8, 1.2).normalize().multiplyScalar(s.radius * 3)));
+  camera.near = s.radius / 100; camera.far = s.radius * 100; camera.updateProjectionMatrix();
+  sel = null; paint(); setMode(mode);
+}
+function renderSteps(d) {
+  $('steps').replaceChildren(...d.steps.map((st, i) => {
+    const div = document.createElement('div'); div.className = 'step';
+    div.innerHTML = '<div class="t"></div><small></small><div class="seg" role="group"></div>';
+    div.querySelector('.t').textContent = `${st.id} · ${st.label}`; div.querySelector('small').textContent = st.text;
+    const seg = div.querySelector('.seg'); seg.setAttribute('aria-label', 'Is this step right?');
+    for (const [v, t] of [['ok', 'Right'], ['wrong', 'Wrong'], ['unsure', 'Unsure']]) {
+      const b = document.createElement('button'); b.className = v; b.textContent = t;
+      b.setAttribute('aria-pressed', marks[st.id] === v);
+      b.addEventListener('click', (e) => { e.stopPropagation(); marks[st.id] = v; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b)); });
+      seg.append(b);
+    }
+    div.addEventListener('click', () => { sel = sel === i ? null : i; document.querySelectorAll('.step').forEach((x, j) => x.classList.toggle('on', j === sel)); paint(); });
+    return div;
+  }));
+}
+async function load(p) {
+  cur = p; $('msg').textContent = 'Loading…'; $('save').disabled = true;
+  renderList();
+  const r = await fetch('api/grade/part/' + p);
+  if (!r.ok) { $('msg').textContent = 'Could not load: ' + (await r.text()); return; }
+  data = await r.json();
+  marks = data.grade?.steps || {}; overall = data.grade?.overall || null; $('note').value = data.grade?.note || '';
+  document.querySelectorAll('#overall button').forEach((b) => b.setAttribute('aria-pressed', +b.dataset.v === overall));
+  $('save').disabled = !overall;
+  show(data); renderSteps(data);
+  const m = String(data.info?.chosen || '').startsWith('planner') ? data.planner : data.proposal;
+  $('stats').textContent = `part ${p} · ${data.steps.length} steps · ${data.info?.chosen} · IoU ${m?.iou ?? '?'} · surface ${m?.explained ?? '?'}`
+    + (Object.keys(data.notes || {}).length ? ` · notes: ${Object.values(data.notes).join('; ')}` : '');
+  $('msg').textContent = '';
+}
+function renderList() {
+  const done = parts.filter((x) => x.grade).length;
+  $('progress').textContent = `${done} of ${parts.length} graded`;
+  $('parts').replaceChildren(...parts.map((x) => {
+    const b = document.createElement('button'); if (x.part === cur) b.className = 'cur';
+    b.innerHTML = '<span></span><span class="m"></span>';
+    b.firstChild.textContent = `part ${x.part}`; b.lastChild.innerHTML = x.grade ? `<span class="g">${x.grade}/5</span>` : `${x.features} st`;
+    b.addEventListener('click', () => load(x.part)); return b;
+  }));
+}
+async function save() {
+  if (!overall || !cur) return;
+  const fd = new FormData(); fd.append('overall', overall); fd.append('steps_json', JSON.stringify(marks)); fd.append('note', $('note').value);
+  const r = await fetch('api/grade/' + cur, { method: 'POST', body: fd });
+  if (!r.ok) { $('msg').textContent = 'Save failed: ' + (await r.text()); return; }
+  parts.find((x) => x.part === cur).grade = overall; $('msg').textContent = `Saved part ${cur}.`;
+  const i = parts.findIndex((x) => x.part === cur);
+  const next = parts.slice(i + 1).find((x) => !x.grade) || parts.find((x) => !x.grade);
+  if (next) load(next.part); else renderList();
+}
+$('save').addEventListener('click', save);
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.key >= '1' && e.key <= '5') setOverall(+e.key);
+  else if (e.key === 'Enter') save();
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const i = parts.findIndex((x) => x.part === cur) + (e.key === 'ArrowDown' ? 1 : -1);
+    if (parts[i]) load(parts[i].part);
+  }
+});
+(async () => {
+  parts = await (await fetch('api/grade/parts')).json();
+  renderList();
+  const first = parts.find((x) => !x.grade) || parts[0];
+  if (first) load(first.part); else $('msg').textContent = 'No trees to grade yet.';
+})();
+</script>
+</body>
+</html>
