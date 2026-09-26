@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import cells as C                                      # noqa: E402
 import evidence as E                                   # noqa: E402
+import finish as FN                                    # noqa: E402
 import solve as S                                      # noqa: E402
 import undo as U                                       # noqa: E402
 
@@ -57,6 +58,10 @@ def run(m, step, tol, ilp_s=60.0):
         PR.edge_mods(ft, m, tol)
         PR.prune(ft, m, tol)
         variants.append(("finished", ft))
+        et, _, flog = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))   # finishes from the evidence faces
+        variants.append(("evidence finishes", et))
+        bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol))     # and on top of the measured finishes
+        variants.append(("finished + evidence finishes", bt))
         for vn, t in variants:
             j, sc = j_exact(t, m, tol)
             log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),

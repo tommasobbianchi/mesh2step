@@ -191,6 +191,14 @@ def modifier_edges(shape, tree, mod, tol):
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.TopAbs import TopAbs_WIRE
+    if mod.get("near"):                                # evidence finish (tools/engine/finish.py): the sharp edges a
+        P = np.asarray(mod["near"], float)             # round of radius r replaced lie within ~r of its own face,
+        reach = float(mod.get("reach", mod["size"])) + (tol or 1e-3)   # sampled in "near"
+        out = []
+        for e in _edges(shape):
+            if np.linalg.norm(P - _mid(e), axis=1).min() <= reach and not any(e.IsSame(x) for x in out):
+                out.append(e)
+        return out
     axis, caps = cap_planes(tree, mod)
     k, which = AX[axis], mod.get("loops", "outer")
     from OCP.Bnd import Bnd_Box

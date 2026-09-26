@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 BASE = "http://127.0.0.1:8000"
+FEATURE = "false" if "--no-feature" in sys.argv else "true"   # the feature pass times out on some parts (6)
 
 
 def get(path):
@@ -20,7 +21,7 @@ def get(path):
 
 def convert(stl, out):
     r = subprocess.run(["curl", "-s", "-m", "900", "-F", f"file=@{stl}", "-F", "engine=trueform",
-                        "-F", "feature=true", BASE + "/api/convert"], capture_output=True, text=True)
+                        "-F", f"feature={FEATURE}", BASE + "/api/convert"], capture_output=True, text=True)
     d = json.loads(r.stdout)
     t0 = time.time()
     while d.get("pending") and time.time() - t0 < 3600:
@@ -35,7 +36,7 @@ def convert(stl, out):
 
 if __name__ == "__main__":
     od = Path(sys.argv[1])
-    for stl in sys.argv[2:]:
+    for stl in [a for a in sys.argv[2:] if not a.startswith("--")]:
         out = od / (Path(stl).stem + ".step")
         if out.exists():
             continue
