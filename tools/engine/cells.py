@@ -27,6 +27,7 @@ import search as SE                                    # noqa: E402
 PR = SE.PR
 STEP_COST = 0.001
 SAMPLES = 5            # sections per band intersected for "material throughout"
+NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 
 
 def levels_of(bm, a, tol):
@@ -203,7 +204,8 @@ def solve(V, cands, M, time_limit=60.0):
         for k, val in coefs.items():
             A[r, k] = val
     res = milp(cost, constraints=LinearConstraint(A.tocsr(), lb, ub), integrality=np.ones(nvar),
-               bounds=Bounds(0, 1), options={"time_limit": time_limit, "disp": False})
+               bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": max(time_limit, 900.0),
+                                             "disp": False})
     if res.x is None:
         return None, {"status": res.message}
     x = res.x[:nk] > 0.5
