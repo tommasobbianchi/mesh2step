@@ -102,17 +102,17 @@ def defeature(shape, rm):
 
 
 def unexplained_sets(shape, explained):
-    """The faces the base cannot explain, split into edge-connected sets: each set is one undo candidate."""
+    """The faces the base cannot explain, split into edge-connected sets: each set is one undo candidate. Faces are
+    looked up in OCCT's hashed index map (a nested IsSame search was quadratic: part 16's 1946 faces took most of
+    the part's 40-minute budget)."""
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
     fl = faces(shape)
-    bad = [i for i in range(len(fl)) if not explained[i]]
-    emap = TopTools_IndexedDataMapOfShapeListOfShape()
-    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
-    idx = {}
-    for i in bad:
-        idx[i] = i
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    pos = {fmap.FindIndex(f): i for i, f in enumerate(fl)}          # map index -> position in fl
+    bad = {i for i in range(len(fl)) if not explained[i]}
     parent = {i: i for i in bad}
 
     def find(i):
@@ -121,12 +121,14 @@ def unexplained_sets(shape, explained):
             i = parent[i]
         return i
 
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
     for e in range(1, emap.Extent() + 1):
-        adj = [k for k in bad for f in emap.FindFromIndex(e) if fl[k].IsSame(f)]
+        adj = [k for k in (pos.get(fmap.FindIndex(f)) for f in emap.FindFromIndex(e)) if k in bad]
         for k in adj[1:]:
             parent[find(k)] = find(adj[0])
     groups = {}
-    for i in bad:
+    for i in sorted(bad):
         groups.setdefault(find(i), []).append(fl[i])
     return list(groups.values())
 
