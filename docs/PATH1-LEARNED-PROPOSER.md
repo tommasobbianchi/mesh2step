@@ -41,4 +41,4 @@ loop running the same single-pass procedure on `M \ S` and `S \ M`.
   (box centre, 2 / max extent).
 - Conversion and measurement: `python3 tools/tree/cadquery_ir.py <script> <mesh> runs/tree/cadfit/<n>` (tree IR in
   mm, `analyse.measure` on both the tree and CADFit's own solid; revolve/fillet/chamfer are noted, not mapped).
-- Results: `runs/tree/cadfit/summary.md`.
+- Results: `runs/tree/cadfit/summary.md` (39/39 ran; 3 merit wins: 15, 28, 37; none on the owner reference parts).

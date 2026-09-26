@@ -83,9 +83,12 @@ def execute(code, var="r"):
     try:
         g = {"cq": cq, "__name__": "cq_program"}
         exec(code, g)                                  # noqa: S102 -- a local CadQuery program (CADFit's output)
-        r = g[var]
-        vals = [v for v in r.vals() if isinstance(v, cq.Shape)]   # a stack of solids (result.add) is their union
-        return (vals[0].fuse(*vals[1:]) if len(vals) > 1 else vals[0]), _feats(r)
+        r = g["final_result"] if var == "result" and "final_result" in g else g[var]   # CADFit's refined scripts
+        vals = [v for v in r.vals() if isinstance(v, cq.Shape)]   # a stack of solids (result.add) is their union,
+        solid = vals[0]                                            # fused one at a time (a one-call multi-argument
+        for v in vals[1:]:                                         # fuse gave part 12 a worse solid than its tree)
+            solid = solid.fuse(v)
+        return solid.clean(), _feats(r)
     finally:
         for k, f in _orig.items():
             setattr(cq.Workplane, k, f)
