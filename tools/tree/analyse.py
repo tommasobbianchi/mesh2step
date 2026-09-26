@@ -80,6 +80,23 @@ def _three_planes_child(emit, m, tol):
                 emit(best)
 
 
+def _search_child(emit, m, tol):
+    """The fewest-steps design search (search.py, docs/DESIGN-SEARCH.md): raw design emitted, then finished."""
+    import search as SE
+    os.nice(10)
+    np.random.seed(3)
+    occ = T.occupancy(m, m.bounds, n=60)
+    t, si = SE.run(m, tol, finish=False)
+    best = (t, dict(measure(t, m, tol, occ), finished=False, search=si))
+    emit(best)
+    t = json.loads(json.dumps(t))
+    PR.edge_mods(t, m, tol)
+    PR.prune(t, m, tol)
+    r = measure(t, m, tol, occ)
+    if merit(r) > merit(best[1]):
+        emit((t, dict(r, finished=True, search=si)))
+
+
 def _planner_child(stl, out, q):
     import resource
     os.setpgrp()                                       # its own group: a deadline kill reaches its workers too
@@ -125,6 +142,8 @@ def analyse_one(stl, out, t0, planner=True):
     # raw and finished side by side: the finishing passes on a 90-feature tree took 730 s (part 6) where the raw
     # build already matched 98.8 %; the finished one is taken only if it lands in time
     h3 = PR._fork_stream(_three_planes_child, m, tol)
+    # opt-in until it pays its way: forked beside the others it cost the gate 77 s of wall (317 s vs 240)
+    hs = PR._fork_stream(_search_child, m, tol) if full and os.environ.get("ANALYSE_SEARCH") else None
     PR.finish(tree, m, tol)
     occ = T.occupancy(m, m.bounds, n=60)
     info = {"tol": tol, "proposal": measure(tree, m, tol, occ), "planner": None, "chosen": "proposal",
@@ -165,6 +184,22 @@ def analyse_one(stl, out, t0, planner=True):
     held = info["planner"] if info["chosen"] == "planner" else info["proposal"]
     if r3 and merit(r3[1]) > merit(held):
         tree, info["chosen"] = r3[0], "three_planes"
+        held = r3[1]
+    if hs is not None:                                 # same window as the three-plane candidate
+        rs = PR._fork_latest(hs, time.time() + max(THREE_PLANES_GRACE_S, early - (time.time() - tb)))
+        info["search"] = rs[1] if rs else {"error": "crashed or not ready in time"}
+        if rs and merit(rs[1]) > merit(held):
+            tree, info["chosen"], held = rs[0], "search", rs[1]
+    if full and os.environ.get("ANALYSE_COMBINE"):
+        # the combiner (docs/DESIGN-SEARCH.md): every approach's steps pooled with the search's own, the fewest-steps
+        # design that holds kept. Opt-in: 200-700 s per part today, past the gate's budget until finishing is fast
+        import search as SE
+        seeds = [tree] + ([r3[0]] if r3 else [])
+        tc, ci = SE.portfolio(m, tol, seeds=seeds, budget=float(os.environ.get("ANALYSE_COMBINE_S", "240")))
+        rc = measure(tc, m, tol, occ)
+        info["combined"] = dict(rc, strategies=ci["strategies"], seconds=ci["seconds"])
+        if merit(rc) > merit(held):
+            tree, info["chosen"] = tc, "combined"
     return tree, info
 
 

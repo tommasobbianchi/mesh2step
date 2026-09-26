@@ -193,6 +193,11 @@ def modifier_edges(shape, tree, mod, tol):
     from OCP.TopAbs import TopAbs_WIRE
     axis, caps = cap_planes(tree, mod)
     k, which = AX[axis], mod.get("loops", "outer")
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    bb = Bnd_Box(); BRepBndLib.Add_s(shape, bb)
+    blo, bhi = [bb.CornerMin().X(), bb.CornerMin().Y(), bb.CornerMin().Z()][k], [bb.CornerMax().X(), bb.CornerMax().Y(), bb.CornerMax().Z()][k]
+    caps = [min(max(z, blo), bhi) for z in caps]       # a through cut's ends lie past the part: onto its faces
     out = []
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():

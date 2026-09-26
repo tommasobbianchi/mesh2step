@@ -823,14 +823,25 @@ def edge_mods(tree, m, tol, budget=90.0):
     if not pads:
         return
     axis = pads[0]["axis"]
+    lo, hi = m.bounds
+    # a hole made as its own circular cut (the fewest-steps search) is finished like a pad's hole, at the part's faces
+    holes_cut = [f for f in feats if f["op"] == "pocket" and f.get("axis") == axis and len(f["loops"]) == 1
+                 and f["loops"][0][0]["t"] == "circle" and f["length"] != "through"]
     seen, n0 = set(), len(feats)
     _occ(m)
     best = _forked(pick_score, tree, m, tol, default=-1.0)
-    for f in pads:
-        g = _pad_polygon(f)
+    ai = AXN.index(axis)
+    for f in pads + holes_cut:
         L = float(f["length"])
-        for cap, z, sgn in (("bottom", f["at"], +1), ("top", f["at"] + L, -1)):
-            if round(z, 3) in seen:
+        if f["op"] == "pocket":                        # material assumed round the hole: an annulus of 8 tol
+            ring0 = LinearRing(T.loop_polygon(f["loops"][0]))
+            g = shapely.Polygon(ring0).buffer(8 * tol).difference(shapely.Polygon(ring0))
+            ends = (("bottom", max(f["at"], float(lo[ai])), +1), ("top", min(f["at"] + L, float(hi[ai])), -1))
+        else:
+            g = _pad_polygon(f)
+            ends = (("bottom", f["at"], +1), ("top", f["at"] + L, -1))
+        for cap, z, sgn in ends:
+            if f["op"] == "pad" and round(z, 3) in seen:
                 continue                               # one cap plane: its faces are matched by plane, not by pad
             seen.add(round(z, 3))
             secs = [(h, T.section_region(m, axis, z + sgn * h))
@@ -838,7 +849,7 @@ def edge_mods(tree, m, tol, budget=90.0):
             groups = {}
             rings = [LinearRing(T.loop_polygon(lp)) for lp in f["loops"]]     # loop order: the index is the name
             for i, ring in enumerate(rings):
-                which = "outer" if i == 0 else "inner"
+                which = "inner" if f["op"] == "pocket" else ("outer" if i == 0 else "inner")
                 es = _edge_size(secs, g, ring, tol)
                 if es is None:
                     continue
@@ -852,7 +863,8 @@ def edge_mods(tree, m, tol, budget=90.0):
                     break
                 # before the other views' pockets: they split a hole's circle into arcs OCCT will not round
                 # (part 7's main hole: 8 edges, refused); on the pads alone it is one clean edge
-                k = max(j for j, x in enumerate(feats) if x["op"] == "pad") + 1
+                # a hole cut is finished right after itself: before it, its edge does not exist yet
+                k = (feats.index(f) if f["op"] == "pocket" else max(j for j, x in enumerate(feats) if x["op"] == "pad")) + 1
                 while k < len(feats) and feats[k]["op"] in ("round", "chamfer"):
                     k += 1
                 tried = []
@@ -911,6 +923,9 @@ def finish(tree, m, tol, scan=True):
     return tree
 
 
+PRUNE_BAR = 0.001                                      # = analyse.STEP_COST (analyse imports this module)
+
+
 def prune(tree, m, tol, budget=90.0):
     """Fewest steps (the owner: 'part 7 is 3 steps: sketch, extrude, fillet'): drop each step, last first, whose
     removal does not lower the match; finishes (they earned their place in edge_mods) and the steps a finish is
@@ -928,9 +943,9 @@ def prune(tree, m, tol, budget=90.0):
         if len(keep) == len(feats) or time.time() > end:
             continue
         s = _forked(pick_score, dict(tree, features=keep), m, tol, default=-1.0)
-        if s >= best - 1e-5:
+        if s > -1.0 and s >= best - PRUNE_BAR * (len(feats) - len(keep)):
             feats[:] = keep
-            best = max(best, s)
+            best = s
     for i in range(len(feats) - 1, 0, -1):
         if time.time() > end:
             break
@@ -939,8 +954,8 @@ def prune(tree, m, tol, budget=90.0):
             continue
         feats.pop(i)
         s = _forked(pick_score, tree, m, tol, default=-1.0)
-        if s >= best - 1e-5:
-            best = max(best, s)
+        if s > -1.0 and s >= best - PRUNE_BAR:         # the choice's bar (analyse.STEP_COST): a step that does not
+            best = s                                   # earn it goes; best follows, so losses add up honestly
         else:
             feats.insert(i, f)
     _ids(tree, keep_refs=True)
