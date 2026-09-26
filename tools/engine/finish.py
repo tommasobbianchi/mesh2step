@@ -90,3 +90,34 @@ def apply(tree, shape, m, tol, j_of):
         if j2 > j:
             cur, j, sc = trial, j2, sc2
     return cur, j, log
+
+
+def ground(tree, shape, tol):
+    """Every finish not already from evidence (the measured pass guesses edges from mesh sections) re-expressed on
+    the evidence: the nearest evidence group of the same op gives its points and exact size, so edges with no round
+    or chamfer face next to them drop out (part 1: 2 of 8 rounded edges were 12.8 mm from any round face); a finish
+    with no evidence of its kind is removed. -> (tree, changed)"""
+    import tree as T
+    pad_axes = {"XYZ".index(f["axis"]) for f in tree["features"] if f["op"] in ("pad", "pocket")}
+    G = groups(shape, pad_axes)
+    out = copy.deepcopy(tree)
+    feats, changed = [], 0
+    for i, f in enumerate(out["features"]):
+        if f["op"] not in ("round", "chamfer") or f.get("near"):
+            feats.append(f)
+            continue
+        cands = [g for g in G if g[0] == f["op"]]
+        if not cands:
+            changed += 1                                # no evidence for this kind of finish: dropped
+            continue
+        sofar, _ = T.compile_tree({"units": "mm", "features": feats}, tol)
+        es = T.modifier_edges(sofar, out, f, tol) if sofar is not None else []
+        mids = np.array([T._mid(e) for e in es]) if es else None
+        best = min(cands, key=lambda g: np.inf if mids is None else
+                   float(np.median(np.min(np.linalg.norm(mids[:, None] - np.array(g[3])[None], axis=2), axis=1))))
+        op, size, reach, pts = best
+        feats.append({**f, "size": round(size, 4), "near": [[round(x, 4) for x in p] for p in pts],
+                      "reach": round(reach, 4), "label": f"{f['label']} (on the scan's faces)"})
+        changed += 1
+    out["features"] = feats
+    return out, changed
