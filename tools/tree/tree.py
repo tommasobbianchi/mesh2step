@@ -108,6 +108,55 @@ def tapered(f, ch):
     return s
 
 
+def _rev_map(f):
+    """A revolve's profile coordinates (r, h) -> 3D: r along the first sketch axis of `axis` from the axis line
+    through `point`, h the absolute coordinate along the axis."""
+    rv = f["revolve"]
+    k, (ru, _) = AX[rv["axis"]], UV[rv["axis"]]
+    P = [float(x) for x in rv["point"]]
+
+    def to(r, h):
+        q = list(P)
+        q[ru] += float(r)
+        q[k] = float(h)
+        return gp_Pnt(*q)
+    return to
+
+
+def _rev_wire(f, loop):
+    to = _rev_map(f)
+    w = BRepBuilderAPI_MakeWire()
+    for s in loop:
+        if s["t"] == "line":
+            e = BRepBuilderAPI_MakeEdge(GC_MakeSegment(to(*s["p"][0]), to(*s["p"][1])).Value()).Edge()
+        elif s["t"] == "arc":
+            e = BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(*(to(*q) for q in s["p"])).Value()).Edge()
+        else:
+            raise ValueError("a revolve profile has no full circles")
+        w.Add(e)
+    if not w.IsDone():
+        raise ValueError("revolve profile does not close")
+    return w.Wire()
+
+
+def body(f):
+    """The pad/pocket body alone: its sketch extruded along the axis, or revolved a full turn about
+    f["revolve"] = {"axis": "X"|"Y"|"Z", "point": [x, y, z]} (loops then in (r, h), r >= 0)."""
+    if "revolve" not in f:
+        return prism(f)
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1
+    mk = BRepBuilderAPI_MakeFace(_rev_wire(f, f["loops"][0]), True)
+    for loop in f["loops"][1:]:
+        w = _rev_wire(f, loop)
+        w.Reverse()
+        mk.Add(w)
+    n = [0.0, 0.0, 0.0]
+    n[AX[f["revolve"]["axis"]]] = 1.0
+    ax = gp_Ax1(gp_Pnt(*[float(x) for x in f["revolve"]["point"]]), gp_Dir(*n))
+    return BRepPrimAPI_MakeRevol(mk.Face(), ax, 2 * np.pi).Shape()
+
+
 def prism(f):
     """The pad/pocket body alone: its sketch face swept along the axis."""
     axis, L = f["axis"], f["length"]
@@ -337,7 +386,7 @@ def _step(f, shape, tree, taper, tapered_ok, notes, tol):
             p = tapered(f, taper[f["id"]]) if f["id"] in taper else None
             if p is not None:
                 tapered_ok.add(f["id"])
-            p = p if p is not None else prism(f)
+            p = p if p is not None else body(f)
             if not BRepCheck_Analyzer(p).IsValid():    # an invalid body makes OCCT booleans explode (44 GB)
                 notes[f["id"]] = "invalid sketch (self-intersecting outline): skipped"
                 return shape
@@ -418,7 +467,11 @@ def feature_faces(mesh, tree, shape, tol):
     owner = np.full(len(c), -1)
     for i, f in enumerate(tree["features"]):
         try:
-            if f["op"] in ("pad", "pocket"):
+            if f["op"] in ("pad", "pocket") and "revolve" in f:
+                V, F = tessellate(body(f), tol / 2)
+                sp, _ = trimesh.sample.sample_surface(trimesh.Trimesh(V, F, process=False), 60000)
+                owner[cKDTree(sp).query(c)[0] < tol] = i
+            elif f["op"] in ("pad", "pocket"):
                 if f["length"] == "through":
                     g = dict(f); lo, hi = mesh.bounds[:, AX[f["axis"]]]
                     g.update(at=float(lo - tol), length=float(hi - lo + 2 * tol)); body = prism(g)

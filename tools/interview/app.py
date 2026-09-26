@@ -553,7 +553,7 @@ def _feature_geometry(tree, m, tol):
                 ff = dict(f)
                 if f["length"] == "through":
                     ff.update(at=float(lo[k] - tol), length=float(hi[k] - lo[k] + 2 * tol))
-                V, F = T.tessellate(T.prism(ff), tol / 2)
+                V, F = T.tessellate(T.body(ff), tol / 2)
                 g["body_stl"] = base64.b64encode(trimesh.Trimesh(V, F, process=False).export(file_type="stl")).decode()
                 for loop in ff["loops"]:                # the sketch, at the plane it is drawn on
                     pts = []

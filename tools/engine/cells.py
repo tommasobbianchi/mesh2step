@@ -147,6 +147,10 @@ def masks(cands, c):
     shape = tuple(len(x) for x in c)
     M = np.zeros((len(cands), int(np.prod(shape))), bool)
     for k, cd in enumerate(cands):
+        if cd.feat is not None and "revolve" in cd.feat:
+            import revolve as RV
+            M[k] = RV.mask(cd, c)
+            continue
         a = cd.a
         u, v = SE.reverse.plane_axes(a)
         U, W = np.meshgrid(c[u], c[v], indexing="ij")
@@ -216,9 +220,9 @@ def solve(V, cands, M, time_limit=60.0):
                     "status": res.message[:60]}
 
 
-def program(bm, tol, time_limit=60.0, shape=None, sharp=False):
+def program(bm, tol, time_limit=60.0, shape=None, sharp=False, extra=()):
     V, c, h = SE.voxels(bm)
-    cands = candidates(bm, tol, shape=shape, sharp=sharp)
+    cands = candidates(bm, tol, shape=shape, sharp=sharp) + list(extra)
     M = masks(cands, c)
     chosen, info = solve(V, cands, M, time_limit)
     if chosen is None:

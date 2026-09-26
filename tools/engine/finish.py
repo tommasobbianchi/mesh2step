@@ -4,7 +4,7 @@ Candidates are grouped by kind and size; each group is kept only if the exact J 
 from mesh sections.
 
   torus                          -> round, r = minor radius
-  cylinder, span < 150 deg, axis not parallel to any pad axis of the program -> round, r = radius
+  cylinder whose axis is not parallel to any pad axis of the program -> round, r = radius (any span)
   cone                           -> chamfer, size = its generatrix length / sqrt 2 (45 deg)
 """
 import copy
@@ -45,10 +45,12 @@ def groups(shape, pad_axes):
         u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
         if t == GeomAbs_Torus:
             op, size = "round", s.Torus().MinorRadius()
-        elif t == GeomAbs_Cylinder and (u1 - u0) < math.radians(150):
+        elif t == GeomAbs_Cylinder:
             d = U.E._v(s.Cylinder().Axis().Direction())
             if any(abs(float(d[a])) > 0.999 for a in pad_axes):
                 continue                                # a wall along a pad axis: a sketch arc, not a finish
+            # any other cylinder cannot come from the program's extrusions: a round, whatever its span (a full
+            # round's half cylinder spans 180 deg)
             op, size = "round", s.Cylinder().Radius()
         elif t == GeomAbs_Cone:
             op, size = "chamfer", abs(v1 - v0) / math.sqrt(2)

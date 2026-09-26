@@ -25,6 +25,7 @@ sys.path.insert(0, str(HERE))
 import cells as C                                      # noqa: E402
 import evidence as E                                   # noqa: E402
 import finish as FN                                    # noqa: E402
+import revolve as RV                                   # noqa: E402
 import solve as S                                      # noqa: E402
 import undo as U                                       # noqa: E402
 
@@ -44,16 +45,18 @@ def run(m, step, tol, ilp_s=60.0):
     b = U.base_kind(s)
     sets = U.unexplained_sets(s, b[3])
     base = U.defeature(s, [f for x in sets for f in x]) if sets else None
-    solids = [("as served", s, False), ("as served, sharp outlines", s, True)] + \
-        ([("undone base", base, False)] if base is not None else [])
+    rc = RV.candidates(s, m, tol)                      # revolve or not is a hypothesis too (finishes may do it)
+    solids = [("as served", s, False, ()), ("as served, sharp outlines", s, True, ())] + \
+        ([("as served, revolves", s, False, rc), ("as served, sharp outlines, revolves", s, True, rc)] if rc else []) + \
+        ([("undone base", base, False, ())] if base is not None else [])
     log, best = [], None
     end = t0 + BUDGET
 
-    def gen(sh, sharp):
+    def gen(sh, sharp, extra):
         """One hypothesis's program and its raw exact J (runs in a fork)."""
         t1 = time.time()
         if sh is s:
-            tree, info = C.program(m, tol, ilp_s, sharp=sharp)
+            tree, info = C.program(m, tol, ilp_s, sharp=sharp, extra=extra)
         else:
             tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
         info["program_s"] = round(time.time() - t1, 1)
@@ -78,15 +81,18 @@ def run(m, step, tol, ilp_s=60.0):
         nonlocal best
         log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),
                     "J": round(j, 4), "ilp": info, "t": round(time.time() - t0, 1)})
-        if best is None or j > best[0]:
-            best = (j, t, sc, f"{name}, {vn}")
+        # J ties (within 1e-4) go to the program with fewer revolves: a round is one radius on existing edges, a
+        # revolve an axis and a whole profile (the longer description; the owner graded pad + round on part 7)
+        nrev = sum("revolve" in f for f in t["features"])
+        if best is None or j > best[0] + 1e-4 or (abs(j - best[0]) <= 1e-4 and nrev < best[4]):
+            best = (j, t, sc, f"{name}, {vn}", nrev)
 
     # the hypotheses in parallel (independent: same decisions as one after another, a third of the wall time).
     # Sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation cracks
     # and its exact sections can drop edges within its tolerance); the undone base has no scan: its exact sections.
     # "sharp": pads take each band's widest outline, for the finishes to trim (a full round leaves no wall for
     # defeaturing to extend, so the undone base cannot give that outline)
-    hs = [(name, PR._fork_start(gen, sh, sharp)) for name, sh, sharp in solids]
+    hs = [(name, PR._fork_start(gen, sh, sharp, extra)) for name, sh, sharp, extra in solids]
     raws = []
     for name, h in hs:
         tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget"}, None, None))
@@ -98,7 +104,10 @@ def run(m, step, tol, ilp_s=60.0):
     # finishing costs most of the time (every trial is an exact compile): the FINISH_TOP best raw programs, their
     # two finishing chains all in parallel
     jobs = []
-    for _, name, tree, info in sorted(raws, key=lambda r: -r[0])[:FINISH_TOP]:
+    rev = lambda t: any("revolve" in f for f in t["features"])
+    ranked = sorted(raws, key=lambda r: -r[0])
+    pick = [r for r in ranked if not rev(r[2])][:FINISH_TOP] + [r for r in ranked if rev(r[2])][:1]
+    for _, name, tree, info in pick:                   # the best of each family: finishes vs revolves
         jobs += [(name, info, PR._fork_start(fin_measured, tree)), (name, info, PR._fork_start(fin_evidence, tree))]
     for name, info, h in jobs:
         for vn, t, j, sc in PR._fork_collect(h, end, []):

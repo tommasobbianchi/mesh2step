@@ -1,6 +1,6 @@
 """Fleet runner: the engine corpus (tools/engine/run.py) across nativedev + Tailscale hosts.
 
-usage: fleet.py <run> [--commit HEAD] [--parts 1,2,7] [--hosts nativedev,behemoth,beast,fujiyama1,fujiyama]
+usage: fleet.py <run> [--commit HEAD] [--parts 1,2,7] [--hosts nativedev,behemoth,beast,fujiyama1,fujiyama,nativeserver]
                 [--slots behemoth=2,beast=1] [--timeout 1500] [--setup-only]
 
 Run it under watchjob, e.g.
@@ -39,7 +39,8 @@ REPO = Path(__file__).resolve().parents[2]
 MECH = Path("/home/tommaso/corpora/mechparts")
 EVID = [REPO / "runs/engine/steps", REPO / "runs/engine/steps_quick"]
 HOSTS = {"nativedev": None, "behemoth": "tommaso@100.103.234.2", "beast": "tommaso@100.115.135.14",
-         "fujiyama1": "tommaso@100.85.88.58", "fujiyama": "tommaso@100.71.227.80"}
+         "fujiyama1": "tommaso@100.85.88.58", "fujiyama": "tommaso@100.71.227.80",
+         "nativeserver": "tommaso@100.111.236.92"}
 FLEET = "engine-fleet"                                  # ~/engine-fleet on every host
 WATCHJOB = Path.home() / ".claude/skills/watchjob/scripts/watchjob.sh"
 JOB = Path.home() / ".claude/scripts/job"
