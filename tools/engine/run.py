@@ -26,6 +26,8 @@ import cells as C                                      # noqa: E402
 import evidence as E                                   # noqa: E402
 import finish as FN                                    # noqa: E402
 import revolve as RV                                   # noqa: E402
+import snap as SN                                      # noqa: E402
+import mirror as MR                                    # noqa: E402
 import solve as S                                      # noqa: E402
 import undo as U                                       # noqa: E402
 
@@ -112,6 +114,23 @@ def run(m, step, tol, ilp_s=60.0):
     for name, info, h in jobs:
         for vn, t, j, sc in PR._fork_collect(h, end, []):
             note(name, vn, t, info, j, sc)
+    if best is not None:                               # sketch arcs from the evidence, kept if J holds
+        st, nch = SN.snap(best[1], s, tol)
+        if nch:
+            j, sc = j_exact(st, m, tol)
+            log.append({"variant": "evidence arcs", "loops_changed": nch, "J": round(j, 4)})
+            if j >= best[0] - 1e-4:
+                best = (j, st, sc, best[3] + ", evidence arcs", best[4])
+    while best is not None:                            # mirrors found in the program, greedily: J decides which
+        top = None                                     # copy stays; a tie goes to the mirror (shorter description)
+        for mt, desc in MR.candidates(best[1], tol):
+            j, sc = j_exact(mt, m, tol)
+            log.append({"variant": "mirror", "what": desc, "J": round(j, 4)})
+            if j >= best[0] - 1e-4 and (top is None or j > top[0]):
+                top = (j, mt, sc, desc)
+        if top is None:
+            break
+        best = (top[0], top[1], top[2], best[3] + f", {top[3]}", best[4])
     out = {"undo_sets": len(sets), "base_planes": list(b[1]), "log": log, "seconds": round(time.time() - t0, 1)}
     if best is None:
         return None, out

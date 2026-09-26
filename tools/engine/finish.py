@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import undo as U                                       # noqa: E402
 
 STEP_COST = 0.001
+SAME = 0.05            # finish sizes within 5% of each other are one finish
 
 
 def _samples(face, n=6):
@@ -58,9 +59,17 @@ def groups(shape, pad_axes):
             continue
         if size <= 0:
             continue
-        key = (op, round(size, 2))
-        g.setdefault(key, []).extend(_samples(f))
-    return [(op, size, size, pts) for (op, size), pts in sorted(g.items(), key=lambda kv: -len(kv[1]))]
+        g.setdefault((op, round(size, 3)), []).extend(_samples(f))
+    # one finish, one size: sizes within SAME of each other are one group (the scan's fit scatters one radius
+    # over its faces: 2.00 and 2.05 mm on part 9 made two jagged rounds), sized by their samples' weighted mean
+    merged = []
+    for (op, size), pts in sorted(g.items()):
+        if merged and merged[-1][0] == op and size <= merged[-1][1] * (1 + SAME):
+            o, s0, p0 = merged[-1]
+            merged[-1] = (o, (s0 * len(p0) + size * len(pts)) / (len(p0) + len(pts)), p0 + pts)
+        else:
+            merged.append((op, size, pts))
+    return [(op, size, size, pts) for op, size, pts in sorted(merged, key=lambda x: -len(x[2]))]
 
 
 def apply(tree, shape, m, tol, j_of):
