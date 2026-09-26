@@ -40,8 +40,13 @@ def run(m, step, tol, ilp_s=60.0):
     solids = [("as served", s)] + ([("undone base", base)] if base is not None else [])
     log, best = [], None
     for name, sh in solids:
-        bm = S.mesh_of(sh, tol / 10)
-        tree, info = C.program(bm, tol, ilp_s)
+        # sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation
+        # cracks and its exact sections can drop edges within its tolerance); the undone base has no scan: its
+        # exact sections
+        if sh is s:
+            tree, info = C.program(m, tol, ilp_s)
+        else:
+            tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
         if tree is None:
             log.append({"solid": name, **info})
             continue

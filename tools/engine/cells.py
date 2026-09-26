@@ -26,6 +26,7 @@ import search as SE                                    # noqa: E402
 
 PR = SE.PR
 STEP_COST = 0.001
+SAMPLES = 5            # sections per band intersected for "material throughout"
 
 
 def levels_of(bm, a, tol):
@@ -45,20 +46,88 @@ def levels_of(bm, a, tol):
     return out
 
 
-def candidates(bm, tol, axes=(0, 1, 2)):
+def exact_section(shape, a, z, tol):
+    """The solid's section across axis a at height z, from OCCT's exact plane intersection: edges sampled,
+    polygonised, regions assembled even-odd (a hole inside material inside a hole...). In plane axes
+    reverse.plane_axes(a), like PR.slab_region."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from shapely.geometry import LineString, Polygon
+    o = [0.0, 0.0, 0.0]
+    o[a] = z
+    n = [0.0, 0.0, 0.0]
+    n[a] = 1.0
+    sec = BRepAlgoAPI_Section(shape, gp_Pln(gp_Pnt(*o), gp_Dir(*n)))
+    sec.Build()
+    u, v = SE.reverse.plane_axes(a)
+    lines = []
+    ex = TopExp_Explorer(sec.Shape(), TopAbs_EDGE)
+    while ex.More():
+        c = BRepAdaptor_Curve(TopoDS.Edge_s(ex.Current()))
+        ex.Next()
+        d = GCPnts_QuasiUniformDeflection(c, tol / 50)
+        if not d.IsDone() or d.NbPoints() < 2:
+            continue
+        pts = [(d.Value(i).Coord(u + 1), d.Value(i).Coord(v + 1)) for i in range(1, d.NbPoints() + 1)]
+        lines.append(LineString(pts))
+    if not lines:
+        return Polygon()
+    merged = shapely.union_all(lines, grid_size=tol / 100)   # the solid's own tolerance gaps (~1e-3) must close
+    parts = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
+    shells = sorted({Polygon(p.exterior) for p in shapely.polygonize(parts).geoms}, key=lambda p: -p.area)
+    out = Polygon()
+    for p in shells:                                  # even-odd over closed loops: each loop toggles its inside
+        out = out.symmetric_difference(p) if not out.is_empty else p
+    return out.buffer(0)
+
+
+def _op(fn, a, b, tol):
+    """A shapely overlay, snap-rounded to tol/1000 when GEOS cannot resolve a near-degenerate one."""
+    try:
+        return fn(a, b)
+    except shapely.errors.GEOSException:
+        return fn(a.buffer(0), b.buffer(0), grid_size=tol / 1000)
+
+
+def candidates(bm, tol, axes=(0, 1, 2), shape=None):
     lo, hi = bm.bounds
     out = []
     for a in axes:
         u, v = SE.reverse.plane_axes(a)
         lv = levels_of(bm, a, tol)
         frame = box(lo[u] - tol, lo[v] - tol, hi[u] + tol, hi[v] + tol)
-        secs = [PR.slab_region(bm, a, (z0 + z1) / 2 - tol / 4, (z0 + z1) / 2 + tol / 4) for z0, z1 in zip(lv, lv[1:])]
-        for i in range(len(secs)):
-            mat, air = secs[i], frame.difference(secs[i])
-            for j in range(i, len(secs)):
+        # "throughout" means throughout: material = the sections intersected across the band (faces may vary
+        # inside it: cylinders across a, slanted planes), air = the frame minus the band's whole projection
+        mats, projs = [], []
+        for z0, z1 in zip(lv, lv[1:]):
+            d = min(tol / 4, (z1 - z0) / 4)
+            hs = np.linspace(z0 + d, z1 - d, SAMPLES)
+            g = None
+            for zz in hs:
+                q = exact_section(shape, a, float(zz), tol) if shape is not None else \
+                    PR.slab_region(bm, a, zz - d / 2, zz + d / 2)
+                g = q if g is None else _op(shapely.intersection, g, q, tol)
+            mats.append(g)
+            if shape is not None:                      # air throughout = outside every section of the band
+                pj = None
+                for zz in hs:
+                    q = exact_section(shape, a, float(zz), tol)
+                    pj = q if pj is None else _op(shapely.union, pj, q, tol)
+                projs.append(pj)
+            else:
+                projs.append(PR.slab_region(bm, a, z0 + d, z1 - d))
+        secs = mats
+        for i in range(len(mats)):
+            mat, air = mats[i], _op(shapely.difference, frame, projs[i], tol)
+            for j in range(i, len(mats)):
                 if j > i:
-                    mat = mat.intersection(secs[j])
-                    air = air.difference(secs[j])
+                    mat = _op(shapely.intersection, mat, mats[j], tol)
+                    air = _op(shapely.difference, air, projs[j], tol)
                 z0, z1 = lv[i], lv[j + 1]
                 for op, reg in (("pad", mat), ("pocket", air)):
                     for g in PR._polys(reg):
@@ -144,9 +213,9 @@ def solve(V, cands, M, time_limit=60.0):
                     "status": res.message[:60]}
 
 
-def program(bm, tol, time_limit=60.0):
+def program(bm, tol, time_limit=60.0, shape=None):
     V, c, h = SE.voxels(bm)
-    cands = candidates(bm, tol)
+    cands = candidates(bm, tol, shape=shape)
     M = masks(cands, c)
     chosen, info = solve(V, cands, M, time_limit)
     if chosen is None:
@@ -167,7 +236,7 @@ if __name__ == "__main__":
         bm = trimesh.load(src, force="mesh")
     tol = max(3e-3 * float(np.linalg.norm(bm.extents)), 0.05)
     t0 = time.time()
-    tree, info = program(bm, tol)
+    tree, info = program(bm, tol, shape=shape if src.endswith(".step") else None)
     info["seconds"] = round(time.time() - t0, 1)
     print(json.dumps(info))
     for f in (tree or {}).get("features", []):
