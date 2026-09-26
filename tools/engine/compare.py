@@ -34,8 +34,8 @@ for n, e, b in rows:
     w, l, t = w + (tag == "WIN"), l + (tag == "loss"), t + (tag == "tie")
     if bj is not None:
         js.append(e["merit"]); jb.append(bj)
-    print(f"{n:>2} engine J {e['merit']:.4f} ({e['steps']} steps, {e['seconds']} s, {e['program']})"
-          f"   baseline J {bj} ({b[3] if b else '-'} steps)   {tag}")
+    print(f"{n:>2} engine J {e["merit"]:.4f} ({e['steps']} steps, {e['seconds']} s, {e['program']})"
+          f"   baseline J {bj} ({b[3] if b else '-'} steps, {b[0] if b else '-'})   {tag}")
 if js:
     print(json.dumps({"compared": len(js), "wins": w, "losses": l, "ties": t,
                       "mean_J_engine": round(sum(js) / len(js), 4), "mean_J_baseline": round(sum(jb) / len(jb), 4)}))
