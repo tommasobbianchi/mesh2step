@@ -607,6 +607,88 @@ def _live_pockets(feats, tol):
     return [f for f in feats if f["op"] != "pocket" or T.volume(BRepAlgoAPI_Common(T.prism(f), base).Shape()) > eps]
 
 
+def _prismatic(m, a, z0, z1, tol):
+    """The part's section along axis a holds through [z0, z1]: projection = mid section within tol on average
+    (an edge finish at a boss' top is a later round/chamfer step, not the end of the boss)."""
+    proj = slab_region(m, a, z0, z1)
+    sec = reverse._region(reverse.level_section(m, a, (z0 + z1) / 2))
+    return sec is not None and proj.symmetric_difference(sec).area < tol * max(proj.length, tol)
+
+
+def boss_ranges(m, first, tol):
+    """End regions that are bosses sketched on another plane (the owner on part 1: 'the top boss is circles on XY,
+    extruded along Z'; 'those rectangles are always a plane extrusion not done'). Walking in from each end of axis b
+    while b's section holds (one thin finish slab at the very end allowed), the range is a boss when its section
+    GROWS over the body next to it (x1.5: a plate's end or a rail holds or shrinks), stands out from the part's
+    whole outline on b (< 0.7; part 2's ring sides read 1.29 / 0.79, part 1's boss 2.81 / 0.53) and is only a rectangle seen edge-on along the first axis. Criterion from a second
+    opinion (Kimi, 2026-09-25) after four of mine failed: it fires on part 1's top boss and nowhere else in 1-7.
+    -> [(b, z0, z1)]"""
+    from shapely.geometry import box
+    lo, hi = m.bounds
+    tri = np.asarray(m.triangles, float)
+    u, v = reverse.plane_axes(first)
+    big = 10 * float(np.linalg.norm(hi - lo))
+    out = []
+    for b in (k for k in range(3) if k != first):
+        sl = list(itertools.pairwise(wall_heights(m, b)))
+        for order in (sl[::-1], sl):
+            rng, skipped = None, 0
+            for z0, z1 in order:
+                if _prismatic(m, b, z0, z1, tol):
+                    rng = (min(z0, rng[0]), max(z1, rng[1])) if rng else (z0, z1)
+                    continue
+                skipped += 1
+                if rng or skipped > 1 or z1 - z0 > 0.1 * (hi[b] - lo[b]):
+                    break
+                rng = (z0, z1)                         # a thin finish slab at the very end
+            if not rng or rng[1] - rng[0] > 0.6 * (hi[b] - lo[b]):
+                continue
+            nb = next((s for s in order if s[1] <= rng[0] + 1e-9 or s[0] >= rng[1] - 1e-9), None)
+            own = reverse._region(reverse.level_section(m, b, (rng[0] + rng[1]) / 2))
+            adj = reverse._region(reverse.level_section(m, b, sum(nb) / 2)) if nb else None
+            if own is None or adj is None or adj.area < 1e-9:
+                continue
+            band = box(rng[0], lo[v] - big, rng[1], hi[v] + big) if b == u else box(lo[u] - big, rng[0], hi[u] + big, rng[1])
+            if (own.area > 1.5 * adj.area and own.area < 0.7 * reverse.silhouette(tri, b).area
+                    and _rect_like(reverse.silhouette(tri, first).intersection(band), tol)):
+                out.append((b, float(rng[0]), float(rng[1])))
+    return out
+
+
+def _rect_like(reg, tol):
+    """Every piece an axis-aligned rectangle (fills its bounding box but for finished corners; no holes)."""
+    from shapely.geometry import box
+    ps = [g for g in _polys(reg) if g.area > tol * tol]
+    return bool(ps) and all(not g.interiors and box(*g.bounds).area - g.area < 2 * tol * g.length for g in ps)
+
+
+def boss_pads(m, bosses, tol):
+    """Each boss range as pads on its own axis: its slabs' sections (prismatic by construction), equal ones one
+    sketch."""
+    out = []
+    for b, b0, b1 in bosses:
+        axis = AXN[b]
+        slabs = []
+        for z0, z1 in itertools.pairwise([z for z in wall_heights(m, b) if b0 - 1e-6 <= z <= b1 + 1e-6]):
+            reg = slab_region(m, b, z0, z1)
+            if slabs and slabs[-1][2].symmetric_difference(reg).area < 0.25 * tol * max(reg.length, tol):
+                slabs[-1][1] = z1
+            else:
+                slabs.append([z0, z1, reg])
+        lo, hi = m.bounds
+        for k, (z0, z1, reg) in enumerate(slabs):
+            # the level touching the body overlaps it by tol/5: face-on against the clipped first-view pads, the
+            # later cuts made invalid shells and OCCT hung or crashed (part 1)
+            e0 = z0 - tol / 5 if k == 0 and abs(b1 - hi[b]) < tol else z0
+            e1 = z1 + tol / 5 if k == len(slabs) - 1 and abs(b0 - lo[b]) < tol else z1
+            for j, g in enumerate(x for x in _polys(reg) if x.area > tol * tol):
+                f = {"op": "pad", "label": f"Boss on {PLANE[axis]}" + (f", level {k + 1}" if len(slabs) > 1 else "")
+                     + (f".{j + 1}" if j else ""), "axis": axis, "at": round(e0, 4), "length": _span(e0, e1)}
+                f["loops"] = safe_loops(axis, g, tol, f)
+                out.append(f)
+    return out
+
+
 def three_planes(m, tol, snap=None, mid=False):
     """The part sketched on three planes and intersected (the owner: 'reconstruct the object from 3 planes and
     intersect that'). Along each axis the part is cut into slabs (wall_heights); each slab's outline seen along that
@@ -616,6 +698,7 @@ def three_planes(m, tol, snap=None, mid=False):
     from shapely.geometry import box
     lo, hi = m.bounds
     first = sketch_axis(m)
+    bosses = boss_ranges(m, first, tol)
     feats = []
     for a in [first] + [k for k in range(3) if k != first]:
         axis = AXN[a]
@@ -629,6 +712,11 @@ def three_planes(m, tol, snap=None, mid=False):
                 reg = reg if reg is not None else slab_region(m, a, z0, z1)          # arcs) no view can trim back
             else:
                 reg = slab_region(m, a, z0, z1)
+            if a == first:                             # a boss's range belongs to its own axis' sketches
+                for b, b0, b1 in bosses:
+                    big = 10 * float(np.linalg.norm(hi - lo))
+                    reg = reg.difference(box(b0, lo[v] - big, b1, hi[v] + big) if b == u else
+                                         box(lo[u] - big, b0, hi[u] + big, b1))
             if slabs and slabs[-1][2].symmetric_difference(reg).area < 0.25 * tol * max(reg.length, tol):
                 slabs[-1][1] = z1                      # the same outline continues: one sketch, no near-coincident faces
             else:
@@ -662,6 +750,8 @@ def three_planes(m, tol, snap=None, mid=False):
                  "axis": axis, "at": round(c["e0"], 4), "length": _span(c["e0"], c["e1"])}
             f["loops"] = safe_loops(axis, c["g"], tol, f)
             feats.append(f)
+        if a == first:
+            feats += boss_pads(m, bosses, tol)
     feats = _live_pockets(feats, tol)
     tree = {"units": "mm", "features": feats}
     _ids(tree)
@@ -830,6 +920,17 @@ def prune(tree, m, tol, budget=90.0):
     feats = tree["features"]
     _occ(m)
     best = _forked(pick_score, tree, m, tol, default=-1.0)
+    # whole groups first, one trial each: every pocket of one side view (a three-plane tree's staircases, 20-40
+    # steps that one-by-one pruning could not get through in time on part 1)
+    anchored = {g.get("on") for g in feats}
+    for ax in sorted({f.get("axis") for f in feats if f["op"] == "pocket"} - {None}):
+        keep = [f for f in feats if not (f["op"] == "pocket" and f.get("axis") == ax and f.get("id") not in anchored)]
+        if len(keep) == len(feats) or time.time() > end:
+            continue
+        s = _forked(pick_score, dict(tree, features=keep), m, tol, default=-1.0)
+        if s >= best - 1e-5:
+            feats[:] = keep
+            best = max(best, s)
     for i in range(len(feats) - 1, 0, -1):
         if time.time() > end:
             break
