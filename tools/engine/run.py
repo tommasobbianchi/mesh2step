@@ -9,9 +9,13 @@ usage: run.py <part.stl> <part.step> [out_tree.json]
 """
 import copy
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):   # before numpy: forked workers deadlock
+    os.environ.setdefault(_v, "1")                                          # on a threaded BLAS
 
 import numpy as np
 import trimesh
@@ -26,6 +30,7 @@ import undo as U                                       # noqa: E402
 
 PR = C.PR
 FINISH_TOP = 2         # raw programs that get the finishing passes
+BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 
 
 def j_exact(tree, m, tol):
@@ -41,22 +46,11 @@ def run(m, step, tol, ilp_s=60.0):
     base = U.defeature(s, [f for x in sets for f in x]) if sets else None
     solids = [("as served", s, False), ("as served, sharp outlines", s, True)] + \
         ([("undone base", base, False)] if base is not None else [])
-    log, best, raws = [], None, []
+    log, best = [], None
+    end = t0 + BUDGET
 
-    def consider(name, vn, t, info):
-        nonlocal best
-        j, sc = j_exact(t, m, tol)
-        log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),
-                    "J": round(j, 4), "ilp": info, "t": round(time.time() - t0, 1)})
-        if best is None or j > best[0]:
-            best = (j, t, sc, f"{name}, {vn}")
-        return j
-
-    for name, sh, sharp in solids:
-        # sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation
-        # cracks and its exact sections can drop edges within its tolerance); the undone base has no scan: its
-        # exact sections. "sharp": pads take each band's widest outline, for the finishes to trim (a full round
-        # leaves no wall for defeaturing to extend, so the undone base cannot give that outline)
+    def gen(sh, sharp):
+        """One hypothesis's program and its raw exact J (runs in a fork)."""
         t1 = time.time()
         if sh is s:
             tree, info = C.program(m, tol, ilp_s, sharp=sharp)
@@ -64,19 +58,51 @@ def run(m, step, tol, ilp_s=60.0):
             tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
         info["program_s"] = round(time.time() - t1, 1)
         if tree is None:
-            log.append({"solid": name, **info})
-            continue
-        raws.append((consider(name, "raw", tree, info), name, tree, info))
-    # finishing costs most of the time (every trial is an exact compile): only the FINISH_TOP best raw programs get it
-    for _, name, tree, info in sorted(raws, key=lambda r: -r[0])[:FINISH_TOP]:
+            return None, info, None, None
+        j, sc = j_exact(tree, m, tol)
+        return tree, info, j, sc
+
+    def fin_measured(tree):
+        """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
         ft = copy.deepcopy(tree)
         PR.edge_mods(ft, m, tol)
         PR.prune(ft, m, tol)
-        consider(name, "finished", ft, info)
-        et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))   # finishes from the evidence faces
-        consider(name, "evidence finishes", et, info)
-        bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol))     # and on top of the measured finishes
-        consider(name, "finished + evidence finishes", bt, info)
+        bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol))
+        return [("finished", ft, *j_exact(ft, m, tol)), ("finished + evidence finishes", bt, *j_exact(bt, m, tol))]
+
+    def fin_evidence(tree):
+        et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))
+        return [("evidence finishes", et, *j_exact(et, m, tol))]
+
+    def note(name, vn, t, info, j, sc):
+        nonlocal best
+        log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),
+                    "J": round(j, 4), "ilp": info, "t": round(time.time() - t0, 1)})
+        if best is None or j > best[0]:
+            best = (j, t, sc, f"{name}, {vn}")
+
+    # the hypotheses in parallel (independent: same decisions as one after another, a third of the wall time).
+    # Sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation cracks
+    # and its exact sections can drop edges within its tolerance); the undone base has no scan: its exact sections.
+    # "sharp": pads take each band's widest outline, for the finishes to trim (a full round leaves no wall for
+    # defeaturing to extend, so the undone base cannot give that outline)
+    hs = [(name, PR._fork_start(gen, sh, sharp)) for name, sh, sharp in solids]
+    raws = []
+    for name, h in hs:
+        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget"}, None, None))
+        if tree is None:
+            log.append({"solid": name, **info})
+            continue
+        note(name, "raw", tree, info, j, sc)
+        raws.append((j, name, tree, info))
+    # finishing costs most of the time (every trial is an exact compile): the FINISH_TOP best raw programs, their
+    # two finishing chains all in parallel
+    jobs = []
+    for _, name, tree, info in sorted(raws, key=lambda r: -r[0])[:FINISH_TOP]:
+        jobs += [(name, info, PR._fork_start(fin_measured, tree)), (name, info, PR._fork_start(fin_evidence, tree))]
+    for name, info, h in jobs:
+        for vn, t, j, sc in PR._fork_collect(h, end, []):
+            note(name, vn, t, info, j, sc)
     out = {"undo_sets": len(sets), "base_planes": list(b[1]), "log": log, "seconds": round(time.time() - t0, 1)}
     if best is None:
         return None, out
