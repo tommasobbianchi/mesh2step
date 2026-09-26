@@ -19,3 +19,5 @@ __pycache__/
 # Executor/agent worktrees: production reads builder scripts straight from this tree,
 # so an agent editing a file here serves a half-written file. Agents work in .worktrees/<slug>.
 .worktrees/
+.cadfit/
+.venv-cadfit/
