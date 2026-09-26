@@ -25,6 +25,7 @@ import solve as S                                      # noqa: E402
 import undo as U                                       # noqa: E402
 
 PR = C.PR
+FINISH_TOP = 2         # raw programs that get the finishing passes
 
 
 def j_exact(tree, m, tol):
@@ -40,34 +41,42 @@ def run(m, step, tol, ilp_s=60.0):
     base = U.defeature(s, [f for x in sets for f in x]) if sets else None
     solids = [("as served", s, False), ("as served, sharp outlines", s, True)] + \
         ([("undone base", base, False)] if base is not None else [])
-    log, best = [], None
+    log, best, raws = [], None, []
+
+    def consider(name, vn, t, info):
+        nonlocal best
+        j, sc = j_exact(t, m, tol)
+        log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),
+                    "J": round(j, 4), "ilp": info, "t": round(time.time() - t0, 1)})
+        if best is None or j > best[0]:
+            best = (j, t, sc, f"{name}, {vn}")
+        return j
+
     for name, sh, sharp in solids:
         # sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation
         # cracks and its exact sections can drop edges within its tolerance); the undone base has no scan: its
         # exact sections. "sharp": pads take each band's widest outline, for the finishes to trim (a full round
         # leaves no wall for defeaturing to extend, so the undone base cannot give that outline)
+        t1 = time.time()
         if sh is s:
             tree, info = C.program(m, tol, ilp_s, sharp=sharp)
         else:
             tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
+        info["program_s"] = round(time.time() - t1, 1)
         if tree is None:
             log.append({"solid": name, **info})
             continue
-        variants = [("raw", tree)]
+        raws.append((consider(name, "raw", tree, info), name, tree, info))
+    # finishing costs most of the time (every trial is an exact compile): only the FINISH_TOP best raw programs get it
+    for _, name, tree, info in sorted(raws, key=lambda r: -r[0])[:FINISH_TOP]:
         ft = copy.deepcopy(tree)
         PR.edge_mods(ft, m, tol)
         PR.prune(ft, m, tol)
-        variants.append(("finished", ft))
-        et, _, flog = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))   # finishes from the evidence faces
-        variants.append(("evidence finishes", et))
+        consider(name, "finished", ft, info)
+        et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))   # finishes from the evidence faces
+        consider(name, "evidence finishes", et, info)
         bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol))     # and on top of the measured finishes
-        variants.append(("finished + evidence finishes", bt))
-        for vn, t in variants:
-            j, sc = j_exact(t, m, tol)
-            log.append({"solid": name, "variant": vn, "ops": len(t["features"]), "score": round(sc, 4),
-                        "J": round(j, 4), "ilp": info})
-            if best is None or j > best[0]:
-                best = (j, t, sc, f"{name}, {vn}")
+        consider(name, "finished + evidence finishes", bt, info)
     out = {"undo_sets": len(sets), "base_planes": list(b[1]), "log": log, "seconds": round(time.time() - t0, 1)}
     if best is None:
         return None, out

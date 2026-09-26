@@ -497,9 +497,16 @@ def build_status(sid: str):
 
 # ---- grading: a reviewer grades the corpus trees (structure, not only fit) --------------------------
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
+GRADE_SETS = {"v5": GRADE_DIR,                                       # the tree sets graders can switch between;
+              "engine": REPO / "runs" / "engine" / "grade_set"}      # each keeps its own grades/ and view/
 
 
-GRADERS = ("tommaso", "andrea", "marc", "mirko", "tommym", "davide", "daniel", "carlo")              # the login page's names; no password (tailnet-only page)
+def _gdir(request):
+    """The set a request grades (X-Grade-Set, default v5)."""
+    return GRADE_SETS.get(request.headers.get("X-Grade-Set", "v5"), GRADE_DIR)
+
+
+GRADERS = ("tommaso", "andrea", "marc", "mirko", "tommym", "tommyb", "davide", "daniel", "carlo")              # the login page's names; no password (tailnet-only page)
 
 
 def _grader(request):
@@ -514,7 +521,7 @@ def _grader(request):
 def _grade_file(part, request):
     """Each grader's own file, so graders never overwrite each other; tommaso keeps <part>.json (his earlier grades)."""
     who = _grader(request)
-    return GRADE_DIR / "grades" / (f"{part}.json" if who == "tommaso" else f"{part}@{who}.json"), who
+    return _gdir(request) / "grades" / (f"{part}.json" if who == "tommaso" else f"{part}@{who}.json"), who
 
 
 @app.get("/api/grade/whoami")
@@ -523,8 +530,8 @@ def grade_whoami(request: Request):
 GRADE_CORPUS = Path(os.environ.get("GRADE_CORPUS", str(Path.home() / "corpora" / "mechparts")))
 
 
-def _grade_tree(part):
-    for d in (GRADE_DIR / "out" / part, GRADE_DIR.parent / "results" / part):
+def _grade_tree(part, gd=GRADE_DIR):
+    for d in (gd / "out" / part, gd.parent / "results" / part):
         if (d / "tree.json").exists():
             info = json.loads((d / "analysis.json").read_text()) if (d / "analysis.json").exists() else {}
             return json.loads((d / "tree.json").read_text()), info, d / "tree.json"
@@ -583,7 +590,7 @@ def grade_page():
 def grade_parts(request: Request):
     out = []
     for f in sorted(GRADE_CORPUS.glob("*.stl"), key=lambda x: (len(x.stem), x.stem)):
-        tree, info, _ = _grade_tree(f.stem)
+        tree, info, _ = _grade_tree(f.stem, _gdir(request))
         if tree is None:
             continue
         p = info.get("proposal") or {}
@@ -600,8 +607,8 @@ def grade_parts(request: Request):
 def grade_part(part: str, request: Request):
     if not part.isalnum():
         raise HTTPException(400, "bad part")
-    cache = GRADE_DIR / "view" / f"{part}.json"
-    tree, info, src = _grade_tree(part)
+    cache = _gdir(request) / "view" / f"{part}.json"
+    tree, info, src = _grade_tree(part, _gdir(request))
     if tree is None:
         raise HTTPException(404, "no tree for that part")
     if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:   # a newer tree: rebuild the view
@@ -636,13 +643,13 @@ def grade_save(request: Request, part: str, overall: int = Form(...), steps_json
     if not isinstance(marks, dict) or any(v not in ("ok", "wrong", "unsure") for v in marks.values()):
         raise HTTPException(400, "bad step marks")
     import hashlib
-    _, info, src = _grade_tree(part)                   # which tree was judged: trees are regenerated
+    _, info, src = _grade_tree(part, _gdir(request))   # which tree was judged: trees are regenerated
     g, reviewer = _grade_file(part, request)
     rec = {"part": part, "overall": overall, "steps": marks, "note": note[:2000], "reviewer": reviewer,
            "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "chosen": info.get("chosen"),
            "tree_sha1": hashlib.sha1(src.read_bytes()).hexdigest()[:12] if src else None,
            "tree_file": str(src) if src else None}
-    d = GRADE_DIR / "grades"
+    d = _gdir(request) / "grades"
     d.mkdir(parents=True, exist_ok=True)
     g.write_text(json.dumps(rec, indent=1))
     with open(d / "log.jsonl", "a") as fh:                # every grade kept, the file per part is the latest
