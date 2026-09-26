@@ -37,14 +37,16 @@ def run(m, step, tol, ilp_s=60.0):
     b = U.base_kind(s)
     sets = U.unexplained_sets(s, b[3])
     base = U.defeature(s, [f for x in sets for f in x]) if sets else None
-    solids = [("as served", s)] + ([("undone base", base)] if base is not None else [])
+    solids = [("as served", s, False), ("as served, sharp outlines", s, True)] + \
+        ([("undone base", base, False)] if base is not None else [])
     log, best = [], None
-    for name, sh in solids:
+    for name, sh, sharp in solids:
         # sections of the served solid come from the scan itself (watertight; the solid's per-face tessellation
         # cracks and its exact sections can drop edges within its tolerance); the undone base has no scan: its
-        # exact sections
+        # exact sections. "sharp": pads take each band's widest outline, for the finishes to trim (a full round
+        # leaves no wall for defeaturing to extend, so the undone base cannot give that outline)
         if sh is s:
-            tree, info = C.program(m, tol, ilp_s)
+            tree, info = C.program(m, tol, ilp_s, sharp=sharp)
         else:
             tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
         if tree is None:

@@ -95,7 +95,7 @@ def _op(fn, a, b, tol):
         return fn(a.buffer(0), b.buffer(0), grid_size=tol / 1000)
 
 
-def candidates(bm, tol, axes=(0, 1, 2), shape=None):
+def candidates(bm, tol, axes=(0, 1, 2), shape=None, sharp=False):
     lo, hi = bm.bounds
     out = []
     for a in axes:
@@ -113,7 +113,8 @@ def candidates(bm, tol, axes=(0, 1, 2), shape=None):
                 q = exact_section(shape, a, float(zz), tol) if shape is not None else \
                     PR.slab_region(bm, a, zz - d / 2, zz + d / 2)
                 g = q if g is None else _op(shapely.intersection, g, q, tol)
-            mats.append(g)
+            # sharp: finishes only remove material, so under them the pad outline is the band's widest section
+            mats.append(PR.slab_region(bm, a, z0 + d, z1 - d) if sharp and shape is None else g)
             if shape is not None:                      # air throughout = outside every section of the band
                 pj = None
                 for zz in hs:
@@ -215,9 +216,9 @@ def solve(V, cands, M, time_limit=60.0):
                     "status": res.message[:60]}
 
 
-def program(bm, tol, time_limit=60.0, shape=None):
+def program(bm, tol, time_limit=60.0, shape=None, sharp=False):
     V, c, h = SE.voxels(bm)
-    cands = candidates(bm, tol, shape=shape)
+    cands = candidates(bm, tol, shape=shape, sharp=sharp)
     M = masks(cands, c)
     chosen, info = solve(V, cands, M, time_limit)
     if chosen is None:
