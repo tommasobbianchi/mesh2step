@@ -498,7 +498,8 @@ def build_status(sid: str):
 # ---- grading: a reviewer grades the corpus trees (structure, not only fit) --------------------------
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
 GRADE_SETS = {"v5": GRADE_DIR,                                       # the tree sets graders can switch between;
-              "engine": REPO / "runs" / "engine" / "grade_set"}      # each keeps its own grades/ and view/
+              "engine": REPO / "runs" / "engine" / "grade_set",      # each keeps its own grades/ and view/
+              "engine-v7": REPO / "runs" / "engine" / "grade_set_v7"}
 
 
 def _gdir(request):
@@ -565,7 +566,11 @@ def _feature_geometry(tree, m, tol):
                             q = T._arc_pts(*x["p"], n=16)
                         else:
                             q = np.array(x["p"], float)
-                        pts += [T.to3(f["axis"], u, v, ff["at"]) for u, v in q]
+                        if "revolve" in ff:                # a revolve's profile lives in its (r, h) plane
+                            to = T._rev_map(ff)
+                            pts += [[to(u, v).X(), to(u, v).Y(), to(u, v).Z()] for u, v in q]
+                        else:
+                            pts += [T.to3(f["axis"], u, v, ff["at"]) for u, v in q]
                     g["lines"].append(np.round(pts, 4).tolist())
             elif f["op"] in ("round", "chamfer"):
                 sofar, _ = T.compile_tree({"units": "mm", "features": tree["features"][:i]}, tol)
