@@ -20,7 +20,7 @@ from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Torus
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import undo as U                                       # noqa: E402
 
-STEP_COST = 0.001
+from cells import STEP_COST                           # noqa: E402  (the one step cost)
 SAME = 0.05            # finish sizes within 5% of each other are one finish
 
 

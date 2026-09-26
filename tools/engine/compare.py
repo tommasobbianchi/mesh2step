@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cells import STEP_COST                            # noqa: E402  (engine and baseline on the same J)
 d = Path(sys.argv[1])
 base = json.load(open(sys.argv[2] if len(sys.argv) > 2 else
                       Path(__file__).resolve().parents[2] / "runs/tree/reverse/baseline.json"))
@@ -29,7 +31,8 @@ for n, e, b in rows:
     if not e or "merit" not in e:
         print(f"{n:>2} engine: {'pending' if e is None else 'no program'}   baseline J {b[4] if b else '-'}")
         continue
-    bj = b[4] if b else None
+    e["merit"] = round(e["score"] - STEP_COST * e["steps"], 4)
+    bj = round(b[2] - STEP_COST * b[3], 4) if b else None
     tag = "-" if bj is None else ("WIN" if e["merit"] > bj + 1e-4 else "loss" if e["merit"] < bj - 1e-4 else "tie")
     w, l, t = w + (tag == "WIN"), l + (tag == "loss"), t + (tag == "tie")
     if bj is not None:

@@ -15,7 +15,7 @@ sys.path.insert(0, str(HERE.parent / "tree"))
 import search as SE                                    # noqa: E402
 import tree as T                                       # noqa: E402
 
-STEP_COST = 0.001
+from cells import STEP_COST                           # noqa: E402  (the one step cost)
 
 
 def region(f):

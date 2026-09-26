@@ -27,7 +27,7 @@ import undo as U                                       # noqa: E402
 import reverse_steps as R                              # noqa: E402
 
 PR = SE.PR
-STEP_COST = 0.001
+from cells import STEP_COST                           # noqa: E402  (the one step cost)
 
 
 def mesh_of(shape, defl):

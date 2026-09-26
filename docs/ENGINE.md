@@ -27,7 +27,10 @@ Today the tree IR covers extrusions along X/Y/Z (`pad`/`pocket`), `round`/`chamf
 ## 2. Objective J (the decision maker)
 
 `J(program) = score - STEP_COST * steps`, where `score = IoU + 0.5 * (explained - extra)` on the real solid
-(`tools/tree/analyse.py`: `measure` and `merit`) and `STEP_COST = 0.001`.
+(`tools/tree/analyse.py`: `measure`) and `STEP_COST = 0.002` (`tools/engine/cells.py`, the only step cost).
+The step cost is the objective's one free parameter and it is calibrated on the owner's grades, never tuned on
+a part: on 2026-09-26 his v4/v7 grades bracketed it between ~0.0012 (part 6: 12 steps graded 5 beat 23 steps
+graded 3 despite a slightly better fit) and ~0.004 (parts 12 and 33 keep the finishes he graded 5).
 
 This is the minimum-description-length choice: the shortest program that reproduces the mesh. Every
 preference we hand-wrote before now follows from J and is no longer coded:

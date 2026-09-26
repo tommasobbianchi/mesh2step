@@ -1,4 +1,4 @@
-"""The baseline the engine must beat: per part, the best merit (score - 0.001 * steps) any earlier approach
+"""The baseline the engine must beat: per part, the best merit (score - cells.STEP_COST * steps) any earlier approach
 reached, with its source. Sources: analyse v5/v6 (steps counted from the saved tree when the log lacks them),
 the rule-based reverse search (runs/tree/reverse/v2), CADFit raw and finished (runs/tree/cadfit).
 
@@ -11,13 +11,15 @@ import sys
 from pathlib import Path
 
 R = Path(__file__).resolve().parents[2] / "runs" / "tree"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cells import STEP_COST                            # noqa: E402
 best = {}
 
 
 def offer(n, src, score, steps):
     if score is None or steps is None:
         return
-    m = round(score - 0.001 * steps, 4)
+    m = round(score - STEP_COST * steps, 4)
     if n not in best or m > best[n][4]:
         best[n] = (src, "", round(score, 4), int(steps), m)
 
