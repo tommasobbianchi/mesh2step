@@ -201,7 +201,7 @@ function applyView(v) {
   $('steps').replaceChildren(...v.steps.map((st) => { const b = document.createElement('button'); b.dataset.id = st.id;
     b.innerHTML = '<b></b><small></small>'; b.firstChild.textContent = `${st.id} · ${st.label}`; b.lastChild.textContent = st.text;
     b.addEventListener('click', () => paint([st.id])); return b; }));
-  $('match').textContent = `Matches ${(v.explained * 100).toFixed(1)}% of your mesh (within ${v.tol}).` +
+  $('match').textContent = (v.source ? `Built by the ${v.source}. ` : '') + `Matches ${(v.explained * 100).toFixed(1)}% of your mesh (within ${v.tol}).` +
     (Object.keys(v.notes || {}).length ? ' Notes: ' + Object.entries(v.notes).map(([k, n]) => `${k} ${n}`).join('; ') : '');
   $('stepsCard').hidden = false;
   if (solidMesh) scene.remove(solidMesh);

@@ -33,6 +33,9 @@ CLAUDE = os.path.expanduser("~/.local/bin/claude")
 MODEL = os.environ.get("INTERVIEW_MODEL", "sonnet")
 MAX_REGIONS = 40
 SESS: dict = {}
+ENGINE_HOST = os.environ.get("ENGINE_HOST", "tommaso@100.103.234.2")   # behemoth (fleet.py HOSTS)
+ENGINE_STAGE = os.environ.get("ENGINE_STAGE", "/home/tommaso/engine-fleet/app")   # frozen release: tools/ at v15 (ca0108c)
+ENGINE_MEM = os.environ.get("ENGINE_MEM", "32G")
 ENGINE_SLOT = threading.Semaphore(1)                  # ponytail: one engine run at a time (16 GB each, nativedev is production)
 app = FastAPI()
 
@@ -294,7 +297,7 @@ def _refresh(s):
     owner = T.feature_faces(m, tree, shape, tol)
     V, F = dev["solid_mesh"].vertices, dev["solid_mesh"].faces
     (Path(s["dir"]) / "tree.json").write_text(json.dumps(tree, indent=1))
-    s["view"] = {"steps": steps(tree), "notes": notes, "explained": round(dev["explained"], 4),
+    s["view"] = {"steps": steps(tree), "notes": notes, "source": s.get("source"), "explained": round(dev["explained"], 4),
                  "extra": round(dev["extra"], 4), "tol": round(tol, 4),
                  "face_err": _b64(np.clip(dev["face_dist"] / tol * 64, 0, 255), np.uint8),   # 64 = at tolerance
                  "face_feature": _b64(owner, np.int16),
@@ -322,12 +325,28 @@ def _engine(s, d, m):
 
 
 def _engine_run(s, d, m, step, out):
+    """On the fleet host (behemoth: 60 GB; nativedev is production and OOM-killed the engine at 16 GB on the first
+    real part), the frozen release staged at ~/engine-fleet/app; on nativedev only if the host is unreachable."""
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)      # as run.py's __main__
+    job = f"{ENGINE_STAGE}/jobs/{d.name}"
+    ssh = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", ENGINE_HOST]
+    remote = subprocess.run(ssh + [f"mkdir -p {job}"], capture_output=True, timeout=60).returncode == 0 and \
+        subprocess.run(["rsync", "-a", str(d / "mesh.stl"), str(step), f"{ENGINE_HOST}:{job}/"],
+                       capture_output=True, timeout=600).returncode == 0
+    run = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", f"MemoryMax={ENGINE_MEM}", "-p",
+           "MemorySwapMax=0", "timeout", "2700"]
     with open(out / "engine.log", "w") as log:
-        subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=16G",
-                        "-p", "MemorySwapMax=0", sys.executable, str(REPO / "tools/engine/run.py"),
-                        str(d / "mesh.stl"), str(step), str(out / "tree.json")],
-                       stdout=log, stderr=subprocess.STDOUT, text=True, timeout=2700)
+        if remote:
+            s["engine_host"] = ENGINE_HOST.split("@")[-1]
+            subprocess.run(ssh + [" ".join(run + [f"{ENGINE_STAGE}/../venv/bin/python", f"{ENGINE_STAGE}/tools/engine/run.py",
+                                                  f"{job}/mesh.stl", f"{job}/{step.name}", f"{job}/tree.json"])],
+                           stdout=log, stderr=subprocess.STDOUT, text=True, timeout=2900)
+            subprocess.run(["rsync", "-a", f"{ENGINE_HOST}:{job}/tree.json", str(out / "tree.json")], capture_output=True, timeout=120)
+        else:
+            s["engine_host"] = "nativedev"
+            subprocess.run(run[:6] + ["MemoryMax=16G"] + run[7:] + [sys.executable, str(REPO / "tools/engine/run.py"),
+                                                              str(d / "mesh.stl"), str(step), str(out / "tree.json")],
+                           stdout=log, stderr=subprocess.STDOUT, text=True, timeout=2900)
     if not (out / "tree.json").exists():
         return None, None
     info = json.loads(next(ln for ln in (out / "engine.log").read_text().splitlines() if ln.startswith("{")))
@@ -341,7 +360,9 @@ def _analyse(sid):
         d = Path(s["dir"]); an = d / "analysis"
         m = trimesh.load(d / "mesh.stl", force="mesh")
         tree, info = _engine(s, d, m)
+        s["source"] = f"design-history engine on {s.get('engine_host')}"
         if tree is None:                               # no evidence STEP or no program: the mesh-only analysis
+            s["source"] = "the older mesh-only analysis (the engine gave no result: see engine/engine.log)"
             s["stage"] = "reading the mesh (the engine found no program)"
             # its own process, memory-capped: OCCT on a bad sketch can take tens of GB (measured 44 GB once)
             subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=8G",
