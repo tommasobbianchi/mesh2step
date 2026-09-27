@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepTools import BRepTools
+from OCP.BRepBndLib import BRepBndLib
 from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Torus
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,6 +25,7 @@ from cells import STEP_COST                           # noqa: E402  (the one ste
 SAME = 0.05            # finish sizes within 5% of each other are one finish
 AXIS_JOIN = 1.5        # mm: cylinder patches with axis lines this close are one round (Kimi, part 6)
 SMOOTH_DEG = 5.0       # a round meets its support planes tangentially: normals within this angle at the edge
+CHAMFER_DEG = 5.0      # a 45-degree chamfer strip meets its support planes at 45 +- this
 MISSES = 5             # consecutive rejected finish groups before the rest are skipped
 
 
@@ -89,6 +91,52 @@ def _support_planes(shape):
     return out
 
 
+def chamfer_strips(shape, rmax, tol):
+    """Flat chamfers (docs/ENGINE.md: 'narrow plane between two faces'): a planar face whose two longest edges
+    each join another plane at 135 deg +- CHAMFER_DEG (a 45-degree chamfer), and which is narrow (distance
+    between those edges <= rmax). -> [(size, [support pair], sample points)]: size = the chamfer's setback, the
+    support pair = the two planes whose meeting edge it replaced."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_AbscissaPoint
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, U.TopAbs_FACE, emap)
+    by_face = {}
+    for i in range(1, emap.Extent() + 1):
+        fs = [U.TopoDS.Face_s(f) for f in emap.FindFromIndex(i)]
+        if len(fs) != 2 or any(U.BRepAdaptor_Surface(f).GetType() != U.GeomAbs_Plane for f in fs):
+            continue
+        e = U.TopoDS.Edge_s(emap.FindKey(i))
+        c = BRepAdaptor_Curve(e)
+        ln = GCPnts_AbscissaPoint.Length_s(c)
+        m = c.Value((c.FirstParameter() + c.LastParameter()) / 2)
+        for a, b in ((0, 1), (1, 0)):
+            by_face.setdefault(fs[a].__hash__(), (fs[a], []))[1].append((ln, fs[b], np.array([m.X(), m.Y(), m.Z()])))
+    out = []
+    for f, edges in by_face.values():
+        if len(edges) < 2:
+            continue
+        edges.sort(key=lambda x: -x[0])
+        (l1, g1, m1), (l2, g2, m2) = edges[0], edges[1]
+        pf = U.BRepAdaptor_Surface(f).Plane()
+        nf = U.E._v(pf.Axis().Direction())
+        sup = []
+        for g in (g1, g2):
+            pg = U.BRepAdaptor_Surface(g).Plane()
+            ng, og = U.E._v(pg.Axis().Direction()), U.E._v(pg.Location())
+            ang = math.degrees(math.acos(min(1.0, abs(float(nf @ ng)))))
+            if abs(ang - 45.0) > CHAMFER_DEG:
+                break
+            sup.append([round(float(x), 4) for x in list(og) + list(ng)])
+        else:
+            width = float(np.linalg.norm(np.cross(m1 - m2, nf)))
+            if width <= rmax + tol:
+                out.append((width / math.sqrt(2), sup, [m1.tolist(), m2.tolist(), ((m1 + m2) / 2).tolist()]))
+    return out
+
+
 def _cylinders(solid, tol):
     """The cylindrical faces a program's solid already has: (axis index, point on the axis line, radius)."""
     out = []
@@ -123,7 +171,7 @@ def groups(shape, pad_axes, solid=None, tol=0.1):
     sup = _support_planes(shape)
     fmap = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, U.TopAbs_FACE, fmap)
-    g, ax, sp = {}, {}, {}
+    g, ax, sp, cx = {}, {}, {}, {}
     for f in U.faces(shape):
         s = BRepAdaptor_Surface(f)
         t = s.GetType()
@@ -150,6 +198,17 @@ def groups(shape, pad_axes, solid=None, tol=0.1):
         if size <= 0 or (op == "round" and size > rmax + tol):
             continue                                    # a near-flat arc of an outline, not a round
         g.setdefault((op, round(size, 3)), []).extend(_samples(f))
+        if t in (GeomAbs_Torus, GeomAbs_Cone):             # a rim finish: its axis line and extent (coaxial selector)
+            q = s.Torus() if t == GeomAbs_Torus else s.Cone()
+            dd, oo = U.E._v(q.Axis().Direction()), U.E._v(q.Axis().Location())
+            aa = int(np.argmax(np.abs(dd)))
+            if abs(dd[aa]) > 0.999:
+                from OCP.Bnd import Bnd_Box as _BB
+                fb = _BB()
+                BRepBndLib.Add_s(f, fb)
+                lo3, hi3 = fb.Get()[:3], fb.Get()[3:]
+                cx.setdefault((op, round(size, 3)), []).append(
+                    {"a": aa, "p": [round(float(x), 4) for x in oo], "v": [round(float(lo3[aa]), 4), round(float(hi3[aa]), 4)]})
         planes = sup.get(fmap.FindIndex(f), [])
         if len(planes) >= 2:                              # tangent to two planes: the edge where they meet
             a0 = planes[0]
@@ -161,16 +220,20 @@ def groups(shape, pad_axes, solid=None, tol=0.1):
             ax.setdefault((op, round(size, 3)), []).append((a, o, (o[a] + min(v0, v1) * d[a], o[a] + max(v0, v1) * d[a])))
     # one finish, one size: sizes within SAME of each other are one group (the scan's fit scatters one radius
     # over its faces: 2.00 and 2.05 mm on part 9 made two jagged rounds), sized by their samples' weighted mean
+    for size, pair, pts in chamfer_strips(shape, rmax, tol):   # flat chamfer strips join the chamfer groups
+        g.setdefault(("chamfer", round(size, 3)), []).extend(pts)
+        sp.setdefault(("chamfer", round(size, 3)), []).append(pair)
     merged = []
     for (op, size), pts in sorted(g.items()):
-        axl, spl = ax.get((op, size), []), sp.get((op, size), [])
+        axl, spl, cxl = ax.get((op, size), []), sp.get((op, size), []), cx.get((op, size), [])
         if merged and merged[-1][0] == op and size <= merged[-1][1] * (1 + SAME):
-            o, s0, p0, a0, q0 = merged[-1]
-            merged[-1] = (o, (s0 * len(p0) + size * len(pts)) / (len(p0) + len(pts)), p0 + pts, a0 + axl, q0 + spl)
+            o, s0, p0, a0, q0, c0 = merged[-1]
+            merged[-1] = (o, (s0 * len(p0) + size * len(pts)) / (len(p0) + len(pts)), p0 + pts, a0 + axl, q0 + spl,
+                          c0 + cxl)
         else:
-            merged.append((op, size, pts, axl, spl))
-    return [(op, size, size, pts, {"axes": _axis_clusters(axl, tol), "support": spl}) for op, size, pts, axl, spl in
-            sorted(merged, key=lambda x: -len(x[2]))]
+            merged.append((op, size, pts, axl, spl, cxl))
+    return [(op, size, size, pts, {"axes": _axis_clusters(axl, tol), "support": spl, "coax": cxl})
+            for op, size, pts, axl, spl, cxl in sorted(merged, key=lambda x: -len(x[2]))]
 
 
 def _axis_clusters(axl, tol):
@@ -201,7 +264,8 @@ def apply(tree, shape, m, tol, j_of):
         best2 = None
         # precise first (edges tangent to the evidence round's planes, named by its axis lines), else the
         # proximity selection with the bounded retry
-        for sel in ([{"support": axes["support"]}] if axes["support"] else []) + \
+        for sel in ([{"coax": axes["coax"]}] if axes["coax"] else []) + \
+                ([{"support": axes["support"]}] if axes["support"] else []) + \
                 ([{"round_axes": axes["axes"]}] if axes["axes"] and op == "round" else []) + \
                 [{"near": [[round(x, 4) for x in p] for p in pts], "reach": round(reach, 4)}]:
             trial = copy.deepcopy(cur)

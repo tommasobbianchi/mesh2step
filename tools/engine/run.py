@@ -35,6 +35,7 @@ PR = C.PR
 FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
+HYP_SHARE = 0.5        # share of the budget the program hypotheses may take (the rest is finishing's)
 
 
 def j_exact(tree, m, tol):
@@ -119,8 +120,9 @@ def run(m, step, tol, ilp_s=60.0):
     # walls in its own process (a snapped build that crashes loses only itself)
     hs = [(name, sh, sharp, extra, PR._fork_start(gen, sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
     got, redo = {}, []
-    for name, sh, sharp, extra, h in hs:
-        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": False}, None, None))
+    end_h = t0 + HYP_SHARE * BUDGET                    # hypotheses get at most this share: finishing always runs
+    for name, sh, sharp, extra, h in hs:               # (v13/v14: part 6 spent 1366 s here and never got its fillets)
+        tree, info, j, sc = PR._fork_collect(h, end_h, (None, {"error": "died or over budget", "snapped": False}, None, None))
         if tree is None:
             log.append({"solid": name, **info})
             redo.append((name, sh, sharp, extra))
@@ -130,7 +132,8 @@ def run(m, step, tol, ilp_s=60.0):
             redo.append((name, sh, sharp, extra))
     hs2 = [(name, PR._fork_start(gen, sh, sharp, extra, True)) for name, sh, sharp, extra in redo]
     for name, h in hs2:
-        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": True}, None, None))
+        tree, info, j, sc = PR._fork_collect(h, max(end_h, time.time() + 60), (None, {"error": "died or over budget",
+                                                                                     "snapped": True}, None, None))
         if tree is None:
             log.append({"solid": name, **info})
             continue

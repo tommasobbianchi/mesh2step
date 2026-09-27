@@ -232,6 +232,34 @@ def cap_planes(tree, mod):
     return f["axis"], {"top": [hi], "bottom": [lo], "both": [lo, hi]}[mod.get("cap", "both")]
 
 
+def _coax_edges(shape, axes, size, tol):
+    """Circular edges coaxial with an evidence cone or torus: centre on its axis line, circle axis parallel to it,
+    and lying within its extent along the axis (widened by the finish size). A chamfer or round on a hole or boss
+    rim replaced exactly such a circle. axes: [{"a": axis index, "p": point on the line, "v": [lo, hi]}]."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    emap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, emap)
+    out = []
+    for i in range(1, emap.Extent() + 1):
+        e = TopoDS.Edge_s(emap.FindKey(i))
+        c = BRepAdaptor_Curve(e)
+        if c.GetType() != GeomAbs_Circle:
+            continue
+        ci = c.Circle()
+        d, o = ci.Axis().Direction(), ci.Location()
+        d, o = np.array([d.X(), d.Y(), d.Z()]), np.array([o.X(), o.Y(), o.Z()])
+        for ax in axes:
+            a, P, (v0, v1) = int(ax["a"]), np.asarray(ax["p"], float), ax["v"]
+            if abs(d[a]) > 0.999 and np.linalg.norm(np.delete(o - P, a)) <= tol and \
+                    v0 - size - tol <= o[a] <= v1 + size + tol:
+                out.append(e)
+                break
+    return out
+
+
 def _support_edges(shape, pairs, tol):
     """Edges whose two adjacent faces are planes lying on a recorded support-plane pair (point p, normal n each):
     the sharp edge a round replaced is where the two faces it was tangent to meet. pairs: [[[px,py,pz,nx,ny,nz],
@@ -317,6 +345,8 @@ def modifier_edges(shape, tree, mod, tol):
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.TopAbs import TopAbs_WIRE
+    if mod.get("coax"):                                # evidence chamfer cone / round torus about an axis: the
+        return _coax_edges(shape, mod["coax"], float(mod["size"]), tol or 1e-3)   # circular edge it replaced
     if mod.get("support"):                             # evidence round by its support faces (Analysis Situs' spring
         return _support_edges(shape, mod["support"], tol or 1e-3)   # edges): the edge where its two planes meet
     if mod.get("round_axes"):                          # evidence round, precise (Kimi, 2026-09-27): the sharp edge a
