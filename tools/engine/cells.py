@@ -38,6 +38,7 @@ def steps(tree):
     return sum(MIRROR_STEP if "mirror_of" in f else 1.0 for f in tree["features"])
 SAMPLES = 5            # sections per band intersected for "material throughout"
 AGG_NNZ = 5_000_000    # cell memberships past which the ILP cover rows are aggregated (logged as "nnz" per program)
+BIG_NK = 3000          # candidates past which the cells are grouped by hash (corpus max 2069)
 NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 
 
@@ -230,7 +231,17 @@ def solve(V, cands, M, time_limit=60.0):
     covered = M.any(axis=1)
     keep = covered | vox                                 # voxels no candidate touches are fixed empty
     sig = M[keep]
-    cells, inv, cnt = np.unique(sig, axis=0, return_inverse=True, return_counts=True)
+    if len(cands) > BIG_NK:                            # hash the rows, then np.unique on the hashes: the same cells
+        h = np.zeros(len(sig), np.uint64)              # (verified exact on the user part: 0 collisions, 49999 cells)
+        for j in range(sig.shape[1]):                  # in 0.4 s instead of a 243 s, +2.4 GB row sort (Kimi)
+            h = h * np.uint64(1099511628211) ^ sig[:, j].astype(np.uint64)
+        _, first, inv, cnt = np.unique(h, return_index=True, return_inverse=True, return_counts=True)
+        if not np.array_equal(sig, sig[first][inv]):   # a hash collision: fall back to the exact row sort
+            cells, inv, cnt = np.unique(sig, axis=0, return_inverse=True, return_counts=True)
+        else:
+            cells = sig[first]
+    else:                                              # the corpus path, unchanged (cell order = ILP row order)
+        cells, inv, cnt = np.unique(sig, axis=0, return_inverse=True, return_counts=True)
     inv = inv.ravel()
     nin = np.bincount(inv, weights=vox[keep].astype(float), minlength=len(cells))
     nout = cnt - nin

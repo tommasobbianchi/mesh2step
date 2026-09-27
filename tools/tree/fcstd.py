@@ -157,6 +157,10 @@ try:
     diag = {o.Label: info(o) for o in GROUP if not o.TypeId.startswith("App::")}
     shapes = [b.Shape for b in BODIES if not b.Shape.isNull()]
     sh = shapes[0] if len(shapes) == 1 else Part.makeCompound(shapes) if shapes else Part.Shape()
+    for b in BODIES:                                   # as the GUI shows a body: it and its tip, nothing else (saved
+        b.Visibility = True                            # headless every feature but the sketches was hidden and the
+        for o in b.Group:                              # file opened blank for the owner, 2026-09-27)
+            o.Visibility = o == b.Tip
     doc.saveAs(OUT)
     res = {"ok": False, "invalid_features": bad, "diag": diag}
     if sh.isNull():
@@ -317,6 +321,39 @@ def script(tree, out, report, tol, brep=None, skip=()):
     return "\n".join(L) + TAIL
 
 
+GUI_SAVE = r'''
+import FreeCAD as App, FreeCADGui as Gui
+doc = App.openDocument({path!r}); Gui.updateGui()
+for b in [o for o in doc.Objects if o.TypeId == "PartDesign::Body"]:
+    for o in [b] + list(b.Group):
+        o.ViewObject.Visibility = o is b or o == b.Tip
+v = Gui.activeDocument().activeView(); v.viewIsometric(); v.fitAll(); Gui.updateGui()
+doc.save(); open({path!r} + ".gui_ok", "w").write("ok")
+import os; os._exit(0)                                 # closing the window leaves FreeCAD running (hung to the timeout)
+'''
+
+
+def gui_save(out):
+    """Re-save the document once through the FreeCAD GUI on a virtual display: a file saved headless has no
+    GuiDocument.xml, and FreeCAD then opens it with every object hidden (the owner saw a blank file, 2026-09-27).
+    False when no display could be made; the file is then the headless one."""
+    py, ok = Path(str(out) + ".gui.py"), Path(str(out) + ".gui_ok")
+    py.write_text(GUI_SAVE.format(path=str(out))); ok.unlink(missing_ok=True)
+    try:
+        subprocess.run(["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", FREECAD.replace(".cmd", ""), str(py)],
+                       capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    for bak in Path(out).parent.glob(Path(out).stem + ".*.FCBak"):
+        bak.unlink()                                   # FreeCAD's save backup
+    import time
+    for _ in range(30):                                # the snap's FreeCAD can finish after xvfb-run returns
+        if ok.exists():
+            return True
+        time.sleep(1)
+    return False
+
+
 def iter_solids(sh):
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -348,6 +385,8 @@ def build(tree, out, tol=0.05):
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
+    if out.exists():
+        r["gui_saved"] = gui_save(out)
     n_ref = r["ref_solids"] = len(list(iter_solids(ref)))
     if r.get("ok") and r.get("valid") and r.get("solids") == n_ref:   # as many solids as the STEP compile   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
