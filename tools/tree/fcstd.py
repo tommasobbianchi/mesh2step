@@ -220,7 +220,7 @@ def connected_order(feats):
     return out
 
 
-def script(tree, out, report, tol, brep=None):
+def script(tree, out, report, tol, brep=None, skip=()):
     brep = brep or {}
     tree = dict(tree, features=connected_order(tree["features"]))
     L = [HEAD.format(out=str(out), report=str(report), rot=ROT)]
@@ -233,6 +233,8 @@ def script(tree, out, report, tol, brep=None):
                 taper.setdefault(f["on"], {})[cap] = (float(f["size"]), f["id"])
     last, cur = None, None
     for f in tree["features"]:
+        if f["id"] in skip:
+            continue
         i, lab = f["id"], json.dumps(f.get("label", f["id"]))
         tag = f.get("body", "")
         if cur is not None and tag != cur:             # the next body of a multi-body part: its own Body
@@ -315,10 +317,21 @@ def script(tree, out, report, tol, brep=None):
     return "\n".join(L) + TAIL
 
 
+def iter_solids(sh):
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    ex = TopExp_Explorer(sh, TopAbs_SOLID)
+    while ex.More():
+        yield ex.Current(); ex.Next()
+
+
 def build(tree, out, tol=0.05):
     out = Path(out).resolve(); report = out.with_suffix(".report.json"); py = out.with_suffix(".build.py")
     T._PREFIX.clear(); T.APPLIED.clear()               # a fresh compile: every modifier records its edges
-    ref, _ = T.compile_tree(tree, tol)
+    ref, notes = T.compile_tree(tree, tol)
+    # the features the compile skipped (self-intersecting sketch) or could not build are not in the STEP: leave them
+    # out, or FreeCAD builds them anyway (a self-intersecting Level 2 became a sheet 39 mm past the part, symdiff 1.79)
+    skip = {i for i, n in notes.items() if i != "result" and any(w in n for w in ("skipped", "failed", "refused on"))}
     brep = {}
     for f in tree["features"]:
         if f["op"] in ("round", "chamfer") and any(f.get(k) for k in ("near", "support", "coax", "round_axes")) \
@@ -330,19 +343,34 @@ def build(tree, out, tol=0.05):
             for e in T.APPLIED[f["id"]]:
                 b.Add(c, e)
             brep[f["id"]] = str(out.with_suffix(f".{f['id']}.brep")); BRepTools.Write_s(c, brep[f["id"]])
-    py.write_text(script(tree, out, report, tol, brep))
+    py.write_text(script(tree, out, report, tol, brep, skip))
     report.unlink(missing_ok=True)
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
-    if r.get("ok") and r.get("valid") and r.get("solids") == r.get("bodies", 1):   # same solid as the STEP compile? (an invalid
+    n_ref = r["ref_solids"] = len(list(iter_solids(ref)))
+    if r.get("ok") and r.get("valid") and r.get("solids") == n_ref:   # as many solids as the STEP compile   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
         from OCP.STEPControl import STEPControl_Reader
         rd = STEPControl_Reader(); rd.ReadFile(str(out)[:-6] + ".fc.step"); rd.TransferRoots(); fc = rd.OneShape()
         v = T.volume(ref)
         # from the common part: a cut of two identical solids can return garbage (part 22: -303960 mm3, common = all)
-        r["symdiff"] = round((v + T.volume(fc) - 2 * T.volume(BRepAlgoAPI_Common(ref, fc).Shape())) / v, 5)
+        # booleans between two identical solids are unreliable (common = 0 on the user's 2912 mm3 solid, garbage
+        # cuts on part 22), so "same solid" = matched solids with equal volume, area and centre of mass: the
+        # largest relative difference (a FreeCAD build that drifted shows up in all three)
+        def props(sh):
+            out = []
+            for x in iter_solids(sh):
+                g, a = GProp_GProps(), GProp_GProps()
+                BRepGProp.VolumeProperties_s(x, g); BRepGProp.SurfaceProperties_s(x, a); c = g.CentreOfMass()
+                out.append((g.Mass(), a.Mass(), np.array([c.X(), c.Y(), c.Z()])))
+            return sorted(out, key=lambda q: q[0])
+        P, Q = props(ref), props(fc)
+        size = abs(v) ** (1 / 3)
+        r["symdiff"] = round(max(max(abs(p[0] - q[0]) / abs(p[0]), abs(p[1] - q[1]) / p[1],
+                                     float(np.linalg.norm(p[2] - q[2])) / size) for p, q in zip(P, Q)), 5)
     return r
 
 
