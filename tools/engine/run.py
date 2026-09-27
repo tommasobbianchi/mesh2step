@@ -34,6 +34,7 @@ import undo as U                                       # noqa: E402
 PR = C.PR
 FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
+BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
 
 
 def j_exact(tree, m, tol):
@@ -46,6 +47,8 @@ def run(m, step, tol, ilp_s=60.0):
     s = E.read(step)
     b = U.base_kind(s)
     sets = U.unexplained_sets(s, b[3])
+    # one call within the budget: one chain at a time (U.undo_chains, Analysis Situs' loop) gave the same bases on
+    # 6 parts in twice the time (runs/engine/undo_cmp2.log), so it is kept only as a tool
     base = U.defeature_budgeted(s, [f for x in sets for f in x]) if sets else None
     rc = RV.candidates(s, m, tol)                      # revolve or not is a hypothesis too (finishes may do it)
     solids = [("as served", s, False, ()), ("as served, sharp outlines", s, True, ())] + \
@@ -66,7 +69,22 @@ def run(m, step, tol, ilp_s=60.0):
         if tree is None:
             return None, info, None, None
         j, sc = j_exact(tree, m, tol)
+        info["broken"] = _broken(tree)               # the silent-empty-fuse symptom (see below)
         return tree, info, j, sc
+
+    def _broken(tree):
+        """Exact solid and voxel program disagree on volume by more than BROKEN: a boolean of near-coincident
+        walls silently lost material (part 6: exact 177k vs voxels 280k). Only then is the snapped build tried."""
+        import jfast as JF
+        import tree as T
+        try:
+            sh, _ = T.compile_tree(tree, tol)
+            ve = T.volume(sh) if sh is not None else 0.0
+            V, c, h = JF.SE.voxels(m)
+            vr = float(JF.rasterize(tree, c).sum()) * h ** 3
+            return abs(ve - vr) > BROKEN * max(vr, 1e-9)
+        except Exception:                            # noqa: BLE001
+            return True
 
     def fin_measured(tree):
         """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
@@ -97,11 +115,22 @@ def run(m, step, tol, ilp_s=60.0):
     # defeaturing to extend, so the undone base cannot give that outline)
     # every hypothesis built plain and with snapped walls, each in its own process: a snapped build that crashes
     # or overruns loses only itself (v11: it took the plain 'sharp outlines' program of part 11 down with it)
-    hs = [(name, snap, PR._fork_start(gen, sh, sharp, extra, snap)) for name, sh, sharp, extra in solids
-          for snap in (False, True)]
-    got = {}
-    for name, snap, h in hs:
-        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": snap}, None, None))
+    # plain builds first; a hypothesis whose plain build shows the silent-empty-fuse symptom is rebuilt with snapped
+    # walls in its own process (a snapped build that crashes loses only itself)
+    hs = [(name, sh, sharp, extra, PR._fork_start(gen, sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
+    got, redo = {}, []
+    for name, sh, sharp, extra, h in hs:
+        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": False}, None, None))
+        if tree is None:
+            log.append({"solid": name, **info})
+            redo.append((name, sh, sharp, extra))
+            continue
+        got[name] = (tree, info, j, sc)
+        if info.get("broken"):
+            redo.append((name, sh, sharp, extra))
+    hs2 = [(name, PR._fork_start(gen, sh, sharp, extra, True)) for name, sh, sharp, extra in redo]
+    for name, h in hs2:
+        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": True}, None, None))
         if tree is None:
             log.append({"solid": name, **info})
             continue

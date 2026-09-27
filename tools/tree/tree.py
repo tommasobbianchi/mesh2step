@@ -232,6 +232,42 @@ def cap_planes(tree, mod):
     return f["axis"], {"top": [hi], "bottom": [lo], "both": [lo, hi]}[mod.get("cap", "both")]
 
 
+def _support_edges(shape, pairs, tol):
+    """Edges whose two adjacent faces are planes lying on a recorded support-plane pair (point p, normal n each):
+    the sharp edge a round replaced is where the two faces it was tangent to meet. pairs: [[[px,py,pz,nx,ny,nz],
+    [...]], ...]."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    P = [[(np.asarray(a[:3], float), np.asarray(a[3:], float)) for a in pr] for pr in pairs]
+
+    def on(n, o, ref):
+        p0, n0 = ref
+        return abs(float(n @ n0)) > 0.999 and abs(float(n0 @ (o - p0))) <= tol
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    out = []
+    for i in range(1, emap.Extent() + 1):
+        fs = [TopoDS.Face_s(f) for f in emap.FindFromIndex(i)]
+        if len(fs) != 2:
+            continue
+        pls = []
+        for f in fs:
+            srf = BRepAdaptor_Surface(f)
+            if srf.GetType() != GeomAbs_Plane:
+                break
+            pl = srf.Plane()
+            n, o = pl.Axis().Direction(), pl.Location()
+            pls.append((np.array([n.X(), n.Y(), n.Z()]), np.array([o.X(), o.Y(), o.Z()])))
+        else:
+            (n1, o1), (n2, o2) = pls
+            if any((on(n1, o1, a) and on(n2, o2, b)) or (on(n1, o1, b) and on(n2, o2, a)) for a, b in P):
+                out.append(TopoDS.Edge_s(emap.FindKey(i)))
+    return out
+
+
 def _axis_edges(shape, axes, r, tol, slack=0.5):
     """Edges a round of radius r with these axis lines replaced: straight, parallel to the axis, inside its span,
     and both adjacent faces planes at distance r from the axis line (the round was tangent to them). Computed from
@@ -281,6 +317,8 @@ def modifier_edges(shape, tree, mod, tol):
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.TopAbs import TopAbs_WIRE
+    if mod.get("support"):                             # evidence round by its support faces (Analysis Situs' spring
+        return _support_edges(shape, mod["support"], tol or 1e-3)   # edges): the edge where its two planes meet
     if mod.get("round_axes"):                          # evidence round, precise (Kimi, 2026-09-27): the sharp edge a
         return _axis_edges(shape, mod["round_axes"], float(mod["size"]), tol or 1e-3)   # round replaced
     if mod.get("near"):                                # evidence finish (tools/engine/finish.py): the sharp edges a

@@ -93,7 +93,8 @@ def defeature(shape, rm):
     for f in rm:
         lst.Append(f)
     d.AddFacesToRemove(lst)
-    d.SetRunParallel(True)
+    d.SetRunParallel(False)                            # a parallel run leaves OCCT's thread pool in this process and
+                                                       # every later fork deadlocks (the hypothesis forks of run.py)
     d.Build()
     if not d.IsDone():
         return None
@@ -170,3 +171,47 @@ def defeature_budgeted(shape, rm):
     import propose as PR
     ok = PR._fork_collect(PR._fork_start(_trial, shape, rm, int(UNDO_MEM_GB * 2 ** 30)), time.time() + UNDO_S, False)
     return defeature(shape, rm) if ok else None
+
+
+def undo_chains(shape, planes=None, budget_s=240.0):
+    """Undo what the base planes cannot explain ONE chain at a time (Analysis Situs' SuppressBlendsInc loop around
+    OCCT defeaturing): the biggest remaining chain first, the evidence re-derived from the new solid after every
+    success (faces change identity), a chain that fails skipped for good. One big face set at once is what made
+    BRepAlgoAPI_Defeaturing return the solid unchanged or run out of memory. -> (solid or None, chains undone)"""
+    import time
+    t0 = time.time()
+    cur, done, failed = shape, 0, set()
+    while time.time() - t0 < budget_s:
+        b = base_kind(cur) if planes is None else (None, planes, None, _explained(cur, planes))
+        sets = [x for x in unexplained_sets(cur, b[3]) if _sig(x) not in failed]
+        if not sets:
+            break
+        sets.sort(key=lambda x: -sum(describe(f)[3] for f in x))
+        nxt = defeature_budgeted(cur, sets[0])
+        if nxt is None or len(faces(nxt)) >= len(faces(cur)):
+            failed.add(_sig(sets[0]))                 # refused or unchanged: never tried again
+            continue
+        cur, done = nxt, done + 1
+        if planes is None:
+            planes = base_kind(shape)[1]              # keep the planes of the served solid while undoing
+    return (cur if done else None), done
+
+
+def _sig(fs):
+    """A chain's identity across iterations: its face count and total area (faces themselves change objects)."""
+    return (len(fs), round(sum(describe(f)[3] for f in fs), 3))
+
+
+def _explained(shape, planes):
+    import math
+    ang = math.radians(0.5)
+    out = []
+    for f in faces(shape):
+        k, d, _, _ = describe(f)
+        ok = False
+        if d is not None:
+            for a in planes:
+                c = abs(float(d @ AXES[a]))
+                ok |= (k == "plane" and (c > math.cos(ang) or c < math.sin(ang))) or (k == "cylinder" and c > math.cos(ang))
+        out.append(ok)
+    return np.array(out, bool)
