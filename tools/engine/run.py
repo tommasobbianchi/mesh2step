@@ -50,11 +50,9 @@ def run(m, step, tol, ilp_s=60.0):
     sets = U.unexplained_sets(s, b[3])
     # one call within the budget: one chain at a time (U.undo_chains, Analysis Situs' loop) gave the same bases on
     # 6 parts in twice the time (runs/engine/undo_cmp2.log), so it is kept only as a tool
-    base = U.defeature_budgeted(s, [f for x in sets for f in x]) if sets else None
     rc = RV.candidates(s, m, tol)                      # revolve or not is a hypothesis too (finishes may do it)
     solids = [("as served", s, False, ()), ("as served, sharp outlines", s, True, ())] + \
-        ([("as served, revolves", s, False, rc), ("as served, sharp outlines, revolves", s, True, rc)] if rc else []) + \
-        ([("undone base", base, False, ())] if base is not None else [])
+        ([("as served, revolves", s, False, rc), ("as served, sharp outlines, revolves", s, True, rc)] if rc else [])
     log, best = [], None
     end = t0 + BUDGET
 
@@ -119,6 +117,12 @@ def run(m, step, tol, ilp_s=60.0):
     # plain builds first; a hypothesis whose plain build shows the silent-empty-fuse symptom is rebuilt with snapped
     # walls in its own process (a snapped build that crashes loses only itself)
     hs = [(name, sh, sharp, extra, PR._fork_start(gen, sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
+    # the undo (up to UNDO_S in its own fork) runs while the served-solid hypotheses compute, not before them
+    # (parts 5 and 39 spent ~300 s and ~220 s here with every core but one idle); same bases, same decisions
+    base = U.defeature_budgeted(s, [f for x in sets for f in x]) if sets else None
+    if base is not None:
+        solids.append(("undone base", base, False, ()))
+        hs.append(("undone base", base, False, (), PR._fork_start(gen, base, False, (), False)))
     got, redo = {}, []
     end_h = t0 + HYP_SHARE * BUDGET                    # hypotheses get at most this share: finishing always runs
     for name, sh, sharp, extra, h in hs:               # (v13/v14: part 6 spent 1366 s here and never got its fillets)

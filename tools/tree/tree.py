@@ -422,9 +422,13 @@ def apply_modifier(shape, tree, mod, tol):
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     ln = lambda e: GCPnts_AbscissaPoint.Length_s(BRepAdaptor_Curve(e))
     cand = sorted((e for e in edges if ln(e) >= size / 2), key=ln, reverse=True)[:GREEDY]
-    cand = [e for e in cand if build([e], size) is not None]
-    keep = []
+    import time
+    end = time.time() + GREEDY_S                       # and time-boxed: part 14's refused rounds (63-406 mm, from the
+    cand = [e for e in cand if time.time() < end and build([e], size) is not None]   # scan's fit) spent 20-291 s
+    keep = []                                          # per trial here and gained nothing (964 s of finishing)
     for e in cand:
+        if time.time() > end:
+            break
         if build(keep + [e], size) is not None:
             keep.append(e)
     if keep:
@@ -434,6 +438,7 @@ def apply_modifier(shape, tree, mod, tol):
 
 
 APPLIED = {}                                  # modifier id -> the edges it was built on (fcstd.py names them)
+GREEDY_S = 45.0                               # seconds for that edge-by-edge retry
 GREEDY = 50                                   # edges tried one by one when a whole round selection is refused
 _PREFIX = {}                                  # prefix hash -> (shape, notes, tapered_ok), oldest first
 _PREFIX_MAX = 96

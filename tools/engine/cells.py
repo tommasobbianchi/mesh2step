@@ -37,6 +37,7 @@ def steps(tree):
     """The program's length in steps, as J counts it (a mirror = MIRROR_STEP)."""
     return sum(MIRROR_STEP if "mirror_of" in f else 1.0 for f in tree["features"])
 SAMPLES = 5            # sections per band intersected for "material throughout"
+AGG_NNZ = 5_000_000    # cell memberships past which the ILP cover rows are aggregated (logged as "nnz" per program)
 NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 
 
@@ -196,34 +197,39 @@ def snap_walls(cands, levels, tol):
     return cands
 
 
+def _mask(cd, c):
+    """One candidate's voxel set, as a flat bool vector."""
+    if cd.feat is not None and "revolve" in cd.feat:
+        import revolve as RV
+        return RV.mask(cd, c)
+    a = cd.a
+    u, v = SE.reverse.plane_axes(a)
+    U, W = np.meshgrid(c[u], c[v], indexing="ij")
+    m2 = shapely.contains_xy(cd.reg, U, W)
+    ks = (c[a] >= cd.z0) & (c[a] <= cd.z1)
+    blk = np.zeros((len(c[u]), len(c[v]), len(c[a])), bool)
+    blk[:, :, ks] = m2[:, :, None]
+    return np.transpose(blk, np.argsort([u, v, a])).ravel()
+
+
 def masks(cands, c):
-    """Each candidate's voxel set, as a flat bool vector."""
-    shape = tuple(len(x) for x in c)
-    M = np.zeros((len(cands), int(np.prod(shape))), bool)
+    """Per voxel, which candidates cover it, bit-packed (candidate k = byte k // 8, bit 7 - k % 8: np.packbits'
+    order). Built one candidate at a time: the old candidates x voxels bool matrix took 1 byte per pair and a user
+    part (160k triangles, many levels) passed 40 GB with it; this is 1 bit per pair."""
+    nvox = int(np.prod([len(x) for x in c]))
+    sig = np.zeros((nvox, (len(cands) + 7) // 8), np.uint8)
     for k, cd in enumerate(cands):
-        if cd.feat is not None and "revolve" in cd.feat:
-            import revolve as RV
-            M[k] = RV.mask(cd, c)
-            continue
-        a = cd.a
-        u, v = SE.reverse.plane_axes(a)
-        U, W = np.meshgrid(c[u], c[v], indexing="ij")
-        m2 = shapely.contains_xy(cd.reg, U, W)
-        ks = (c[a] >= cd.z0) & (c[a] <= cd.z1)
-        blk = np.zeros((len(c[u]), len(c[v]), len(c[a])), bool)
-        blk[:, :, ks] = m2[:, :, None]
-        M[k] = np.transpose(blk, np.argsort([u, v, a])).ravel()
-    return M
+        sig[_mask(cd, c), k // 8] |= np.uint8(1 << (7 - k % 8))
+    return sig
 
 
 def solve(V, cands, M, time_limit=60.0):
-    """ILP over cells -> indices of the chosen candidates (pads first, then pockets)."""
+    """ILP over cells -> indices of the chosen candidates (pads first, then pockets). M: masks()' packed bits."""
     from scipy.optimize import Bounds, LinearConstraint, milp
-    from scipy.sparse import lil_matrix
     vox = V.ravel()
-    covered = M.any(axis=0)
+    covered = M.any(axis=1)
     keep = covered | vox                                 # voxels no candidate touches are fixed empty
-    sig = np.packbits(M[:, keep].T, axis=1)
+    sig = M[keep]
     cells, inv, cnt = np.unique(sig, axis=0, return_inverse=True, return_counts=True)
     inv = inv.ravel()
     nin = np.bincount(inv, weights=vox[keep].astype(float), minlength=len(cells))
@@ -237,32 +243,39 @@ def solve(V, cands, M, time_limit=60.0):
     cost = np.zeros(nvar)
     cost[:nk] = STEP_COST
     cost[nk + 2 * nc:] = (nout - nin) / tot              # mismatch = sum nin (1 - o) + nout o ; constant dropped
-    A = lil_matrix((0, nvar))
-    rows, lb, ub = [], [], []
+    # rows as typed arrays, in the order the dict version used (same matrix, same HiGHS run, same decisions); a
+    # user part (8827 candidates, 50k cells) needed 18.5M rows that way and passed 40 GB: past AGG_NNZ memberships
+    # each cell's "u >= x_k" rows become one aggregated row (n u >= sum x_k: same integer solutions, weaker LP)
+    from array import array
+    from scipy.sparse import coo_matrix
+    agg = int(member.sum()) > AGG_NNZ
+    ri, cj, val, lb, ub = array("q"), array("q"), array("d"), array("d"), array("d")
+    r = 0
 
-    def add(coefs, lo, hi):
-        rows.append(coefs)
-        lb.append(lo)
-        ub.append(hi)
+    def add(cols, vals, lo, hi):
+        nonlocal r
+        ri.extend([r] * len(cols)); cj.extend(cols); val.extend(vals); lb.append(lo); ub.append(hi); r += 1
 
     for ci in range(nc):
-        pads = np.nonzero(member[ci] & P)[0]
-        pocks = np.nonzero(member[ci] & ~P)[0]
+        pads = np.nonzero(member[ci] & P)[0].tolist()
+        pocks = np.nonzero(member[ci] & ~P)[0].tolist()
         uc, wc, oc = nk + ci, nk + nc + ci, nk + 2 * nc + ci
-        add({uc: 1, **{k: -1 for k in pads}}, -np.inf, 0)             # u <= sum pads
-        for k in pads:
-            add({uc: 1, k: -1}, 0, np.inf)                               # u >= x_k
-        add({wc: 1, **{k: -1 for k in pocks}}, -np.inf, 0)
-        for k in pocks:
-            add({wc: 1, k: -1}, 0, np.inf)
-        add({oc: 1, uc: -1}, -np.inf, 0)                                  # o <= u
-        add({oc: 1, wc: 1}, -np.inf, 1)                                   # o <= 1 - w
-        add({oc: 1, uc: -1, wc: 1}, 0, np.inf)                            # o >= u - w
-    A = lil_matrix((len(rows), nvar))
-    for r, coefs in enumerate(rows):
-        for k, val in coefs.items():
-            A[r, k] = val
-    res = milp(cost, constraints=LinearConstraint(A.tocsr(), lb, ub), integrality=np.ones(nvar),
+        for y, ks in ((uc, pads), (wc, pocks)):
+            add([y] + ks, [1.0] + [-1.0] * len(ks), -np.inf, 0)          # y <= sum x
+            if agg:
+                if ks:
+                    add([y] + ks, [float(len(ks))] + [-1.0] * len(ks), 0, np.inf)   # n y >= sum x
+            else:
+                for k in ks:
+                    add([y, k], [1.0, -1.0], 0, np.inf)                   # y >= x_k
+        add([oc, uc], [1.0, -1.0], -np.inf, 0)                            # o <= u
+        add([oc, wc], [1.0, 1.0], -np.inf, 1)                             # o <= 1 - w
+        add([oc, uc, wc], [1.0, -1.0, 1.0], 0, np.inf)                    # o >= u - w
+    A = coo_matrix((np.frombuffer(val), (np.frombuffer(ri, np.int64), np.frombuffer(cj, np.int64))),
+                   shape=(r, nvar)).tocsr()
+    A.sort_indices()
+    lb, ub = np.frombuffer(lb), np.frombuffer(ub)
+    res = milp(cost, constraints=LinearConstraint(A, lb, ub), integrality=np.ones(nvar),
                bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": max(time_limit, 900.0),
                                              "disp": False})
     if res.x is None:
@@ -270,7 +283,7 @@ def solve(V, cands, M, time_limit=60.0):
     x = res.x[:nk] > 0.5
     chosen = [k for k in range(nk) if x[k] and P[k]] + [k for k in range(nk) if x[k] and not P[k]]
     mism = float(res.fun - STEP_COST * len(chosen)) + nin.sum() / tot
-    return chosen, {"cells": nc, "cands": nk, "ops": len(chosen), "mismatch": round(mism, 4),
+    return chosen, {"cells": nc, "cands": nk, "ops": len(chosen), "mismatch": round(mism, 4), "nnz": int(member.sum()), "aggregated": agg,
                     "status": res.message[:60]}
 
 
