@@ -29,6 +29,13 @@ PR = SE.PR
 STEP_COST = 0.002      # J = score - STEP_COST * steps. Calibrated on the owner's grades (2026-09-26): v7's
                        # 23-step part 6 (graded 3) vs v4's 12 steps (graded 5) puts it above 0.0012; parts 12
                        # and 33 (graded 5 with their finishes) put it below ~0.004. The only step cost in the engine.
+MIRROR_STEP = 0.5      # a mirror costs half a step: a reference and a plane, not a whole profile (minimum
+                       # description; Andrea, an RE engineer, asks for the symmetric side built the same way)
+
+
+def steps(tree):
+    """The program's length in steps, as J counts it (a mirror = MIRROR_STEP)."""
+    return sum(MIRROR_STEP if "mirror_of" in f else 1.0 for f in tree["features"])
 SAMPLES = 5            # sections per band intersected for "material throughout"
 NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 

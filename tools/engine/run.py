@@ -38,7 +38,7 @@ BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 
 def j_exact(tree, m, tol):
     sc = PR._forked(PR.pick_score, tree, m, tol, default=-1.0)
-    return sc - C.STEP_COST * len(tree["features"]), sc
+    return sc - C.STEP_COST * C.steps(tree), sc
 
 
 def run(m, step, tol, ilp_s=60.0):
@@ -54,24 +54,19 @@ def run(m, step, tol, ilp_s=60.0):
     log, best = [], None
     end = t0 + BUDGET
 
-    def gen(sh, sharp, extra):
+    def gen(sh, sharp, extra, snap):
         """One hypothesis's program and its raw exact J (runs in a fork)."""
         t1 = time.time()
-        best = (None, {}, None, None)
-        for snap in (False, True):                     # snapped walls: a hypothesis too, exact J decides (ties: not)
-            if sh is s:
-                tree, info = C.program(m, tol, ilp_s, sharp=sharp, extra=extra, snap=snap)
-            else:
-                tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh, snap=snap)
-            if tree is None:
-                best = best if best[0] is not None else (None, info, None, None)
-                continue
-            j, sc = j_exact(tree, m, tol)
-            info["snapped"] = snap
-            if best[0] is None or j > best[2] + 1e-4:
-                best = (tree, info, j, sc)
-        best[1]["program_s"] = round(time.time() - t1, 1)
-        return best
+        if sh is s:
+            tree, info = C.program(m, tol, ilp_s, sharp=sharp, extra=extra, snap=snap)
+        else:
+            tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh, snap=snap)
+        info["snapped"] = snap
+        info["program_s"] = round(time.time() - t1, 1)
+        if tree is None:
+            return None, info, None, None
+        j, sc = j_exact(tree, m, tol)
+        return tree, info, j, sc
 
     def fin_measured(tree):
         """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
@@ -100,13 +95,20 @@ def run(m, step, tol, ilp_s=60.0):
     # and its exact sections can drop edges within its tolerance); the undone base has no scan: its exact sections.
     # "sharp": pads take each band's widest outline, for the finishes to trim (a full round leaves no wall for
     # defeaturing to extend, so the undone base cannot give that outline)
-    hs = [(name, PR._fork_start(gen, sh, sharp, extra)) for name, sh, sharp, extra in solids]
-    raws = []
-    for name, h in hs:
-        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget"}, None, None))
+    # every hypothesis built plain and with snapped walls, each in its own process: a snapped build that crashes
+    # or overruns loses only itself (v11: it took the plain 'sharp outlines' program of part 11 down with it)
+    hs = [(name, snap, PR._fork_start(gen, sh, sharp, extra, snap)) for name, sh, sharp, extra in solids
+          for snap in (False, True)]
+    got = {}
+    for name, snap, h in hs:
+        tree, info, j, sc = PR._fork_collect(h, end, (None, {"error": "died or over budget", "snapped": snap}, None, None))
         if tree is None:
             log.append({"solid": name, **info})
             continue
+        if name not in got or j > got[name][2] + 1e-4:      # ties go to the plain build
+            got[name] = (tree, info, j, sc)
+    raws = []
+    for name, (tree, info, j, sc) in got.items():
         note(name, "raw", tree, info, j, sc)
         raws.append((j, name, tree, info))
     # finishing costs most of the time (every trial is an exact compile): the FINISH_TOP best raw programs, their
@@ -136,7 +138,7 @@ def run(m, step, tol, ilp_s=60.0):
                 best = (j, st, sc, best[3] + ", evidence arcs", best[4])
     while best is not None:                            # mirrors found in the program, greedily: J decides which
         top = None                                     # copy stays; a tie goes to the mirror (shorter description)
-        for mt, desc in MR.candidates(best[1], tol):
+        for mt, desc in MR.candidates(best[1], tol, m.bounds):
             j, sc = j_exact(mt, m, tol)
             log.append({"variant": "mirror", "what": desc, "J": round(j, 4)})
             if j >= best[0] - 1e-4 and (top is None or j > top[0]):
@@ -147,7 +149,8 @@ def run(m, step, tol, ilp_s=60.0):
     out = {"undo_sets": len(sets), "base_planes": list(b[1]), "log": log, "seconds": round(time.time() - t0, 1)}
     if best is None:
         return None, out
-    out.update(program=best[3], score=round(best[2], 4), steps=len(best[1]["features"]), merit=round(best[0], 4))
+    out.update(program=best[3], score=round(best[2], 4), steps=len(best[1]["features"]),
+               weighted_steps=C.steps(best[1]), merit=round(best[0], 4))
     return best[1], out
 
 

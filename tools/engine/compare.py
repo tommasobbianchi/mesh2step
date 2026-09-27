@@ -31,7 +31,7 @@ for n, e, b in rows:
     if not e or "merit" not in e:
         print(f"{n:>2} engine: {'pending' if e is None else 'no program'}   baseline J {b[4] if b else '-'}")
         continue
-    e["merit"] = round(e["score"] - STEP_COST * e["steps"], 4)
+    e["merit"] = round(e["score"] - STEP_COST * e.get("weighted_steps", e["steps"]), 4)
     bj = round(b[2] - STEP_COST * b[3], 4) if b else None
     tag = "-" if bj is None else ("WIN" if e["merit"] > bj + 1e-4 else "loss" if e["merit"] < bj - 1e-4 else "tie")
     w, l, t = w + (tag == "WIN"), l + (tag == "loss"), t + (tag == "tie")

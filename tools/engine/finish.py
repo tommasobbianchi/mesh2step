@@ -22,6 +22,7 @@ import undo as U                                       # noqa: E402
 
 from cells import STEP_COST                           # noqa: E402  (the one step cost)
 SAME = 0.05            # finish sizes within 5% of each other are one finish
+MISSES = 5             # consecutive rejected finish groups before the rest are skipped
 
 
 def _samples(face, n=6):
@@ -37,8 +38,35 @@ def _samples(face, n=6):
     return out
 
 
-def groups(shape, pad_axes):
-    """Evidence finish faces -> [(op, size, reach, points)], grouped by op and size (to 0.01 mm)."""
+def _cylinders(solid, tol):
+    """The cylindrical faces a program's solid already has: (axis index, point on the axis line, radius)."""
+    out = []
+    if solid is None:
+        return out
+    for f in U.faces(solid):
+        s = BRepAdaptor_Surface(f)
+        if s.GetType() != GeomAbs_Cylinder:
+            continue
+        q = s.Cylinder()
+        d = U.E._v(q.Axis().Direction())
+        a = int(np.argmax(np.abs(d)))
+        if abs(d[a]) > 0.999:
+            out.append((a, U.E._v(q.Axis().Location()), q.Radius()))
+    return out
+
+
+def groups(shape, pad_axes, solid=None, tol=0.1):
+    """Evidence finish faces -> [(op, size, reach, points)], grouped by op and size. A cylinder is a sketch arc
+    (not a finish) only if the program's solid already has that face: same axis line and radius. Axis direction
+    alone is not enough (part 6: pads along X, Y and Z made every one of its fillet cylinders look like an arc, so
+    no fillet was ever tried and the structure imitated them with cuts)."""
+    have = _cylinders(solid, tol)
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    bb = Bnd_Box()
+    BRepBndLib.Add_s(shape, bb)
+    x0, y0, z0, x1, y1, z1 = bb.Get()
+    rmax = min(x1 - x0, y1 - y0, z1 - z0) / 2          # a round cannot exceed a full round of the thinnest dimension
     g = {}
     for f in U.faces(shape):
         s = BRepAdaptor_Surface(f)
@@ -47,9 +75,15 @@ def groups(shape, pad_axes):
         if t == GeomAbs_Torus:
             op, size = "round", s.Torus().MinorRadius()
         elif t == GeomAbs_Cylinder:
-            d = U.E._v(s.Cylinder().Axis().Direction())
-            if any(abs(float(d[a])) > 0.999 for a in pad_axes):
-                continue                                # a wall along a pad axis: a sketch arc, not a finish
+            q = s.Cylinder()
+            d, o, r = U.E._v(q.Axis().Direction()), U.E._v(q.Axis().Location()), q.Radius()
+            a = int(np.argmax(np.abs(d)))
+            if solid is None:
+                if any(abs(float(d[b])) > 0.999 for b in pad_axes):
+                    continue                            # no solid to compare: a wall along a pad axis is an arc
+            elif abs(d[a]) > 0.999 and any(b == a and abs(rr - r) <= tol and np.linalg.norm(np.delete(p - o, a)) <= tol
+                                           for b, p, rr in have):
+                continue                                # the program already has this face: a sketch arc
             # any other cylinder cannot come from the program's extrusions: a round, whatever its span (a full
             # round's half cylinder spans 180 deg)
             op, size = "round", s.Cylinder().Radius()
@@ -57,8 +91,8 @@ def groups(shape, pad_axes):
             op, size = "chamfer", abs(v1 - v0) / math.sqrt(2)
         else:
             continue
-        if size <= 0:
-            continue
+        if size <= 0 or (op == "round" and size > rmax + tol):
+            continue                                    # a near-flat arc of an outline, not a round
         g.setdefault((op, round(size, 3)), []).extend(_samples(f))
     # one finish, one size: sizes within SAME of each other are one group (the scan's fit scatters one radius
     # over its faces: 2.00 and 2.05 mm on part 9 made two jagged rounds), sized by their samples' weighted mean
@@ -74,11 +108,13 @@ def groups(shape, pad_axes):
 
 def apply(tree, shape, m, tol, j_of):
     """Add evidence finishes to `tree` one group at a time, keeping each only if J improves. -> (tree, J, log)."""
+    import tree as T
     pad_axes = {"XYZ".index(f["axis"]) for f in tree["features"] if f["op"] in ("pad", "pocket")}
     cur = copy.deepcopy(tree)
     j, sc = j_of(cur)
     log = []
-    for op, size, reach, pts in groups(shape, pad_axes):
+    solid, _ = T.compile_tree(cur, tol)
+    for op, size, reach, pts in groups(shape, pad_axes, solid, tol):
         trial = copy.deepcopy(cur)
         fid = f"F{len(trial['features']) + 1}"
         trial["features"].append({"id": fid, "op": op, "label": f"{'Rounded' if op == 'round' else 'Chamfered'} "
@@ -88,7 +124,11 @@ def apply(tree, shape, m, tol, j_of):
         j2, sc2 = j_of(trial)
         log.append({"op": op, "size": round(size, 3), "J": round(j2, 4), "kept": j2 > j})
         if j2 > j:
-            cur, j, sc = trial, j2, sc2
+            cur, j, sc, misses = trial, j2, sc2, 0
+        else:
+            misses = locals().get("misses", 0) + 1
+            if misses >= MISSES:                        # groups come most-evidenced first: the rest are the scan's
+                break                                   # fit noise (search budget, not a shape rule)
     return cur, j, log
 
 
@@ -99,7 +139,9 @@ def ground(tree, shape, tol):
     with no evidence of its kind is removed. -> (tree, changed)"""
     import tree as T
     pad_axes = {"XYZ".index(f["axis"]) for f in tree["features"] if f["op"] in ("pad", "pocket")}
-    G = groups(shape, pad_axes)
+    solid, _ = T.compile_tree({"units": "mm", "features": [f for f in tree["features"]
+                                                            if f["op"] in ("pad", "pocket")]}, tol)
+    G = groups(shape, pad_axes, solid, tol)
     out = copy.deepcopy(tree)
     feats, changed = [], 0
     for i, f in enumerate(out["features"]):
