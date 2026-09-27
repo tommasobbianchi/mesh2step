@@ -155,11 +155,12 @@ def run(m, step, tol, ilp_s=60.0):
         for vn, t, j, sc in PR._fork_collect(h, end, []):
             note(name, vn, t, info, j, sc)
     if best is not None:                               # finishes grounded on the evidence faces, kept if J holds
-        gt, nch = FN.ground(best[1], s, tol)
+        gt, nch, nkind = FN.ground(best[1], s, tol)
         if nch:
             j, sc = j_exact(gt, m, tol)
-            log.append({"variant": "finishes on evidence", "changed": nch, "J": round(j, 4)})
-            if j >= best[0] - 1e-4:
+            log.append({"variant": "finishes on evidence", "changed": nch, "kind_fixed": nkind, "J": round(j, 4)})
+            # a finish of the wrong kind contradicts the evidence: correcting it is worth up to one step of J
+            if j >= best[0] - (C.STEP_COST if nkind else 1e-4):
                 best = (j, gt, sc, best[3] + ", finishes on evidence", best[4])
     if best is not None:                               # sketch arcs from the evidence, kept if J holds
         st, nch = SN.snap(best[1], s, tol)

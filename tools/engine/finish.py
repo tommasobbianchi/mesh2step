@@ -298,14 +298,14 @@ def ground(tree, shape, tol):
                                                             if f["op"] in ("pad", "pocket")]}, tol)
     G = groups(shape, pad_axes, solid, tol)
     out = copy.deepcopy(tree)
-    feats, changed = [], 0
+    feats, changed, kind_fixed = [], 0, 0
     for i, f in enumerate(out["features"]):
-        if f["op"] not in ("round", "chamfer") or f.get("near"):
+        if f["op"] not in ("round", "chamfer") or any(f.get(k) for k in ("near", "support", "coax", "round_axes")):
             feats.append(f)
             continue
-        cands = [g for g in G if g[0] == f["op"]]
-        if not cands:
-            changed += 1                                # no evidence for this kind of finish: dropped
+        cands = list(G)                                 # the evidence decides the KIND too: a cylinder/torus face is a
+        if not cands:                                   # round, a cone/45-degree strip a chamfer (owner, parts 36/37:
+            changed += 1                                # 'it was a fillet, not a chamfer')
             continue
         sofar, _ = T.compile_tree({"units": "mm", "features": feats}, tol)
         es = T.modifier_edges(sofar, out, f, tol) if sofar is not None else []
@@ -313,8 +313,10 @@ def ground(tree, shape, tol):
         best = min(cands, key=lambda g: np.inf if mids is None else
                    float(np.median(np.min(np.linalg.norm(mids[:, None] - np.array(g[3])[None], axis=2), axis=1))))
         op, size, reach, pts, _ = best
-        feats.append({**f, "size": round(size, 4), "near": [[round(x, 4) for x in p] for p in pts],
-                      "reach": round(reach, 4), "label": f"{f['label']} (on the scan's faces)"})
+        kind_fixed += op != f["op"]
+        feats.append({**f, "op": op, "size": round(size, 4), "near": [[round(x, 4) for x in p] for p in pts],
+                      "reach": round(reach, 4), "label": f"{'Rounded' if op == 'round' else 'Chamfered'} edges "
+                                                          f"({size:.3g} mm, on the scan's faces)"})
         changed += 1
     out["features"] = feats
-    return out, changed
+    return out, changed, kind_fixed
