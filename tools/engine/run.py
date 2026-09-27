@@ -46,7 +46,7 @@ def run(m, step, tol, ilp_s=60.0):
     s = E.read(step)
     b = U.base_kind(s)
     sets = U.unexplained_sets(s, b[3])
-    base = U.defeature(s, [f for x in sets for f in x]) if sets else None
+    base = U.defeature_budgeted(s, [f for x in sets for f in x]) if sets else None
     rc = RV.candidates(s, m, tol)                      # revolve or not is a hypothesis too (finishes may do it)
     solids = [("as served", s, False, ()), ("as served, sharp outlines", s, True, ())] + \
         ([("as served, revolves", s, False, rc), ("as served, sharp outlines, revolves", s, True, rc)] if rc else []) + \

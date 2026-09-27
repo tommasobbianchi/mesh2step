@@ -150,3 +150,23 @@ if __name__ == "__main__":
     else:
         b2 = base_kind(t)
         print("after undoing all:", b2[0], "planes", b2[1], "unexplained", round(b2[2], 4), "faces", len(faces(t)))
+
+
+UNDO_MEM_GB = 8.0      # budget of the exact undo: a scan-faceted solid (part 19: 39450 faces) needs 40+ GB and
+UNDO_S = 300.0         # takes a whole host down; within budget it is seconds on an analytic one
+
+
+def _trial(shape, rm, mem_bytes):
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+    return defeature(shape, rm) is not None
+
+
+def defeature_budgeted(shape, rm):
+    """defeature() only if a forked trial under the memory and time budget succeeds (OCCT has no budget of its own
+    and segfaults or eats the host past it). -> shape or None."""
+    import time
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tree"))
+    import propose as PR
+    ok = PR._fork_collect(PR._fork_start(_trial, shape, rm, int(UNDO_MEM_GB * 2 ** 30)), time.time() + UNDO_S, False)
+    return defeature(shape, rm) if ok else None
