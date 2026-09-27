@@ -53,7 +53,7 @@
 </head>
 <body>
 <header><h1>mesh2step · feature-tree grading <small style="color:var(--soft);font-weight:400">(private)</small></h1><span id="progress"></span> <label style="margin-left:8px;font-size:12px;color:var(--soft)">tree set
-<select id="gset" style="font:inherit;font-size:12px"><option value="engine-v9">engine v9 (newest, all 39)</option><option value="engine-v7">engine v7</option><option value="engine">engine v4</option><option value="v5">v5 (old)</option></select></label>
+<select id="gset" style="font:inherit;font-size:12px"><option value="engine-v12">engine v12 (newest)</option><option value="engine-v9">engine v9</option><option value="engine-v7">engine v7</option><option value="engine">engine v4</option><option value="v5">v5 (old)</option></select></label>
 <button id="logout" hidden>switch user</button></header>
 <div id="login" hidden style="position:fixed;inset:0;padding:16px;box-sizing:border-box;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9">
   <h2 style="margin:0">Who is grading?</h2>
@@ -208,7 +208,7 @@ function renderSteps(d) {
   }));
 }
 const grader = () => { try { return localStorage.getItem('grader') || ''; } catch (e) { return window._grader || ''; } };
-const gset = () => { try { return localStorage.getItem('gset') || 'engine-v9'; } catch (e) { return window._gset || 'engine-v9'; } };
+const gset = () => { try { return localStorage.getItem('gset') || 'engine-v12'; } catch (e) { return window._gset || 'engine-v12'; } };
 const gfetch = (u, o = {}) => fetch(u, { ...o, headers: { ...(o.headers || {}), 'X-Grader': grader(), 'X-Grade-Set': gset() } });
 async function load(p) {
   cur = p; $('msg').textContent = 'Loading…'; $('save').disabled = true;
