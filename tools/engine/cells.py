@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import shapely
+import shapely.ops
 from shapely.geometry import box
 
 HERE = Path(__file__).resolve().parent
@@ -144,6 +145,50 @@ def candidates(bm, tol, axes=(0, 1, 2), shape=None, sharp=False):
     return out
 
 
+def snap_walls(cands, levels, tol):
+    """Near-coincident walls snapped to shared coordinates, across every candidate on an axis and the exact levels
+    of the other two axes (a wall at x in a Z sketch is the end of an X extrusion at the same x). Outlines come
+    from separate sections, so a shared wall lands 1e-4 apart in two sketches, and OCCT's fuse of such
+    near-coincident faces silently returns an empty solid (part 6: the fifth pad fused to volume 0)."""
+    import itertools
+    eps = tol / 20
+    for a in range(3):
+        u, v = SE.reverse.plane_axes(a)
+        mine = [cd for cd in cands if cd.a == a and cd.feat is None]
+        if not mine:
+            continue
+        xs, ys = list(levels[u]), list(levels[v])
+        for cd in mine:
+            for g in PR._polys(cd.reg):
+                for r in [g.exterior, *g.interiors]:
+                    q = np.asarray(r.coords)
+                    d = np.diff(q, axis=0)
+                    xs += q[:-1][np.abs(d[:, 0]) < 1e-6 * tol + 1e-9, 0].tolist()
+                    ys += q[:-1][np.abs(d[:, 1]) < 1e-6 * tol + 1e-9, 1].tolist()
+
+        def reps(vals):
+            vals = np.sort(np.asarray(vals, float))
+            if not len(vals):
+                return vals
+            cut = np.r_[0, np.where(np.diff(vals) > eps)[0] + 1, len(vals)]
+            return np.array([vals[i:j].mean() for i, j in itertools.pairwise(cut)])
+
+        rx, ry = reps(xs), reps(ys)
+
+        def one(w, r):
+            w = np.asarray(w, float)
+            if not len(r):
+                return w
+            k = np.clip(np.searchsorted(r, w), 1, max(1, len(r) - 1))
+            near = r[np.minimum(k, len(r) - 1)] if len(r) == 1 else \
+                np.where(np.abs(r[k] - w) < np.abs(r[k - 1] - w), r[k], r[k - 1])
+            return np.where(np.abs(near - w) < eps, near, w)
+
+        for cd in mine:
+            cd.reg = shapely.ops.transform(lambda x, y: (one(x, rx), one(y, ry)), cd.reg).buffer(0)
+    return cands
+
+
 def masks(cands, c):
     """Each candidate's voxel set, as a flat bool vector."""
     shape = tuple(len(x) for x in c)
@@ -224,7 +269,8 @@ def solve(V, cands, M, time_limit=60.0):
 
 def program(bm, tol, time_limit=60.0, shape=None, sharp=False, extra=()):
     V, c, h = SE.voxels(bm)
-    cands = candidates(bm, tol, shape=shape, sharp=sharp) + list(extra)
+    cands = snap_walls(candidates(bm, tol, shape=shape, sharp=sharp), [levels_of(bm, a, tol) for a in range(3)],
+                       tol) + list(extra)
     M = masks(cands, c)
     chosen, info = solve(V, cands, M, time_limit)
     if chosen is None:
