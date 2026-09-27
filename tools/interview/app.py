@@ -314,7 +314,10 @@ def _engine(s, d, m):
     step, out = d / "evidence.step", d / "engine"
     out.mkdir(exist_ok=True)
     s["stage"] = "converting the mesh to a solid (1-15 min)"
-    r = FS.convert(str(d / "mesh.stl"), step)
+    try:
+        r = FS.convert(str(d / "mesh.stl"), step)
+    except Exception as e:                             # noqa: BLE001 -- the mesh-only analysis still runs
+        r = {"ok": False, "detail": f"{type(e).__name__}: {e}"[:300]}
     (out / "convert.json").write_text(json.dumps(r))
     if not r.get("ok"):
         return None, None

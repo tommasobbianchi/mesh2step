@@ -26,7 +26,10 @@ def convert(stl, out):
     t0 = time.time()
     while d.get("pending") and time.time() - t0 < 3600:
         time.sleep(10)
-        d = json.loads(get(f"/api/job/{d['job']}"))
+        try:
+            d = json.loads(get(f"/api/job/{d['job']}"))
+        except (OSError, ValueError):                  # a busy service answers a poll late: ask again, the job
+            continue                                   # goes on (a single 60 s timeout failed a user's part)
     if not d.get("download_token"):
         return {"ok": False, "detail": str(d)[:300]}
     out.write_bytes(get(f"/api/download/{d['download_token']}"))

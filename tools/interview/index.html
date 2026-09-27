@@ -252,7 +252,7 @@ $('file').addEventListener('change', async (e) => {
     applyView(st.view); handle(st.reply, st.facts);
   }, 2000);
 });
-function showErr(t) { const box = $('result'); box.hidden = false; box.textContent = t; }
+function showErr(t) { const box = $('result'); box.hidden = false; box.textContent = t; statusEl.textContent = t; box.scrollIntoView({block: 'nearest'}); }
 
 async function send(fd, typed) {
   $('talk').disabled = true; $('text').disabled = true; statusEl.textContent = 'Thinking…';
