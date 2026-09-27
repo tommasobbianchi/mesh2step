@@ -232,6 +232,47 @@ def cap_planes(tree, mod):
     return f["axis"], {"top": [hi], "bottom": [lo], "both": [lo, hi]}[mod.get("cap", "both")]
 
 
+def _axis_edges(shape, axes, r, tol, slack=0.5):
+    """Edges a round of radius r with these axis lines replaced: straight, parallel to the axis, inside its span,
+    and both adjacent faces planes at distance r from the axis line (the round was tangent to them). Computed from
+    the evidence axes at compile time, so a stored tree names the same edges every time. axes: [{"a": axis index,
+    "p": point on the axis line, "v": [lo, hi] along it}]."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Line, GeomAbs_Plane
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    out = []
+    for i in range(1, emap.Extent() + 1):                # each edge once (the explorer lists shared edges twice)
+        e = TopoDS.Edge_s(emap.FindKey(i))
+        c = BRepAdaptor_Curve(e)
+        if c.GetType() != GeomAbs_Line:
+            continue
+        d = c.Line().Direction()
+        d = np.array([d.X(), d.Y(), d.Z()])
+        m = _mid(e)
+        planes = []
+        for f in emap.FindFromIndex(i):
+            srf = BRepAdaptor_Surface(TopoDS.Face_s(f))
+            if srf.GetType() != GeomAbs_Plane:
+                break
+            pl = srf.Plane()
+            n, o = pl.Axis().Direction(), pl.Location()
+            planes.append((np.array([n.X(), n.Y(), n.Z()]), np.array([o.X(), o.Y(), o.Z()])))
+        else:
+            if len(planes) != 2:
+                continue
+            for ax in axes:
+                a, P, (v0, v1) = int(ax["a"]), np.asarray(ax["p"], float), ax["v"]
+                if abs(d[a]) < 0.999 or not (v0 - tol <= m[a] <= v1 + tol):
+                    continue
+                if all(abs(abs(float(n @ (P - o))) - r) <= slack for n, o in planes):
+                    out.append(e)
+                    break
+    return out
+
+
 def modifier_edges(shape, tree, mod, tol):
     """The edges a round/chamfer names, found by geometry on the FINAL solid (never by index: indices die on the
     next edit): the rims of the flat faces lying in the cap planes of feature `on`; "outer" = their outer wire,
@@ -240,6 +281,8 @@ def modifier_edges(shape, tree, mod, tol):
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.TopAbs import TopAbs_WIRE
+    if mod.get("round_axes"):                          # evidence round, precise (Kimi, 2026-09-27): the sharp edge a
+        return _axis_edges(shape, mod["round_axes"], float(mod["size"]), tol or 1e-3)   # round replaced
     if mod.get("near"):                                # evidence finish (tools/engine/finish.py): the sharp edges a
         P = np.asarray(mod["near"], float)             # round of radius r replaced lie within ~r of its own face,
         reach = float(mod.get("reach", mod["size"])) + (tol or 1e-3)   # sampled in "near"
@@ -302,10 +345,17 @@ def apply_modifier(shape, tree, mod, tol):
         s = build(edges, size * k)
         if s is not None:
             return s, None if k == 1.0 else f"built at {size * k:.4g} instead of {size:.4g} (OCCT refuses the exact size)"
-    # some edges refuse (tangent chains, edges shorter than the size): keep the ones that build together.
-    # ponytail: greedy, O(n) builds; fine for tens of edges
+    # some edges refuse (tangent chains, slivers shorter than the size): keep the ones that build together.
+    # Bounded: edges shorter than size/2 cannot carry the round; each remaining edge must build alone first;
+    # then the longest go greedily, at most GREEDY of them (Kimi: the old unbounded loop made up to 454 builds
+    # of 1-2 s each on part 6 and ran past every time limit; OCCT itself refuses fast)
+    from OCP.GCPnts import GCPnts_AbscissaPoint
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    ln = lambda e: GCPnts_AbscissaPoint.Length_s(BRepAdaptor_Curve(e))
+    cand = sorted((e for e in edges if ln(e) >= size / 2), key=ln, reverse=True)[:GREEDY]
+    cand = [e for e in cand if build([e], size) is not None]
     keep = []
-    for e in edges:
+    for e in cand:
         if build(keep + [e], size) is not None:
             keep.append(e)
     if keep:
@@ -313,6 +363,7 @@ def apply_modifier(shape, tree, mod, tol):
     return shape, f"{mod['op']} refused on {len(edges)} edges"
 
 
+GREEDY = 50                                   # edges tried one by one when a whole round selection is refused
 _PREFIX = {}                                  # prefix hash -> (shape, notes, tapered_ok), oldest first
 _PREFIX_MAX = 96
 

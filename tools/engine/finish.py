@@ -22,6 +22,7 @@ import undo as U                                       # noqa: E402
 
 from cells import STEP_COST                           # noqa: E402  (the one step cost)
 SAME = 0.05            # finish sizes within 5% of each other are one finish
+AXIS_JOIN = 1.5        # mm: cylinder patches with axis lines this close are one round (Kimi, part 6)
 MISSES = 5             # consecutive rejected finish groups before the rest are skipped
 
 
@@ -67,7 +68,7 @@ def groups(shape, pad_axes, solid=None, tol=0.1):
     BRepBndLib.Add_s(shape, bb)
     x0, y0, z0, x1, y1, z1 = bb.Get()
     rmax = min(x1 - x0, y1 - y0, z1 - z0) / 2          # a round cannot exceed a full round of the thinnest dimension
-    g = {}
+    g, ax = {}, {}
     for f in U.faces(shape):
         s = BRepAdaptor_Surface(f)
         t = s.GetType()
@@ -94,16 +95,36 @@ def groups(shape, pad_axes, solid=None, tol=0.1):
         if size <= 0 or (op == "round" and size > rmax + tol):
             continue                                    # a near-flat arc of an outline, not a round
         g.setdefault((op, round(size, 3)), []).extend(_samples(f))
+        if t == GeomAbs_Cylinder and abs(d[a]) > 0.999:   # its axis line and span: the precise edge selector
+            ax.setdefault((op, round(size, 3)), []).append((a, o, (o[a] + min(v0, v1) * d[a], o[a] + max(v0, v1) * d[a])))
     # one finish, one size: sizes within SAME of each other are one group (the scan's fit scatters one radius
     # over its faces: 2.00 and 2.05 mm on part 9 made two jagged rounds), sized by their samples' weighted mean
     merged = []
     for (op, size), pts in sorted(g.items()):
+        axl = ax.get((op, size), [])
         if merged and merged[-1][0] == op and size <= merged[-1][1] * (1 + SAME):
-            o, s0, p0 = merged[-1]
-            merged[-1] = (o, (s0 * len(p0) + size * len(pts)) / (len(p0) + len(pts)), p0 + pts)
+            o, s0, p0, a0 = merged[-1]
+            merged[-1] = (o, (s0 * len(p0) + size * len(pts)) / (len(p0) + len(pts)), p0 + pts, a0 + axl)
         else:
-            merged.append((op, size, pts))
-    return [(op, size, size, pts) for op, size, pts in sorted(merged, key=lambda x: -len(x[2]))]
+            merged.append((op, size, pts, axl))
+    return [(op, size, size, pts, _axis_clusters(axl, tol)) for op, size, pts, axl in
+            sorted(merged, key=lambda x: -len(x[2]))]
+
+
+def _axis_clusters(axl, tol):
+    """The production fit splits one round into several cylinder patches (part 6: 65 faces -> 16 rounds): patches
+    whose axis lines lie within AXIS_JOIN of each other are one round, their spans merged. -> tree round_axes."""
+    out = []
+    for a, o, (v0, v1) in axl:
+        for c in out:
+            if c["a"] == a and np.linalg.norm(np.delete(np.asarray(c["p"]) - o, a)) <= AXIS_JOIN:
+                c["v"] = [min(c["v"][0], v0), max(c["v"][1], v1)]
+                break
+        else:
+            out.append({"a": int(a), "p": [round(float(x), 4) for x in o], "v": [float(v0), float(v1)]})
+    for c in out:
+        c["v"] = [round(c["v"][0], 4), round(c["v"][1], 4)]
+    return out
 
 
 def apply(tree, shape, m, tol, j_of):
@@ -114,14 +135,23 @@ def apply(tree, shape, m, tol, j_of):
     j, sc = j_of(cur)
     log = []
     solid, _ = T.compile_tree(cur, tol)
-    for op, size, reach, pts in groups(shape, pad_axes, solid, tol):
-        trial = copy.deepcopy(cur)
-        fid = f"F{len(trial['features']) + 1}"
-        trial["features"].append({"id": fid, "op": op, "label": f"{'Rounded' if op == 'round' else 'Chamfered'} "
-                                  f"edges ({size:.3g} mm, from the scan's faces)", "size": round(size, 4),
-                                  "on": trial["features"][0]["id"], "near": [[round(x, 4) for x in p] for p in pts],
-                                  "reach": round(reach, 4)})
-        j2, sc2 = j_of(trial)
+    for op, size, reach, pts, axes in groups(shape, pad_axes, solid, tol):
+        best2 = None
+        # precise first (edges tangent to the evidence round's planes, named by its axis lines), else the
+        # proximity selection with the bounded retry
+        for sel in ([{"round_axes": axes}] if axes and op == "round" else []) + \
+                [{"near": [[round(x, 4) for x in p] for p in pts], "reach": round(reach, 4)}]:
+            trial = copy.deepcopy(cur)
+            trial["features"].append({"id": f"F{len(trial['features']) + 1}", "op": op,
+                                      "label": f"{'Rounded' if op == 'round' else 'Chamfered'} edges ({size:.3g} mm, "
+                                               f"from the scan's faces)", "size": round(size, 4),
+                                      "on": trial["features"][0]["id"], **sel})
+            jt, st = j_of(trial)
+            if best2 is None or jt > best2[0]:
+                best2 = (jt, st, trial)
+            if jt > j:
+                break
+        j2, sc2, trial = best2
         log.append({"op": op, "size": round(size, 3), "J": round(j2, 4), "kept": j2 > j})
         if j2 > j:
             cur, j, sc, misses = trial, j2, sc2, 0
@@ -157,7 +187,7 @@ def ground(tree, shape, tol):
         mids = np.array([T._mid(e) for e in es]) if es else None
         best = min(cands, key=lambda g: np.inf if mids is None else
                    float(np.median(np.min(np.linalg.norm(mids[:, None] - np.array(g[3])[None], axis=2), axis=1))))
-        op, size, reach, pts = best
+        op, size, reach, pts, _ = best
         feats.append({**f, "size": round(size, 4), "near": [[round(x, 4) for x in p] for p in pts],
                       "reach": round(reach, 4), "label": f"{f['label']} (on the scan's faces)"})
         changed += 1

@@ -109,3 +109,17 @@ are deleted, not maintained.
   B-rep to CSG conversion (Shapiro and Vossler, CAD 1991/1993). The standard way to minimal programs is a cell
   decomposition over the exact levels, in/out classification, candidate prisms from the cells, and a minimum
   set cover / ILP. Next solver component; its objective is J.
+
+## Exit rule and external test (decided with the owner, 2026-09-27)
+
+Corpus iterations stop when ALL targets hold on the 39 parts, or after 3 more iterations (v13, v14, v15),
+whichever comes first:
+
+1. owner's grades: >= 35 of 39 at 5, none below 4;
+2. Andrea's grades (expert RE engineer): none at 2 or below, average >= 4 on the parts he grades;
+3. corpus J: no part more than 0.005 below the best earlier result;
+4. every part under 15 min on a fleet host, under 16 GB.
+
+Then: freeze an engine release (the 39-part run is its regression gate) and test on held-out parts graded
+blind: /home/tommaso/corpora/heldout (the broom holder, the 2026-09-23 blade/spacer parts, the graders' parts)
+and a slice of the Fusion 360 Gallery reconstruction dataset (true design histories). Never tune on them.
