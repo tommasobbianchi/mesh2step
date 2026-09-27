@@ -21,9 +21,10 @@
   #drop { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:24px; }
   #drop label { padding:40px 56px; border:2px dashed #a9a497; border-radius:16px; background:#faf9f5; cursor:pointer; font-size:17px; font-weight:600; }
   #drop input { position:absolute; left:-9999px; }
-  aside { display:flex; flex-direction:column; gap:12px; min-height:0; }
+  aside { display:flex; flex-direction:column; gap:12px; min-height:0; overflow:auto; }
+  #stepsCard { flex:none; max-height:32vh; overflow:auto; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
-  #log { flex:1; overflow:auto; display:flex; flex-direction:column; gap:8px; font-size:14px; line-height:1.45; }
+  #log { flex:1 0 auto; min-height:320px; max-height:60vh; overflow:auto; display:flex; flex-direction:column; gap:8px; font-size:14px; line-height:1.45; }
   .q b { color:var(--blue); } .a { color:#3f3d39; }
   #facts { font-size:13px; display:grid; grid-template-columns: minmax(0,1fr) auto; gap:4px 12px; }
   #facts span:nth-child(even) { font-family: ui-monospace, monospace; }
