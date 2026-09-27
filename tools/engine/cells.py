@@ -267,10 +267,14 @@ def solve(V, cands, M, time_limit=60.0):
                     "status": res.message[:60]}
 
 
-def program(bm, tol, time_limit=60.0, shape=None, sharp=False, extra=()):
+def program(bm, tol, time_limit=60.0, shape=None, sharp=False, extra=(), snap=False):
+    """snap: walls snapped to shared coordinates (repairs silent empty fuses of near-coincident walls, but can
+    merge walls that are really distinct: a hypothesis, J decides; run.py builds both)."""
     V, c, h = SE.voxels(bm)
-    cands = snap_walls(candidates(bm, tol, shape=shape, sharp=sharp), [levels_of(bm, a, tol) for a in range(3)],
-                       tol) + list(extra)
+    cands = candidates(bm, tol, shape=shape, sharp=sharp)
+    if snap:
+        cands = snap_walls(cands, [levels_of(bm, a, tol) for a in range(3)], tol)
+    cands = cands + list(extra)
     M = masks(cands, c)
     chosen, info = solve(V, cands, M, time_limit)
     if chosen is None:

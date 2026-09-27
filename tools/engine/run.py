@@ -57,15 +57,21 @@ def run(m, step, tol, ilp_s=60.0):
     def gen(sh, sharp, extra):
         """One hypothesis's program and its raw exact J (runs in a fork)."""
         t1 = time.time()
-        if sh is s:
-            tree, info = C.program(m, tol, ilp_s, sharp=sharp, extra=extra)
-        else:
-            tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh)
-        info["program_s"] = round(time.time() - t1, 1)
-        if tree is None:
-            return None, info, None, None
-        j, sc = j_exact(tree, m, tol)
-        return tree, info, j, sc
+        best = (None, {}, None, None)
+        for snap in (False, True):                     # snapped walls: a hypothesis too, exact J decides (ties: not)
+            if sh is s:
+                tree, info = C.program(m, tol, ilp_s, sharp=sharp, extra=extra, snap=snap)
+            else:
+                tree, info = C.program(S.mesh_of(sh, tol / 10), tol, ilp_s, shape=sh, snap=snap)
+            if tree is None:
+                best = best if best[0] is not None else (None, info, None, None)
+                continue
+            j, sc = j_exact(tree, m, tol)
+            info["snapped"] = snap
+            if best[0] is None or j > best[2] + 1e-4:
+                best = (tree, info, j, sc)
+        best[1]["program_s"] = round(time.time() - t1, 1)
+        return best
 
     def fin_measured(tree):
         """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
