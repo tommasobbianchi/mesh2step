@@ -33,9 +33,10 @@ CLAUDE = os.path.expanduser("~/.local/bin/claude")
 MODEL = os.environ.get("INTERVIEW_MODEL", "sonnet")
 MAX_REGIONS = 40
 SESS: dict = {}
-ENGINE_HOST = os.environ.get("ENGINE_HOST", "tommaso@100.103.234.2")   # behemoth (fleet.py HOSTS)
+ENGINE_HOST = os.environ.get("ENGINE_HOST", "local")   # the owner: parts are processed on nativedev (2026-09-27);
+                                                       # "tommaso@100.103.234.2" = behemoth's frozen stage
 ENGINE_STAGE = os.environ.get("ENGINE_STAGE", "/home/tommaso/engine-fleet/app")   # frozen release: tools/ at v15 (ca0108c)
-ENGINE_MEM = os.environ.get("ENGINE_MEM", "32G")
+ENGINE_MEM = os.environ.get("ENGINE_MEM", "24G")        # nativedev: 62 GB, production beside it
 ENGINE_SLOT = threading.Semaphore(1)                  # ponytail: one engine run at a time (16 GB each, nativedev is production)
 app = FastAPI()
 
@@ -333,7 +334,8 @@ def _engine_run(s, d, m, step, out):
     tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)      # as run.py's __main__
     job = f"{ENGINE_STAGE}/jobs/{d.name}"
     ssh = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", ENGINE_HOST]
-    remote = subprocess.run(ssh + [f"mkdir -p {job}"], capture_output=True, timeout=60).returncode == 0 and \
+    remote = ENGINE_HOST != "local" and \
+        subprocess.run(ssh + [f"mkdir -p {job}"], capture_output=True, timeout=60).returncode == 0 and \
         subprocess.run(["rsync", "-a", str(d / "mesh.stl"), str(step), f"{ENGINE_HOST}:{job}/"],
                        capture_output=True, timeout=600).returncode == 0
     run = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", f"MemoryMax={ENGINE_MEM}", "-p",
@@ -347,7 +349,7 @@ def _engine_run(s, d, m, step, out):
             subprocess.run(["rsync", "-a", f"{ENGINE_HOST}:{job}/tree.json", str(out / "tree.json")], capture_output=True, timeout=120)
         else:
             s["engine_host"] = "nativedev"
-            subprocess.run(run[:6] + ["MemoryMax=16G"] + run[7:] + [sys.executable, str(REPO / "tools/engine/run.py"),
+            subprocess.run(run[:6] + [f"MemoryMax={ENGINE_MEM}"] + run[7:] + [sys.executable, str(REPO / "tools/engine/run.py"),
                                                               str(d / "mesh.stl"), str(step), str(out / "tree.json")],
                            stdout=log, stderr=subprocess.STDOUT, text=True, timeout=2900)
     if not (out / "tree.json").exists():
