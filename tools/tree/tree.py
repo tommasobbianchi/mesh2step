@@ -412,6 +412,7 @@ def apply_modifier(shape, tree, mod, tol):
     for k in (1.0, 0.995, 0.98, 0.95, 0.85):         # OCCT refuses a round that eats a whole face (a full round): shrink
         s = build(edges, size * k)
         if s is not None:
+            APPLIED[mod.get("id")] = edges
             return s, None if k == 1.0 else f"built at {size * k:.4g} instead of {size:.4g} (OCCT refuses the exact size)"
     # some edges refuse (tangent chains, slivers shorter than the size): keep the ones that build together.
     # Bounded: edges shorter than size/2 cannot carry the round; each remaining edge must build alone first;
@@ -427,10 +428,12 @@ def apply_modifier(shape, tree, mod, tol):
         if build(keep + [e], size) is not None:
             keep.append(e)
     if keep:
+        APPLIED[mod.get("id")] = keep
         return build(keep, size), f"{len(edges) - len(keep)} of {len(edges)} edges refused"
     return shape, f"{mod['op']} refused on {len(edges)} edges"
 
 
+APPLIED = {}                                  # modifier id -> the edges it was built on (fcstd.py names them)
 GREEDY = 50                                   # edges tried one by one when a whole round selection is refused
 _PREFIX = {}                                  # prefix hash -> (shape, notes, tapered_ok), oldest first
 _PREFIX_MAX = 96

@@ -33,6 +33,7 @@ CLAUDE = os.path.expanduser("~/.local/bin/claude")
 MODEL = os.environ.get("INTERVIEW_MODEL", "sonnet")
 MAX_REGIONS = 40
 SESS: dict = {}
+ENGINE_SLOT = threading.Semaphore(1)                  # ponytail: one engine run at a time (16 GB each, nativedev is production)
 app = FastAPI()
 
 SYSTEM = """You help the OWNER of a part confirm HOW IT IS BUILT, by voice, in a few turns. The part may be a
@@ -267,6 +268,13 @@ def steps(tree):
             L = f["length"]
             ext = "through all" if L == "through" else f"{abs(float(L)):.4g} along {'-' if float(L) < 0 else '+'}{f['axis']}"
             txt = f"sketch ({shp}) on the plane across {f['axis']} at {f['at']:.4g}, {'extruded' if f['op'] == 'pad' else 'cut'} {ext}"
+            if "revolve" in f:
+                txt = (f"profile ({shp}) {'revolved' if f['op'] == 'pad' else 'revolved as a cut'} a full turn about the "
+                       f"{f['revolve']['axis']} axis through {[round(x, 3) for x in f['revolve']['point']]}")
+            if f.get("mirror_of"):
+                txt += f", the mirror of {f['mirror_of']}"
+        elif any(f.get(k) for k in ("near", "support", "coax", "round_axes")):
+            txt = f"{f['op']} {float(f['size']):.3g} on the edges of {f['on']} where the scan shows it"
         else:
             txt = f"{f['op']} {float(f['size']):.3g} on the {f.get('cap', 'both')} {f.get('loops', 'outer')} edges of {f['on']}"
         lab = f.get("label", f["id"])
@@ -295,18 +303,53 @@ def _refresh(s):
     return s["view"]
 
 
+def _engine(s, d, m):
+    """The design-history engine (tools/engine/run.py): the live converter's STEP as evidence (loopback: the paid AI
+    rebuild never runs), then the program search, memory-capped in its own scope. -> (tree, info) or (None, None)."""
+    sys.path.insert(0, str(REPO / "tools" / "engine"))
+    import fetch_steps as FS
+    step, out = d / "evidence.step", d / "engine"
+    out.mkdir(exist_ok=True)
+    s["stage"] = "converting the mesh to a solid (1-15 min)"
+    r = FS.convert(str(d / "mesh.stl"), step)
+    (out / "convert.json").write_text(json.dumps(r))
+    if not r.get("ok"):
+        return None, None
+    s["stage"] = "waiting for the engine (one part at a time)"
+    with ENGINE_SLOT:
+        s["stage"] = "searching the construction (up to 35 min)"
+        return _engine_run(s, d, m, step, out)
+
+
+def _engine_run(s, d, m, step, out):
+    tol = max(3e-3 * float(np.linalg.norm(m.extents)), 0.05)      # as run.py's __main__
+    with open(out / "engine.log", "w") as log:
+        subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=16G",
+                        "-p", "MemorySwapMax=0", sys.executable, str(REPO / "tools/engine/run.py"),
+                        str(d / "mesh.stl"), str(step), str(out / "tree.json")],
+                       stdout=log, stderr=subprocess.STDOUT, text=True, timeout=2700)
+    if not (out / "tree.json").exists():
+        return None, None
+    info = json.loads(next(ln for ln in (out / "engine.log").read_text().splitlines() if ln.startswith("{")))
+    info["tol"] = tol
+    return json.loads((out / "tree.json").read_text()), info
+
+
 def _analyse(sid):
     s = SESS[sid]
     try:
         d = Path(s["dir"]); an = d / "analysis"
-        # its own process, memory-capped: OCCT on a bad sketch can take tens of GB (measured 44 GB once)
-        subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=8G",
-                        "-p", "MemorySwapMax=0", sys.executable, str(REPO / "tools/tree/analyse.py"),
-                        str(d / "mesh.stl"), str(an)], capture_output=True, text=True, timeout=1800)
-        if not (an / "tree.json").exists():
-            raise RuntimeError("the analysis did not finish (memory cap or timeout)")
-        tree = json.loads((an / "tree.json").read_text()); info = json.loads((an / "analysis.json").read_text())
         m = trimesh.load(d / "mesh.stl", force="mesh")
+        tree, info = _engine(s, d, m)
+        if tree is None:                               # no evidence STEP or no program: the mesh-only analysis
+            s["stage"] = "reading the mesh (the engine found no program)"
+            # its own process, memory-capped: OCCT on a bad sketch can take tens of GB (measured 44 GB once)
+            subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=8G",
+                            "-p", "MemorySwapMax=0", sys.executable, str(REPO / "tools/tree/analyse.py"),
+                            str(d / "mesh.stl"), str(an)], capture_output=True, text=True, timeout=1800)
+            if not (an / "tree.json").exists():
+                raise RuntimeError("the analysis did not finish (memory cap or timeout)")
+            tree = json.loads((an / "tree.json").read_text()); info = json.loads((an / "analysis.json").read_text())
         s.update(tree=tree, mesh=m, tol=info["tol"], analysis=info)
         s.setdefault("costs", {})["planner"] = info.get("cost_usd", 0)
         v = _refresh(s)
@@ -326,7 +369,7 @@ def state(sid: str):
     if s is None:
         raise HTTPException(404, "unknown session")
     if s["status"] != "ready":
-        return {"status": s["status"], "error": s.get("error")}
+        return {"status": s["status"], "error": s.get("error"), "stage": s.get("stage")}
     return {"status": "ready", "view": s["view"], "reply": s.get("reply"), "facts": s["facts"],
             "analysis": s.get("analysis")}
 

@@ -96,6 +96,19 @@ def modifier(kind, name, label, base, es, size, expr):
         body.removeObject(m); doc.removeObject(m.Name); return base
     m.Base = (base, keep); doc.recompute()
     return m
+def edges_at(feat, path, tol):
+    """Edge names of feat lying on the edges in BREP file path (the ones the OCP compile filleted): midpoint within
+    tol/2. Evidence finishes are selected by the scan's faces, which FreeCAD cannot see; geometry is the handle."""
+    ref = Part.read(path); out = []
+    for j, e in enumerate(feat.Shape.Edges):
+        q = Part.Vertex(e.valueAt((e.FirstParameter + e.LastParameter) / 2))
+        if q.distToShape(ref)[0] < tol / 2:
+            out.append("Edge%d" % (j + 1))
+    return out
+def revolve(kind, name, label, sk):
+    f = body.newObject("PartDesign::" + kind, name); f.Label = label; f.Profile = sk
+    f.ReferenceAxis = (sk, ["V_Axis"]); f.Angle = 360.0; f.Refine = True
+    return f
 def edges_on(feat, axis, caps, which, tol, near=None):
     """Edge names of the rims of feat's flat faces in the cap planes (outer wire / holes), as tree.modifier_edges;
     near: (u, v) points along the named holes (a modifier's `holes`), only edges on them."""
@@ -181,7 +194,35 @@ open(REPORT, "w").write(json.dumps(res))
 
 
 
-def script(tree, out, report, tol):
+def connected_order(feats):
+    """Each run of consecutive pads reordered so every pad touches one placed before it (a union does not depend
+    on order): a PartDesign Body refuses a pad that starts a second, separate solid (part 5: F1 along X and F2 along
+    Y only meet through later pads; FreeCAD invalidated the whole body from F2 on)."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    out, i = [], 0
+    while i < len(feats):
+        j = i
+        while j < len(feats) and feats[j]["op"] == "pad" and not feats[j].get("body"):
+            j += 1
+        if j - i < 2:
+            out.append(feats[i]); i += 1; continue
+        run = feats[i:j]
+        try:
+            B = [T.body(f) for f in run]
+        except Exception:                              # noqa: BLE001 -- an unbuildable body: keep the order
+            out += run; i = j; continue
+        touch = lambda a, b: BRepExtrema_DistShapeShape(B[a], B[b]).Value() < 1e-4
+        placed, rest = [0], list(range(1, len(run)))
+        while rest:                                    # ponytail: O(n^2) distance calls, fine at tens of pads
+            k = next((r for r in rest if any(touch(r, q) for q in placed)), rest[0])
+            placed.append(k); rest.remove(k)
+        out += [run[k] for k in placed]; i = j
+    return out
+
+
+def script(tree, out, report, tol, brep=None):
+    brep = brep or {}
+    tree = dict(tree, features=connected_order(tree["features"]))
     L = [HEAD.format(out=str(out), report=str(report), rot=ROT)]
     feats = {f["id"]: f for f in tree["features"]}
     taper = {}
@@ -197,7 +238,15 @@ def script(tree, out, report, tol):
         if cur is not None and tag != cur:             # the next body of a multi-body part: its own Body
             L.append(f"body = doc.addObject('PartDesign::Body', 'Body_{tag}')\nlast = None")
         cur = tag
-        if f["op"] in ("pad", "pocket"):
+        if f["op"] in ("pad", "pocket") and "revolve" in f:   # profile in (r, h): sketch x = r, y = h along the axis
+            rv = f["revolve"]; k, ru = T.AX[rv["axis"]], T.UV[rv["axis"]][0]
+            u = [0.0] * 3; u[ru] = 1.0; v = [0.0] * 3; v[k] = 1.0; n = np.cross(u, v).tolist()
+            o = [float(x) for x in rv["point"]]; o[k] = 0.0
+            L.append(f"sk = sketch('S{i}', {json.dumps(f.get('label', i) + ' profile')}, 'Z', 0.0, {json.dumps(f['loops'])})")
+            L.append(f"sk.Placement = App.Placement(V(*{o!r}), App.Rotation(App.Matrix({u[0]}, {v[0]}, {n[0]}, 0, "
+                     f"{u[1]}, {v[1]}, {n[1]}, 0, {u[2]}, {v[2]}, {n[2]}, 0, 0, 0, 0, 1)))")
+            L.append(f"last = revolve({'Revolution' if f['op'] == 'pad' else 'Groove'!r}, '{i}', {lab}, sk)")
+        elif f["op"] in ("pad", "pocket"):
             circ = len(f["loops"]) == 1 and len(f["loops"][0]) == 1 and f["loops"][0][0]["t"] == "circle"
             drive = "None"
             if circ:
@@ -241,10 +290,16 @@ def script(tree, out, report, tol):
         elif f["op"] in ("round", "chamfer"):
             if f["id"] in {v[1] for d in taper.values() for v in d.values()}:
                 continue                               # built into its pad
+            kind = "Fillet" if f["op"] == "round" else "Chamfer"
+            if brep.get(i):                            # evidence finish: the edges the compile built it on
+                L.append(f"es = edges_at(last, {brep[i]!r}, {tol!r})")
+                L.append(f"if es:\n    last = modifier('{kind}', '{i}', {lab}, last, es, {float(f['size'])!r}, "
+                         f"param('size_{i}', {float(f['size'])!r}))")
+                L.append("doc.recompute()")
+                continue
             on = feats[f["on"]]
             Lf = float(on["length"]); lo, hi = sorted((on["at"], on["at"] + Lf))
             caps = {"top": [hi], "bottom": [lo], "both": [lo, hi]}[f.get("cap", "both")]
-            kind = "Fillet" if f["op"] == "round" else "Chamfer"
             near = None
             if f.get("holes"):                         # the named holes only: points along them, <= tol apart
                 near = []
@@ -262,19 +317,32 @@ def script(tree, out, report, tol):
 
 def build(tree, out, tol=0.05):
     out = Path(out).resolve(); report = out.with_suffix(".report.json"); py = out.with_suffix(".build.py")
-    py.write_text(script(tree, out, report, tol))
+    T._PREFIX.clear(); T.APPLIED.clear()               # a fresh compile: every modifier records its edges
+    ref, _ = T.compile_tree(tree, tol)
+    brep = {}
+    for f in tree["features"]:
+        if f["op"] in ("round", "chamfer") and any(f.get(k) for k in ("near", "support", "coax", "round_axes")) \
+                and T.APPLIED.get(f["id"]):
+            from OCP.BRep import BRep_Builder
+            from OCP.BRepTools import BRepTools
+            from OCP.TopoDS import TopoDS_Compound
+            c, b = TopoDS_Compound(), BRep_Builder(); b.MakeCompound(c)
+            for e in T.APPLIED[f["id"]]:
+                b.Add(c, e)
+            brep[f["id"]] = str(out.with_suffix(f".{f['id']}.brep")); BRepTools.Write_s(c, brep[f["id"]])
+    py.write_text(script(tree, out, report, tol, brep))
     report.unlink(missing_ok=True)
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
     if r.get("ok") and r.get("valid") and r.get("solids") == r.get("bodies", 1):   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
         from OCP.STEPControl import STEPControl_Reader
         rd = STEPControl_Reader(); rd.ReadFile(str(out)[:-6] + ".fc.step"); rd.TransferRoots(); fc = rd.OneShape()
-        ref, _ = T.compile_tree(tree, tol)
         v = T.volume(ref)
-        r["symdiff"] = round((T.volume(BRepAlgoAPI_Cut(ref, fc).Shape()) + T.volume(BRepAlgoAPI_Cut(fc, ref).Shape())) / v, 5)
+        # from the common part: a cut of two identical solids can return garbage (part 22: -303960 mm3, common = all)
+        r["symdiff"] = round((v + T.volume(fc) - 2 * T.volume(BRepAlgoAPI_Common(ref, fc).Shape())) / v, 5)
     return r
 
 

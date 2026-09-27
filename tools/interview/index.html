@@ -245,7 +245,7 @@ $('file').addEventListener('change', async (e) => {
   $('talk').disabled = true; $('text').disabled = true; statusEl.textContent = 'Reading how your part is built…';
   const poll = setInterval(async () => {
     const st = await (await fetch('api/state/' + sid)).json();
-    if (st.status === 'analysing') return;
+    if (st.status === 'analysing') { const s = Math.round((Date.now() - started) / 1000); statusEl.textContent = `Reading how your part is built: ${st.stage || 'starting'}… ${Math.floor(s / 60)} min ${s % 60} s`; return; }
     clearInterval(poll); statusEl.textContent = '';
     if (st.status !== 'ready') { showErr('Could not read the construction: ' + (st.error || st.status)); return; }
     applyView(st.view); handle(st.reply, st.facts);
