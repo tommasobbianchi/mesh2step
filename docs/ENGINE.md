@@ -123,3 +123,12 @@ whichever comes first:
 Then: freeze an engine release (the 39-part run is its regression gate) and test on held-out parts graded
 blind: /home/tommaso/corpora/heldout (the broom holder, the 2026-09-23 blade/spacer parts, the graders' parts)
 and a slice of the Fusion 360 Gallery reconstruction dataset (true design histories). Never tune on them.
+
+### v15 (commit ca0108c, iteration 3 of 3): 27W/5L/7T, mean J 1.4872 (v14 1.4869)
+
+Evidence decides the finish kind: part 37 now gets rounds (tie -> win); part 36 stays a chamfer (the grounded
+round scores lower). Targets: (3) fails on part 30 only (0.012 below v10); (4) fails on parts 5, 6, 14, 39
+(1098, 2199, 1056, 932 s); (1) and (2) await grades of the 9 changed parts (5, 6, 7, 20, 21, 23, 29, 35, 37;
+the other 30 trees are identical to v14 and their grades are carried over). The 3-iteration limit is reached:
+next is the release freeze and the held-out test. Held-out probe through the app (blade_mm, never tuned on):
+78.8 % explained with 21 pads, 46 min end to end (a freeform blade; the engine's language has no loft or sweep).

@@ -441,7 +441,7 @@ def _export(sid):
             r = FC.build(tree, d / "part.FCStd", s["tol"] * k)
         except Exception as e:                         # noqa: BLE001 -- the STEP stands on its own
             r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
-        s["export"] = {"status": "done", "scale": k, "fcstd_ok": bool(r.get("ok") and r.get("valid")),
+        s["export"] = {"status": "done", "scale": k, "fcstd_ok": bool(r.get("ok") and r.get("valid") and (r.get("symdiff") or 0) < 0.01),   # same solid as the STEP
                        "edit_breaks": r.get("edit_breaks"), "params": r.get("params"), "symdiff": r.get("symdiff"),
                        "edit_checked": r.get("edit_checked"), "error": r.get("error"), "step": True}
     except Exception as e:                             # noqa: BLE001
@@ -545,7 +545,8 @@ GRADE_SETS = {"v5": GRADE_DIR,                                       # the tree 
               "engine-v7": REPO / "runs" / "engine" / "grade_set_v7",
               "engine-v9": REPO / "runs" / "engine" / "grade_set_v9",
               "engine-v12": REPO / "runs" / "engine" / "grade_set_v12",
-              "engine-v14": REPO / "runs" / "engine" / "grade_set_v14"}
+              "engine-v14": REPO / "runs" / "engine" / "grade_set_v14",
+              "engine-v15": REPO / "runs" / "engine" / "grade_set_v15"}
 
 
 def _gdir(request):
