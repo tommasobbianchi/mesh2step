@@ -499,7 +499,8 @@ def build_status(sid: str):
 GRADE_DIR = Path(os.environ.get("GRADE_DIR", str(REPO / "runs" / "tree" / "corpus" / "v5")))
 GRADE_SETS = {"v5": GRADE_DIR,                                       # the tree sets graders can switch between;
               "engine": REPO / "runs" / "engine" / "grade_set",      # each keeps its own grades/ and view/
-              "engine-v7": REPO / "runs" / "engine" / "grade_set_v7"}
+              "engine-v7": REPO / "runs" / "engine" / "grade_set_v7",
+              "engine-v9": REPO / "runs" / "engine" / "grade_set_v9"}
 
 
 def _gdir(request):
