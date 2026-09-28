@@ -471,10 +471,16 @@ def _fork_latest(handle, end, need=1):
     return got[-1] if got else None
 
 
+DEADLINE = None        # wall time no trial may pass (engine finishing sets it in its own fork)
+
+
 def _forked(fn, *args, default=None, timeout=90.0):
     """fn(*args) in a forked child: OCCT's fillet builder can SIGSEGV on a trial tree (part 23) or never return
-    (the gate), and either must only reject that candidate."""
+    (the gate), and either must only reject that candidate. Capped by DEADLINE when set (v17: the 90 s trials of
+    edge_mods ran past the finishing budget, the whole chain was killed and part 16 lost its round)."""
     import time
+    if DEADLINE is not None:
+        timeout = min(timeout, max(1.0, DEADLINE - time.time()))
     return _fork_collect(_fork_start(fn, *args), time.time() + timeout, default)
 
 
@@ -817,7 +823,7 @@ def edge_mods(tree, m, tol, budget=90.0):
     lowers the match (part 22's dish reads chamfer-like on the profile, and is a round). Time-boxed."""
     import time
     from shapely.geometry import LinearRing
-    end = time.time() + budget
+    end = time.time() + budget if DEADLINE is None else min(time.time() + budget, DEADLINE)
     feats = tree["features"]
     pads = [f for f in feats if f["op"] == "pad" and f["length"] != "through"]
     if not pads:
@@ -931,7 +937,7 @@ def prune(tree, m, tol, budget=90.0):
     removal does not lower the match; finishes (they earned their place in edge_mods) and the steps a finish is
     anchored on stay. Time-boxed: the last steps first (the three-plane pockets), the rest kept when it runs out."""
     import time
-    end = time.time() + budget
+    end = time.time() + budget if DEADLINE is None else min(time.time() + budget, DEADLINE)
     feats = tree["features"]
     _occ(m)
     best = _forked(pick_score, tree, m, tol, default=-1.0)

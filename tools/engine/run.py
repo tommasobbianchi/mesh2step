@@ -96,14 +96,18 @@ def run(m, step, tol, ilp_s=60.0):
     def fin_measured(tree):
         """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
         ft = copy.deepcopy(tree)
+        PR.DEADLINE = fin["end"]                       # every trial in this chain, edge_mods' and prune's included
         PR.edge_mods(ft, m, tol, budget=left())
         PR.prune(ft, m, tol, budget=left())
         bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol, timeout=left()), until=fin["end"])
+        PR.DEADLINE = None                             # the final scores get their own time
         return [("finished", ft, *j_exact(ft, m, tol, timeout=FIN_SCORE_S)),
                 ("finished + evidence finishes", bt, *j_exact(bt, m, tol, timeout=FIN_SCORE_S))]
 
     def fin_evidence(tree):
+        PR.DEADLINE = fin["end"]
         et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol, timeout=left()), until=fin["end"])
+        PR.DEADLINE = None
         return [("evidence finishes", et, *j_exact(et, m, tol, timeout=FIN_SCORE_S))]
 
     def note(name, vn, t, info, j, sc):
