@@ -45,6 +45,7 @@ BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boole
 BIG_PAIRS = 1000       # cap-level pairs (sum over axes) past which hypotheses run serially (corpus max 310, part 14)
 FIN_S = 60.0           # wall seconds for all the finishing chains together (the owner's budget)
 FIN_SCORE_S = 30.0     # the final score of a finished program (one exact compile)
+BROKEN_S = 90.0        # the volume cross-check's compile, like j_exact's (a hang counts as broken)
 HYP_SHARE = 0.5        # share of the budget the program hypotheses may take (the rest is finishing's)
 
 
@@ -79,7 +80,9 @@ def run(m, step, tol, ilp_s=60.0):
         if tree is None:
             return None, info, None, None
         j, sc = j_exact(tree, m, tol)
-        info["broken"] = _broken(tree)               # the silent-empty-fuse symptom (see below)
+        # the silent-empty-fuse symptom (see below), forked and time-boxed like the score: its in-process compile hung
+        # part 6's "sharp outlines, revolves" hypothesis until the hypothesis deadline (v20: 1022 s of 1182)
+        info["broken"] = PR._forked(_broken, tree, default=True, timeout=BROKEN_S)
         return tree, info, j, sc
 
     def _broken(tree):
