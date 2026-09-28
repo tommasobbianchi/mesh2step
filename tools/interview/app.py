@@ -464,12 +464,18 @@ def _export(sid):
         T.write_step(shape, d / "part.step")
         s["export"] = {"status": "running", "step": True}
         try:
-            r = FC.build(tree, d / "part.FCStd", s["tol"] * k)
+            r = FC.build(tree, d / "part.FCStd", s["tol"] * k, edit_check=False)   # files first, the check after
         except Exception as e:                         # noqa: BLE001 -- the STEP stands on its own
             r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
         s["export"] = {"status": "done", "scale": k, "fcstd_ok": bool(r.get("ok") and r.get("valid") and (r.get("symdiff") or 0) < 0.01),   # same solid as the STEP
                        "edit_breaks": r.get("edit_breaks"), "params": r.get("params"), "symdiff": r.get("symdiff"),
-                       "edit_checked": r.get("edit_checked"), "error": r.get("error"), "step": True}
+                       "edit_checked": r.get("edit_checked"), "error": r.get("error"), "step": True,
+                       "edit_pending": bool(r.get("edit_pending"))}
+        if s["export"]["fcstd_ok"] and r.get("edit_pending"):
+            def check(e=s["export"]):                  # the editability check runs after the files are delivered
+                c = FC.edit_check(d / "part.FCStd")
+                e.update(edit_breaks=c.get("edit_breaks"), edit_checked=c.get("edit_checked"), edit_pending=False)
+            threading.Thread(target=check, daemon=True).start()
     except Exception as e:                             # noqa: BLE001
         s["export"] = {"status": "failed", "error": f"{type(e).__name__}: {e}"[:300],
                        "step": (d / "part.step").exists()}

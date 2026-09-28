@@ -172,11 +172,20 @@ try:
            "invalid_features": bad}
     aliases = [P.getAlias(c) for c in P.getUsedCells() if P.getAlias(c)]
     res["params"] = aliases
-    breaks = []
     App.closeDocument(doc.Name)
+    res.update(edit_check(OUT, aliases) if EDIT else {"edit_pending": True})
+except Exception:
+    res["error"] = traceback.format_exc()[-1500:]
+open(REPORT, "w").write(json.dumps(res))
+'''
+
+EDIT_FN = r'''
+def edit_check(OUT, aliases):
+    """Each Params size +3 % on a fresh copy of the saved document: which features break."""
     import time
+    breaks = []
     t_gate = time.time()
-    res["edit_checked"] = 0
+    res = {"edit_checked": 0}
     for a in aliases:                                   # editable = survives an edit (fresh copy per size)
         if time.time() - t_gate > 180:                  # a 98-pad tree recomputes for minutes per size: budget it
             break
@@ -190,8 +199,20 @@ try:
             breaks.append({"param": a, "broken": broke})
         App.closeDocument(d2.Name)
     res["edit_breaks"] = breaks
+    return res
+'''
+
+EDIT_ONLY = r'''
+import json, traceback
+import FreeCAD as App
+OUT, REPORT = {out!r}, {report!r}
+try:
+    d = App.openDocument(OUT); P = d.getObject("Params")
+    aliases = [P.getAlias(c) for c in P.getUsedCells() if P.getAlias(c)]
+    App.closeDocument(d.Name)
+    res = edit_check(OUT, aliases)
 except Exception:
-    res["error"] = traceback.format_exc()[-1500:]
+    res = {{"error": traceback.format_exc()[-1500:]}}
 open(REPORT, "w").write(json.dumps(res))
 '''
 
@@ -224,10 +245,10 @@ def connected_order(feats):
     return out
 
 
-def script(tree, out, report, tol, brep=None, skip=()):
+def script(tree, out, report, tol, brep=None, skip=(), edit=True):
     brep = brep or {}
     tree = dict(tree, features=connected_order(tree["features"]))
-    L = [HEAD.format(out=str(out), report=str(report), rot=ROT)]
+    L = [HEAD.format(out=str(out), report=str(report), rot=ROT) + EDIT_FN + f"\nEDIT = {edit!r}\n"]
     feats = {f["id"]: f for f in tree["features"]}
     taper = {}
     for f in tree["features"]:                        # rim chamfers become tapered pads, as in tree.compile_tree
@@ -354,6 +375,43 @@ def gui_save(out):
     return False
 
 
+def write_gui(out, shape):
+    """GuiDocument.xml written into the saved document: every object's visibility as the document stores it (body +
+    tip, set in TAIL) and an isometric camera on the part. A file saved headless has none and FreeCAD opens it
+    with every object hidden (the owner's blank file, 2026-09-28); this replaces a GUI re-save (7-32 s)."""
+    import re
+    import zipfile
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    with zipfile.ZipFile(out) as z:
+        doc = z.read("Document.xml").decode()
+        if "GuiDocument.xml" in z.namelist():
+            return True
+    vis = {}
+    for m in re.finditer(r'<Object name="([^"]+)"[^>]*>(.*?)</Object>', doc, re.S):
+        v = re.search(r'name="Visibility".*?value="(\w+)"', m.group(2), re.S)
+        vis[m.group(1)] = bool(v) and v.group(1) == "true"
+    vp = "".join(f'<ViewProvider name="{n}" expanded="0"><Properties Count="1" TransientCount="0">'
+                 f'<Property name="Visibility" type="App::PropertyBool" status="1"><Bool value="{str(v).lower()}"/>'
+                 f"</Property></Properties></ViewProvider>" for n, v in vis.items())
+    bb = Bnd_Box(); BRepBndLib.Add_s(shape, bb)
+    lo, hi = np.array(bb.CornerMin().Coord()), np.array(bb.CornerMax().Coord())
+    c, diag = (lo + hi) / 2, float(np.linalg.norm(hi - lo)) or 1.0
+    ax, ang = np.array([0.74290615, 0.30772212, 0.59447289]), 0.61583132   # FreeCAD's isometric orientation
+    z = np.array([0.0, 0.0, 1.0])                      # the camera looks down its -Z: it sits along R z, focal away
+    rz = z * np.cos(ang) + np.cross(ax, z) * np.sin(ang) + ax * np.dot(ax, z) * (1 - np.cos(ang))
+    pos = c + rz * diag / 2
+    nl = "&#10;"
+    cam = (f"OrthographicCamera {{{nl}  viewportMapping ADJUST_CAMERA{nl}  position {pos[0]:.5f} {pos[1]:.5f} {pos[2]:.5f}{nl}"
+           f"  orientation 0.74290615 0.30772212 0.59447289  0.61583132{nl}  nearDistance {-diag / 2:.5f}{nl}"
+           f"  farDistance {1.5 * diag:.5f}{nl}  aspectRatio 1{nl}  focalDistance {diag / 2:.5f}{nl}  height {diag:.5f}{nl}{nl}}}{nl}")
+    xml = (f"<?xml version='1.0' encoding='utf-8'?>\n<Document SchemaVersion=\"1\"><ViewProviderData Count=\"{len(vis)}\">"
+           f'{vp}</ViewProviderData><Camera settings="{cam}"/></Document>\n')
+    with zipfile.ZipFile(out, "a", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("GuiDocument.xml", xml)
+    return True
+
+
 def iter_solids(sh):
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -362,7 +420,16 @@ def iter_solids(sh):
         yield ex.Current(); ex.Next()
 
 
-def build(tree, out, tol=0.05):
+def edit_check(out):
+    """The editability check alone, on a saved document (the app runs it after the files are delivered)."""
+    out = Path(out).resolve(); report = out.with_suffix(".edit.json"); py = out.with_suffix(".edit.py")
+    py.write_text(EDIT_FN + EDIT_ONLY.format(out=str(out), report=str(report)))
+    report.unlink(missing_ok=True)
+    subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=900)
+    return json.loads(report.read_text()) if report.exists() else {"error": "FreeCAD wrote no edit report"}
+
+
+def build(tree, out, tol=0.05, edit_check=True):
     out = Path(out).resolve(); report = out.with_suffix(".report.json"); py = out.with_suffix(".build.py")
     T._PREFIX.clear(); T.APPLIED.clear()               # a fresh compile: every modifier records its edges
     ref, notes = T.compile_tree(tree, tol)
@@ -380,13 +447,13 @@ def build(tree, out, tol=0.05):
             for e in T.APPLIED[f["id"]]:
                 b.Add(c, e)
             brep[f["id"]] = str(out.with_suffix(f".{f['id']}.brep")); BRepTools.Write_s(c, brep[f["id"]])
-    py.write_text(script(tree, out, report, tol, brep, skip))
+    py.write_text(script(tree, out, report, tol, brep, skip, edit=edit_check))
     report.unlink(missing_ok=True)
     n = len(tree["features"])
     subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
     r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
-    if out.exists():
-        r["gui_saved"] = gui_save(out)
+    if out.exists() and ref is not None:
+        r["gui_saved"] = write_gui(out, ref)
     n_ref = r["ref_solids"] = len(list(iter_solids(ref)))
     if r.get("ok") and r.get("valid") and r.get("solids") == n_ref:   # as many solids as the STEP compile   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
