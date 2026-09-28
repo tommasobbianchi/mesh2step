@@ -32,6 +32,13 @@ import solve as S                                      # noqa: E402
 import undo as U                                       # noqa: E402
 
 PR = C.PR
+MARKS = os.environ.get("M2S_MARKS") == "1"
+
+
+def mark(name, what):
+    """Stage marker for tools/engine/cgprof.py (the profiler); silent unless M2S_MARKS=1."""
+    if MARKS:
+        print(f"MARK engine.{name} {what} {time.time():.2f}", file=sys.stderr, flush=True)
 FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
@@ -48,6 +55,7 @@ def j_exact(tree, m, tol, timeout=90.0):
 
 def run(m, step, tol, ilp_s=60.0):
     t0 = time.time()
+    mark("setup", "start")
     s = E.read(step)
     b = U.base_kind(s)
     sets = U.unexplained_sets(s, b[3])
@@ -140,6 +148,7 @@ def run(m, step, tol, ilp_s=60.0):
             h = PR._fork_start(gen, *h[1])
         return PR._fork_collect(h, until, default)
 
+    mark("setup", "end"); mark("hypotheses", "start")
     hs = [(name, sh, sharp, extra, start(sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
     # the undo (up to UNDO_S in its own fork) runs while the served-solid hypotheses compute, not before them
     # (parts 5 and 39 spent ~300 s and ~220 s here with every core but one idle); same bases, same decisions
@@ -167,12 +176,14 @@ def run(m, step, tol, ilp_s=60.0):
             continue
         if name not in got or j > got[name][2] + 1e-4:      # ties go to the plain build
             got[name] = (tree, info, j, sc)
+    mark("hypotheses", "end")
     raws = []
     for name, (tree, info, j, sc) in got.items():
         note(name, "raw", tree, info, j, sc)
         raws.append((j, name, tree, info))
     # finishing costs most of the time (every trial is an exact compile): the FINISH_TOP best raw programs, their
     # two finishing chains all in parallel
+    mark("finishing", "start")
     jobs = []
     rev = lambda t: any("revolve" in f for f in t["features"])
     ranked = sorted(raws, key=lambda r: -r[0])
@@ -183,6 +194,7 @@ def run(m, step, tol, ilp_s=60.0):
     for name, info, h in jobs:
         for vn, t, j, sc in PR._fork_collect(h, min(end, fin["end"] + 2 * FIN_SCORE_S), []):
             note(name, vn, t, info, j, sc)
+    mark("finishing", "end"); mark("post", "start")
     if best is not None:                               # finishes grounded on the evidence faces, kept if J holds
         gt, nch, nkind = FN.ground(best[1], s, tol)
         if nch:
@@ -208,6 +220,7 @@ def run(m, step, tol, ilp_s=60.0):
         if top is None:
             break
         best = (top[0], top[1], top[2], best[3] + f", {top[3]}", best[4])
+    mark("post", "end")
     out = {"undo_sets": len(sets), "base_planes": list(b[1]), "log": log, "seconds": round(time.time() - t0, 1)}
     if best is None:
         return None, out
