@@ -43,6 +43,7 @@ FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
 BIG_PAIRS = 1000       # cap-level pairs (sum over axes) past which hypotheses run serially (corpus max 310, part 14)
+HYP_S = 150.0          # wall seconds one program hypothesis may take (winning ones: <= 122 s on the corpus)
 FIN_S = 60.0           # wall seconds for all the finishing chains together (the owner's budget)
 FIN_SCORE_S = 30.0     # the final score of a finished program (one exact compile)
 HYP_SHARE = 0.5        # share of the budget the program hypotheses may take (the rest is finishing's)
@@ -144,18 +145,29 @@ def run(m, step, tol, ilp_s=60.0):
     start = (lambda *a: ("lazy", a)) if big else (lambda *a: PR._fork_start(gen, *a))
 
     def collect(h, until, default):
+        """A hypothesis's result by `until`, and never later than HYP_S after it started (v18, 39 parts: every
+        winning program search took <= 122 s; the 5 that ran 122-941 s never won, and part 6 spent 940 s in them)."""
         if isinstance(h, tuple) and h[0] == "lazy":
             h = PR._fork_start(gen, *h[1])
-        return PR._fork_collect(h, until, default)
+            started[h] = time.time()
+        return PR._fork_collect(h, min(until, started.get(h, time.time()) + HYP_S), default)
+
+    started = {}
+
+    def start_timed(*a):
+        h = start(*a)
+        if not (isinstance(h, tuple) and h[0] == "lazy"):
+            started[h] = time.time()
+        return h
 
     mark("setup", "end"); mark("hypotheses", "start")
-    hs = [(name, sh, sharp, extra, start(sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
+    hs = [(name, sh, sharp, extra, start_timed(sh, sharp, extra, False)) for name, sh, sharp, extra in solids]
     # the undo (up to UNDO_S in its own fork) runs while the served-solid hypotheses compute, not before them
     # (parts 5 and 39 spent ~300 s and ~220 s here with every core but one idle); same bases, same decisions
     base = U.defeature_budgeted(s, [f for x in sets for f in x]) if sets else None
     if base is not None:
         solids.append(("undone base", base, False, ()))
-        hs.append(("undone base", base, False, (), start(base, False, (), False)))
+        hs.append(("undone base", base, False, (), start_timed(base, False, (), False)))
     got, redo = {}, []
     end_h = t0 + HYP_SHARE * BUDGET                    # hypotheses get at most this share: finishing always runs
     for name, sh, sharp, extra, h in hs:               # (v13/v14: part 6 spent 1366 s here and never got its fillets)
@@ -167,7 +179,7 @@ def run(m, step, tol, ilp_s=60.0):
         got[name] = (tree, info, j, sc)
         if info.get("broken"):
             redo.append((name, sh, sharp, extra))
-    hs2 = [(name, start(sh, sharp, extra, True)) for name, sh, sharp, extra in redo]
+    hs2 = [(name, start_timed(sh, sharp, extra, True)) for name, sh, sharp, extra in redo]
     for name, h in hs2:
         tree, info, j, sc = collect(h, max(end_h, time.time() + 60), (None, {"error": "died or over budget",
                                                                                      "snapped": True}, None, None))
