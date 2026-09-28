@@ -36,11 +36,13 @@ FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
 BIG_PAIRS = 1000       # cap-level pairs (sum over axes) past which hypotheses run serially (corpus max 310, part 14)
+FIN_S = 60.0           # wall seconds for all the finishing chains together (the owner's budget)
+FIN_SCORE_S = 30.0     # the final score of a finished program (one exact compile)
 HYP_SHARE = 0.5        # share of the budget the program hypotheses may take (the rest is finishing's)
 
 
-def j_exact(tree, m, tol):
-    sc = PR._forked(PR.pick_score, tree, m, tol, default=-1.0)
+def j_exact(tree, m, tol, timeout=90.0):
+    sc = PR._forked(PR.pick_score, tree, m, tol, default=-1.0, timeout=timeout)
     return sc - C.STEP_COST * C.steps(tree), sc
 
 
@@ -86,17 +88,23 @@ def run(m, step, tol, ilp_s=60.0):
         except Exception:                            # noqa: BLE001
             return True
 
+    # finishing (rounds, chamfers) gets FIN_S of wall time in all: the owner, 2026-09-28: "60 seconds is enough, a
+    # human fixes a fillet in a few seconds in post-processing" (v15: part 14 spent 964 s here and kept nothing)
+    fin = {"end": None}
+    left = lambda: max(1.0, fin["end"] - time.time())
+
     def fin_measured(tree):
         """The measured finishing pass, then the evidence finishes on top (runs in a fork)."""
         ft = copy.deepcopy(tree)
-        PR.edge_mods(ft, m, tol)
-        PR.prune(ft, m, tol)
-        bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol))
-        return [("finished", ft, *j_exact(ft, m, tol)), ("finished + evidence finishes", bt, *j_exact(bt, m, tol))]
+        PR.edge_mods(ft, m, tol, budget=left())
+        PR.prune(ft, m, tol, budget=left())
+        bt, _, _ = FN.apply(ft, s, m, tol, lambda t: j_exact(t, m, tol, timeout=left()), until=fin["end"])
+        return [("finished", ft, *j_exact(ft, m, tol, timeout=FIN_SCORE_S)),
+                ("finished + evidence finishes", bt, *j_exact(bt, m, tol, timeout=FIN_SCORE_S))]
 
     def fin_evidence(tree):
-        et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol))
-        return [("evidence finishes", et, *j_exact(et, m, tol))]
+        et, _, _ = FN.apply(tree, s, m, tol, lambda t: j_exact(t, m, tol, timeout=left()), until=fin["end"])
+        return [("evidence finishes", et, *j_exact(et, m, tol, timeout=FIN_SCORE_S))]
 
     def note(name, vn, t, info, j, sc):
         nonlocal best
@@ -165,15 +173,16 @@ def run(m, step, tol, ilp_s=60.0):
     rev = lambda t: any("revolve" in f for f in t["features"])
     ranked = sorted(raws, key=lambda r: -r[0])
     pick = [r for r in ranked if not rev(r[2])][:FINISH_TOP] + [r for r in ranked if rev(r[2])][:1]
+    fin["end"] = time.time() + FIN_S
     for _, name, tree, info in pick:                   # the best of each family: finishes vs revolves
         jobs += [(name, info, PR._fork_start(fin_measured, tree)), (name, info, PR._fork_start(fin_evidence, tree))]
     for name, info, h in jobs:
-        for vn, t, j, sc in PR._fork_collect(h, end, []):
+        for vn, t, j, sc in PR._fork_collect(h, min(end, fin["end"] + 2 * FIN_SCORE_S), []):
             note(name, vn, t, info, j, sc)
     if best is not None:                               # finishes grounded on the evidence faces, kept if J holds
         gt, nch, nkind = FN.ground(best[1], s, tol)
         if nch:
-            j, sc = j_exact(gt, m, tol)
+            j, sc = j_exact(gt, m, tol, timeout=FIN_SCORE_S)
             log.append({"variant": "finishes on evidence", "changed": nch, "kind_fixed": nkind, "J": round(j, 4)})
             # a finish of the wrong kind contradicts the evidence: correcting it is worth up to one step of J
             if j >= best[0] - (C.STEP_COST if nkind else 1e-4):

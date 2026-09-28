@@ -252,8 +252,10 @@ def _axis_clusters(axl, tol):
     return out
 
 
-def apply(tree, shape, m, tol, j_of):
-    """Add evidence finishes to `tree` one group at a time, keeping each only if J improves. -> (tree, J, log)."""
+def apply(tree, shape, m, tol, j_of, until=None):
+    """Add evidence finishes to `tree` one group at a time, keeping each only if J improves, until time `until`
+    (the groups come most-evidenced first). -> (tree, J, log)."""
+    import time
     import tree as T
     pad_axes = {"XYZ".index(f["axis"]) for f in tree["features"] if f["op"] in ("pad", "pocket")}
     cur = copy.deepcopy(tree)
@@ -261,6 +263,8 @@ def apply(tree, shape, m, tol, j_of):
     log = []
     solid, _ = T.compile_tree(cur, tol)
     for op, size, reach, pts, axes in groups(shape, pad_axes, solid, tol):
+        if until is not None and time.time() > until:
+            break
         best2 = None
         # precise first (edges tangent to the evidence round's planes, named by its axis lines), else the
         # proximity selection with the bounded retry
