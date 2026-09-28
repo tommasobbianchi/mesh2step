@@ -39,6 +39,8 @@ def steps(tree):
 SAMPLES = 5            # sections per band intersected for "material throughout"
 AGG_NNZ = 5_000_000    # cell memberships past which the ILP cover rows are aggregated (logged as "nnz" per program)
 BIG_NK = 3000          # candidates past which the cells are grouped by hash (corpus max 2069)
+ILP_S = 150.0          # HiGHS wall limit (was 900): only part 6's two losing hypotheses ever reached a limit; the
+                       # solver returns its best program so far instead of the hypothesis being killed
 NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 
 
@@ -287,7 +289,7 @@ def solve(V, cands, M, time_limit=60.0):
     A.sort_indices()
     lb, ub = np.frombuffer(lb), np.frombuffer(ub)
     res = milp(cost, constraints=LinearConstraint(A, lb, ub), integrality=np.ones(nvar),
-               bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": max(time_limit, 900.0),
+               bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": ILP_S,
                                              "disp": False})
     if res.x is None:
         return None, {"status": res.message}

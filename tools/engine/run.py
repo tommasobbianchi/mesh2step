@@ -43,7 +43,6 @@ FINISH_TOP = 2         # raw programs that get the finishing passes
 BUDGET = 2100.0        # seconds for the whole part (the fleet kills at 2400)
 BROKEN = 0.03          # exact vs voxel volume of a program: beyond this a boolean failed silently
 BIG_PAIRS = 1000       # cap-level pairs (sum over axes) past which hypotheses run serially (corpus max 310, part 14)
-HYP_S = 150.0          # wall seconds one program hypothesis may take (winning ones: <= 122 s on the corpus)
 FIN_S = 60.0           # wall seconds for all the finishing chains together (the owner's budget)
 FIN_SCORE_S = 30.0     # the final score of a finished program (one exact compile)
 HYP_SHARE = 0.5        # share of the budget the program hypotheses may take (the rest is finishing's)
@@ -145,12 +144,13 @@ def run(m, step, tol, ilp_s=60.0):
     start = (lambda *a: ("lazy", a)) if big else (lambda *a: PR._fork_start(gen, *a))
 
     def collect(h, until, default):
-        """A hypothesis's result by `until`, and never later than HYP_S after it started (v18, 39 parts: every
-        winning program search took <= 122 s; the 5 that ran 122-941 s never won, and part 6 spent 940 s in them)."""
+        """A hypothesis's result by `until`. No per-hypothesis wall cap: v19's 150 s cap killed part 27's winning
+        search on a loaded host (28 s on behemoth, over 150 s on nativeserver: 1.4969 -> 0.541); the ILP is bounded
+        instead (cells.ILP_S)."""
         if isinstance(h, tuple) and h[0] == "lazy":
             h = PR._fork_start(gen, *h[1])
             started[h] = time.time()
-        return PR._fork_collect(h, min(until, started.get(h, time.time()) + HYP_S), default)
+        return PR._fork_collect(h, until, default)
 
     started = {}
 
