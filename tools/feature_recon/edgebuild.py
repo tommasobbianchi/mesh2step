@@ -110,6 +110,15 @@ r = regions(body.triangles)
 V, F = r["topology"][0], r["topology"][1]
 label = np.array(r["label"]).copy()
 kinds = list(r["kinds"])
+if os.environ.get("EB_LABELS"):
+    # a noisy mesh (scan, remesh) cleaned by denoise.py: its regions were fitted within the mesh's own noise and the
+    # vertices moved onto them; the exact segmentation above cannot see them (the owner's mechpart scan: 2484 triangles
+    # on no surface). Faces are matched by centre: the body here is the same mesh, possibly reordered.
+    from scipy.spatial import cKDTree as _KD
+    _z = np.load(os.environ["EB_LABELS"])
+    _d, _j = _KD(_z["centres"]).query(V[F].mean(1))
+    label = np.where(_d < 1e-6 * diag, _z["label"][_j], -1)
+    kinds = [str(k_) for k_ in _z["kinds"]]
 tri = V[F]
 nt = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]); area = np.linalg.norm(nt, axis=1) / 2
 nt = nt / np.maximum(2 * area[:, None], 1e-30)
