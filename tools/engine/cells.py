@@ -41,6 +41,7 @@ AGG_NNZ = 5_000_000    # cell memberships past which the ILP cover rows are aggr
 BIG_NK = 3000          # candidates past which the cells are grouped by hash (corpus max 2069)
 ILP_S = 150.0          # HiGHS wall limit (was 900): only part 6's two losing hypotheses ever reached a limit; the
                        # solver returns its best program so far instead of the hypothesis being killed
+ILP_KILL_S = 2 * ILP_S  # hard stop of the forked solve (HiGHS ignores time_limit while presolving)
 NODES = 20000          # branch-and-bound nodes: the ILP stops on work done, not wall time, so every host agrees
 
 
@@ -288,16 +289,21 @@ def solve(V, cands, M, time_limit=60.0):
                    shape=(r, nvar)).tocsr()
     A.sort_indices()
     lb, ub = np.frombuffer(lb), np.frombuffer(ub)
-    res = milp(cost, constraints=LinearConstraint(A, lb, ub), integrality=np.ones(nvar),
-               bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": ILP_S,
-                                             "disp": False})
-    if res.x is None:
-        return None, {"status": res.message}
-    x = res.x[:nk] > 0.5
+    def _milp():
+        r_ = milp(cost, constraints=LinearConstraint(A, lb, ub), integrality=np.ones(nvar),
+                  bounds=Bounds(0, 1), options={"node_limit": NODES, "time_limit": ILP_S, "disp": False})
+        return r_.x, r_.fun, r_.message
+    # HiGHS checks time_limit in branch and bound, not in presolve: part 6's "sharp outlines, revolves" model (605k
+    # rows) sat in presolve 350 s on behemoth and 1172 s on nativedev, and ended without a program either way. The
+    # solve runs forked and is killed at ILP_KILL_S; a solve that returns by then is unchanged (corpus max ~180 s)
+    xs, fun, msg = PR._forked(_milp, default=(None, None, "presolve over its time: killed"), timeout=ILP_KILL_S)
+    if xs is None:
+        return None, {"status": msg}
+    x = xs[:nk] > 0.5
     chosen = [k for k in range(nk) if x[k] and P[k]] + [k for k in range(nk) if x[k] and not P[k]]
-    mism = float(res.fun - STEP_COST * len(chosen)) + nin.sum() / tot
+    mism = float(fun - STEP_COST * len(chosen)) + nin.sum() / tot
     return chosen, {"cells": nc, "cands": nk, "ops": len(chosen), "mismatch": round(mism, 4), "nnz": int(member.sum()), "aggregated": agg,
-                    "status": res.message[:60]}
+                    "status": msg[:60]}
 
 
 def program(bm, tol, time_limit=60.0, shape=None, sharp=False, extra=(), snap=False):
