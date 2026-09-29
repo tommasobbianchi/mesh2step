@@ -177,7 +177,11 @@ def run(m, step, tol, ilp_s=60.0):
         tree, info, j, sc = collect(h, end_h, (None, {"error": "died or over budget", "snapped": False}, None, None))
         if tree is None:
             log.append({"solid": name, **info})
-            redo.append((name, sh, sharp, extra))
+            # snapping moves walls, it does not make the ILP searchable: a plain build that ran out of ILP time is not
+            # rebuilt (part 6 v21p: 437 s plain + 359 s snapped, both without a program, 800 s of its 986; across
+            # v15-v21p no snapped rebuild after an ILP time-out ever changed a part's winner)
+            if "Time limit" not in str(info.get("status", "")):
+                redo.append((name, sh, sharp, extra))
             continue
         got[name] = (tree, info, j, sc)
         if info.get("broken"):
