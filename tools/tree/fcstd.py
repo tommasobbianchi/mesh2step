@@ -61,7 +61,7 @@ def sketch(name, label, axis, at, loops, drive=None):
     return sk
 def pad(name, label, sk, length, expr, reversed_=False, taper=0.0):
     f = body.newObject("PartDesign::Pad", name); f.Label = label; f.Profile = sk
-    f.Refine = True                                    # unify coplanar faces: bodies meeting face to face
+    f.Refine = REFINE                                  # unify coplanar faces: bodies meeting face to face
     f.Length = abs(length); f.Reversed = reversed_
     if taper:
         f.TaperAngle = taper
@@ -70,7 +70,7 @@ def pad(name, label, sk, length, expr, reversed_=False, taper=0.0):
     return f
 def pocket(name, label, sk, length, expr, through=False):
     f = body.newObject("PartDesign::Pocket", name); f.Label = label; f.Profile = sk
-    f.Refine = True
+    f.Refine = REFINE
     if through:
         f.Type = "ThroughAll"; f.Midplane = True
     else:
@@ -107,7 +107,7 @@ def edges_at(feat, path, tol):
     return out
 def revolve(kind, name, label, sk):
     f = body.newObject("PartDesign::" + kind, name); f.Label = label; f.Profile = sk
-    f.ReferenceAxis = (sk, ["V_Axis"]); f.Angle = 360.0; f.Refine = True
+    f.ReferenceAxis = (sk, ["V_Axis"]); f.Angle = 360.0; f.Refine = REFINE
     return f
 def edges_on(feat, axis, caps, which, tol, near=None):
     """Edge names of the rims of feat's flat faces in the cap planes (outer wire / holes), as tree.modifier_edges;
@@ -245,10 +245,23 @@ def connected_order(feats):
     return out
 
 
-def script(tree, out, report, tol, brep=None, skip=(), edit=True):
+def shifted(loops, k):
+    """The sketch moved in its own plane by 2-6 microns, a different amount per feature k: FreeCAD 1.1's OCCT 7.8 fuse
+    leaves exactly coincident walls of neighbouring pads invalid (mechparts/5: 11 of 13 pads BRepCheck-invalid, and
+    Refine then collapsed the body to 57 % of its volume), while a few microns apart every fuse is valid (13 of 13,
+    volume +0.006 % against the compile). Below any print or machining tolerance. Kimi, 2026-09-29."""
+    dx, dy = 0.002 + 0.00031 * (k % 7), 0.0026 + 0.00043 * ((k + 3) % 7)
+    mv = lambda q: [q[0] + dx, q[1] + dy]  # noqa: E731
+    return [[dict(g, c=mv(g["c"])) if g["t"] == "circle" else dict(g, p=[mv(q) for q in g["p"]]) for g in loop]
+            for loop in loops]
+
+
+def script(tree, out, report, tol, brep=None, skip=(), edit=True, shift=False):
     brep = brep or {}
     tree = dict(tree, features=connected_order(tree["features"]))
-    L = [HEAD.format(out=str(out), report=str(report), rot=ROT) + EDIT_FN + f"\nEDIT = {edit!r}\n"]
+    L = [HEAD.format(out=str(out), report=str(report), rot=ROT) + EDIT_FN + f"\nEDIT = {edit!r}\nREFINE = {not shift!r}\n"]
+    lp = {f["id"]: json.dumps(shifted(f["loops"], k) if shift else f["loops"])
+          for k, f in enumerate(tree["features"]) if "loops" in f and isinstance(f["loops"], list)}
     feats = {f["id"]: f for f in tree["features"]}
     taper = {}
     for f in tree["features"]:                        # rim chamfers become tapered pads, as in tree.compile_tree
@@ -269,7 +282,7 @@ def script(tree, out, report, tol, brep=None, skip=(), edit=True):
             rv = f["revolve"]; k, ru = T.AX[rv["axis"]], T.UV[rv["axis"]][0]
             u = [0.0] * 3; u[ru] = 1.0; v = [0.0] * 3; v[k] = 1.0; n = np.cross(u, v).tolist()
             o = [float(x) for x in rv["point"]]; o[k] = 0.0
-            L.append(f"sk = sketch('S{i}', {json.dumps(f.get('label', i) + ' profile')}, 'Z', 0.0, {json.dumps(f['loops'])})")
+            L.append(f"sk = sketch('S{i}', {json.dumps(f.get('label', i) + ' profile')}, 'Z', 0.0, {lp[i]})")
             L.append(f"sk.Placement = App.Placement(V(*{o!r}), App.Rotation(App.Matrix({u[0]}, {v[0]}, {n[0]}, 0, "
                      f"{u[1]}, {v[1]}, {n[1]}, 0, {u[2]}, {v[2]}, {n[2]}, 0, 0, 0, 0, 1)))")
             L.append(f"last = revolve({'Revolution' if f['op'] == 'pad' else 'Groove'!r}, '{i}', {lab}, sk)")
@@ -286,7 +299,7 @@ def script(tree, out, report, tol, brep=None, skip=(), edit=True):
                 Lf = 0.0 if through else float(f["length"])
                 at = f["at"] + max(Lf, 0.0)            # a pocket cuts against the sketch normal: sketch at its top
                 L.append(f"sk = sketch('S{i}', {json.dumps(f.get('label', i) + ' sketch')}, {f['axis']!r}, {at!r}, "
-                         f"{json.dumps(f['loops'])}, {drive})")
+                         f"{lp[i]}, {drive})")
                 expr = "None" if through else f"param('len_{i}', {abs(Lf)!r})"
                 L.append(f"last = pocket('{i}', {lab}, sk, {abs(Lf)!r}, {expr}, through={through})")
             else:
@@ -300,7 +313,7 @@ def script(tree, out, report, tol, brep=None, skip=(), edit=True):
                         L.append(f"e_{cid} = param('size_{cid}', {cv!r})"); sz[cid] = f"e_{cid}"
                 mid_expr = "eH" + (f" + ' - ' + {sz[cbid]}" if cbid else "") + (f" + ' - ' + {sz[ctid]}" if ctid else "")
                 L.append(f"sk = sketch('S{i}', {json.dumps(f.get('label', i) + ' sketch')}, {f['axis']!r}, {lo + cb!r}, "
-                         f"{json.dumps(f['loops'])}, {drive})")
+                         f"{lp[i]}, {drive})")
                 if cbid:
                     L.append(f"sk.setExpression('.Placement.Base.{'xyz'['XYZ'.index(f['axis'])]}', '{lo!r} + ' + {sz[cbid]})")
                 L.append(f"last = pad('{i}', {lab}, sk, {H - cb - ct!r}, {mid_expr})")
@@ -447,14 +460,18 @@ def build(tree, out, tol=0.05, edit_check=True):
             for e in T.APPLIED[f["id"]]:
                 b.Add(c, e)
             brep[f["id"]] = str(out.with_suffix(f".{f['id']}.brep")); BRepTools.Write_s(c, brep[f["id"]])
-    py.write_text(script(tree, out, report, tol, brep, skip, edit=edit_check))
-    report.unlink(missing_ok=True)
-    n = len(tree["features"])
-    subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
-    r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
+    n, n_ref = len(tree["features"]), len(list(iter_solids(ref)))
+    for shift in (False, True):                        # as built; then, only if FreeCAD's body is invalid, shifted
+        py.write_text(script(tree, out, report, tol, brep, skip, edit=edit_check, shift=shift))
+        report.unlink(missing_ok=True)
+        subprocess.run([FREECAD, str(py)], capture_output=True, text=True, timeout=600 + 20 * n)   # build + 180 s gate
+        r = json.loads(report.read_text()) if report.exists() else {"ok": False, "error": "FreeCAD wrote no report"}
+        r["shifted"] = shift
+        if r.get("ok") and r.get("valid") and r.get("solids") == n_ref:
+            break
     if out.exists() and ref is not None:
         r["gui_saved"] = write_gui(out, ref)
-    n_ref = r["ref_solids"] = len(list(iter_solids(ref)))
+    r["ref_solids"] = n_ref
     if r.get("ok") and r.get("valid") and r.get("solids") == n_ref:   # as many solids as the STEP compile   # same solid as the STEP compile? (an invalid
         # shape makes the boolean volumes meaningless: the SV08 shroud read 0.0 while FreeCAD had lost 63 %)
         from OCP.BRepGProp import BRepGProp
