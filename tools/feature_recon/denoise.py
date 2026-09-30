@@ -24,6 +24,9 @@ from scipy.spatial import cKDTree
 
 TOL_K = 3.0            # surface tolerance in units of the measured noise
 MIN_AREA = 2e-4        # smallest region kept, share of the mesh area
+# neighbouring triangles of a seed patch may turn this much: a 2 mm round at 1.4 mm triangles (mechpart pocket corners)
+# turns ~30 degrees per triangle; sharp edges of machined and cast parts are 45+
+PATCH_COS = math.cos(math.radians(18))   # 32 degrees was tried: coverage 98.7 -> 97.3 %, inexact vertices 303 -> 855
 PATCH = 120            # faces in a seed patch: enough to show curvature above the noise
 # a vertex may move this many tolerances onto the common point of its surfaces: a scanned edge is rounded (cast part,
 # mechpart: 238 two-region vertices 1-2 mm from their faces' corner), and the corner is the edge the model has
@@ -250,7 +253,7 @@ def clean(m):
         patch = [seed]; seen = {seed}; i = 0
         while i < len(patch) and len(patch) < PATCH:
             for u in nb[patch[i]]:
-                if u not in seen and label[u] < 0 and n[u] @ n[patch[i]] > 0.95:
+                if u not in seen and label[u] < 0 and n[u] @ n[patch[i]] > PATCH_COS:
                     seen.add(u); patch.append(u)
             i += 1
         if len(patch) < 6:
@@ -342,6 +345,33 @@ def clean(m):
         for v in F[t]:
             vreg[v].add(int(label[t]))
     n_tangent = tangent_refit(S, V, vreg, label, area)
+    # every corner (a vertex of 3+ regions) must be a point all its surfaces share: where they do not, the smallest of
+    # them is almost always spurious (an embossed logo read as a sphere, a noise patch) and joins the neighbour its
+    # vertices lie closest to. mechpart: 56 of 177 corners did not meet in edgebuild before this.
+    # Only a SMALL region (under 1 % of the area) that lies on the neighbour's surface anyway is absorbed: absorbing by
+    # size alone took 69 of 95 regions on mechpart and flattened its pocket floors (moves p95 2 mm).
+    n_absorbed = 0; skip = set()
+    for _ in range(200):
+        bad = None
+        for v, regs in enumerate(vreg):
+            if len(regs) >= 3 and frozenset(regs) not in skip:
+                x = common_point([S[L_] for L_ in regs], V[v:v + 1], 1e-6 * diag)
+                if x is None or np.linalg.norm(x - V[v]) > MOVE_K * tol:
+                    bad = regs
+                    break
+        if bad is None:
+            break
+        small = min(bad, key=lambda L_: area[label == L_].sum())
+        ts = np.where(label == small)[0]
+        nbrs = {int(label[u]) for t in ts for u in nb[t]} - {small, -1}
+        P = V[np.unique(F[ts])]
+        into = min(nbrs, key=lambda L_: float(np.percentile(np.abs(sdist(S[L_], P)), 90)), default=None)
+        if into is None or area[ts].sum() > 0.01 * area.sum() \
+                or np.percentile(np.abs(sdist(S[into], P)), 90) > 2 * tol:
+            skip.add(frozenset(bad)); continue
+        label[ts] = into; del S[small]; n_absorbed += 1
+        for v in np.unique(F[ts]):
+            vreg[v].discard(small); vreg[v].add(into)
     # snap: every vertex onto its region's surface, or onto the common points of its regions
     V0 = V.copy(); inexact = 0; causes = {}; bad_v = []
     for v, regs in enumerate(vreg):
@@ -375,7 +405,7 @@ def clean(m):
               "area_pct": {k: sorted(v, reverse=True)[:12] + ([f"+{len(v) - 12} more, {round(sum(sorted(v, reverse=True)[12:]), 1)} %"] if len(v) > 12 else []) for k, v in share.items()},
               "covered_pct": round(100 * float(area[label >= 0].sum() / area.sum()), 1),
               "move_max_mm": round(float(move.max()), 4), "move_p95_mm": round(float(np.percentile(move, 95)), 4),
-              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes, "tangent_refits": n_tangent}
+              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes, "tangent_refits": n_tangent, "absorbed_for_corners": n_absorbed}
     # compact numbering (0..k-1) and each region's surface kind, for edgebuild's EB_LABELS
     ids = sorted(S)
     remap = {L_: i for i, L_ in enumerate(ids)}
