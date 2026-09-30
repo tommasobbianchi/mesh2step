@@ -293,7 +293,9 @@ def clean(m):
             continue
         S.append(s)
     label[label == -2] = -1
-    # leftovers join the neighbouring region whose surface they lie on
+    # leftovers join the neighbouring region whose surface they lie on. ponytail: distance only, so a wall strip the seeds
+    # missed is pulled into a parallel level (Kimi: 14 of 40 failing corners); a facing check plus strip regions was
+    # tried 2026-09-30 and gave 41 failing corners (edgebuild's topological absorb re-pulls what stays unlabelled)
     for _ in range(3):
         for t in np.where(label < 0)[0]:
             best = min(({label[u] for u in nb[t] if label[u] >= 0}),
@@ -392,6 +394,17 @@ def clean(m):
             if np.linalg.norm(x - x0) > MOVE_K * tol:
                 continue
         V[v] = x[0]
+    # two vertices snapped onto one point (both ends of a thin strip onto its corner) would be welded downstream
+    # (edgebuild welds at 1.5e-4 of the diagonal) and leave the mesh non-manifold: the one that moved more goes back
+    n_collide = 0
+    for _ in range(5):
+        pairs_c = cKDTree(V).query_pairs(3e-4 * diag, output_type="ndarray")
+        if not len(pairs_c):
+            break
+        for i_, j_ in pairs_c:
+            k_ = i_ if np.linalg.norm(V[i_] - V0[i_]) >= np.linalg.norm(V[j_] - V0[j_]) else j_
+            if np.linalg.norm(V[k_] - V0[k_]) > 0:
+                V[k_] = V0[k_]; n_collide += 1
     move = np.linalg.norm(V - V0, axis=1)
     out = trimesh.Trimesh(V, F, process=False)
     flipped = int((np.einsum("ij,ij->i", out.face_normals, m.face_normals) < 0).sum())
@@ -405,7 +418,7 @@ def clean(m):
               "area_pct": {k: sorted(v, reverse=True)[:12] + ([f"+{len(v) - 12} more, {round(sum(sorted(v, reverse=True)[12:]), 1)} %"] if len(v) > 12 else []) for k, v in share.items()},
               "covered_pct": round(100 * float(area[label >= 0].sum() / area.sum()), 1),
               "move_max_mm": round(float(move.max()), 4), "move_p95_mm": round(float(np.percentile(move, 95)), 4),
-              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes, "tangent_refits": n_tangent, "absorbed_for_corners": n_absorbed}
+              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes, "tangent_refits": n_tangent, "absorbed_for_corners": n_absorbed, "collisions_undone": n_collide}
     # compact numbering (0..k-1) and each region's surface kind, for edgebuild's EB_LABELS
     ids = sorted(S)
     remap = {L_: i for i, L_ in enumerate(ids)}
