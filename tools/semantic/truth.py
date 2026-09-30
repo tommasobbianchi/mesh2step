@@ -23,7 +23,11 @@ def facts(tree):
             # a pad's outline (loop 0) that is a circle is a disc or boss, not a hole; a pocket's circle is a hole
             if circle and (i > 0 or f["op"] == "pocket"):
                 holes += 1
-    return {"turned": any("revolve" in f for f in feats),
+    # rounded corners drawn IN a sketch (arcs of an outline or a pocket), as opposed to fillet OPERATIONS on edges: a
+    # designer draws a sprocket's scallops or a pocket's corners as arcs (parts 4, 14), and the VLM sees both as round
+    arcs = any(g["t"] == "arc" for f in feats if f["op"] in ("pad", "pocket") and isinstance(f.get("loops"), list)
+               for loop in f["loops"] for g in loop)
+    return {"turned": any("revolve" in f for f in feats), "sketch_arcs": arcs,
             "holes": holes,
             "levels": sum(1 for f in feats if f["op"] == "pad"),
             "fillets": any(f["op"] == "round" for f in feats),
