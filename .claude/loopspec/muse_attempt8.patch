@@ -1,0 +1,307 @@
+diff --git a/tools/feature_recon/scanbuild.py b/tools/feature_recon/scanbuild.py
+index 74756bf..e40da89 100644
+--- a/tools/feature_recon/scanbuild.py
++++ b/tools/feature_recon/scanbuild.py
+@@ -198,7 +198,62 @@ def _bad_topology(s, lps, V):
+     return False
+ 
+ 
+-def build(mesh, z, out, facet=frozenset()):
++def _pip(pt, poly):
++    """Point-in-polygon (ray casting) for one 2D loop."""
++    x, y = float(pt[0]), float(pt[1])
++    inside = False
++    n = len(poly)
++    for i in range(n):
++        x1, y1 = poly[i]
++        x2, y2 = poly[(i + 1) % n]
++        if ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-300) + x1):
++            inside = not inside
++    return inside
++
++
++def _resample_cover(P, polys, am, grid=0.3):
++    """Well-shaped replacement triangles covering a sliver region whose scan facets sew invalid: grid-cluster its
++    vertices (border fidelity stays within sewing tolerance, so neighbours keep their own borders), Delaunay in the
++    best-fit plane, keep the inside ones. Returns (new_points, triples) or None. Delaunay maximises the minimum
++    angle, so the hairline slivers whose endpoints sewing merges into backtracking zero-area wires are gone."""
++    from scipy.spatial import Delaunay
++    if len(polys) < 1:
++        return None
++    key = np.floor(P / grid + 0.5).astype(np.int64)
++    _, idx = np.unique(key, axis=0, return_index=True)
++    Q = P[np.sort(idx)]
++    if len(Q) < 4:
++        return None
++    C = Q.mean(0)
++    _, _, Vt = np.linalg.svd(Q - C, full_matrices=False)
++    X = (Q - C) @ Vt[:2].T
++    try:
++        tri = Delaunay(X)
++    except Exception:                                  # noqa: BLE001 - degenerate point set
++        return None
++    polys2 = [(np.asarray(pp) - C) @ Vt[:2].T for pp in polys]
++
++    def a2(p):
++        return abs(0.5 * float(p[:, 0] @ np.roll(p[:, 1], -1) - p[:, 1] @ np.roll(p[:, 0], -1)))
++
++    outer = max(range(len(polys2)), key=lambda k: a2(polys2[k]))
++    holes = [polys2[k] for k in range(len(polys2)) if k != outer]
++    keep = [s for s in tri.simplices if _pip(X[s].mean(0), polys2[outer]) and not any(_pip(X[s].mean(0), h) for h in holes)]
++    if not keep:
++        return None
++    T = Q[np.array(keep)]
++    if abs(float(0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1).sum()) - am) / max(am, 1e-12) > 0.25:
++        return None                                    # same 25 % budget as the analytic faces
++    e = np.linalg.norm(T - np.roll(T, -1, axis=1), axis=2)
++    e2 = e * e
++    cosg = np.stack([(e2[:, i] + e2[:, (i + 1) % 3] - e2[:, (i + 2) % 3]) / (2 * e[:, i] * e[:, (i + 1) % 3] + 1e-300)
++                     for i in range(3)], 1)
++    if float(np.arccos(np.clip(cosg, -1, 1)).min()) < np.radians(10):
++        return None                                    # still slivers: keep the original triangles
++    return Q, np.array(keep)
++
++
++def build(mesh, z, out, facet=frozenset(), remesh=frozenset()):
+     V, F = mesh.vertices, mesh.faces
+     diag = float(np.linalg.norm(mesh.extents))
+     label = np.array(z["label"]).copy()
+@@ -216,11 +271,108 @@ def build(mesh, z, out, facet=frozenset()):
+     for t, f in enumerate(F):
+         for i in range(3):
+             twin[(int(f[i]), int(f[(i + 1) % 3]))] = t
++    # sliver triage for remeshed (proven-invalid) regions: micro-slivers (all edges sub-tolerance) are dropped
++    # (their holes merge shut), border slivers are absorbed into analytic neighbours (no hole at all), interior
++    # slivers are kite-merged with their twin (same coverage, better shape). The facet block below consumes Fb
++    # (rewritten triangles) and drop_tri (dropped indices).
++    Fb, drop_tri = F, set()
++    if remesh:
++        force_all = set(L for L in range(nreg) if (label == L).any()
++                        and _bad_topology(surfs[L], loops(F, label, L, twin), V))
++        Fb = F.copy()
++        done = set()
++
++        def _mnang(p, q, r):
++            a, b, c = q - p, r - q, p - r
++            la, lb, lc = [float(np.linalg.norm(v)) + 1e-300 for v in (a, b, c)]
++            return min(math.acos(max(-1, min(1, (lb * lb + lc * lc - la * la) / (2 * lb * lc)))),
++                       math.acos(max(-1, min(1, (lc * lc + la * la - lb * lb) / (2 * lc * la)))),
++                       math.acos(max(-1, min(1, (la * la + lb * lb - lc * lc) / (2 * la * lb)))))
++
++        for L in sorted(remesh):
++            if not (label == L).any():
++                continue
++            for t in [int(x) for x in np.where(label == L)[0]]:
++                if t in done:
++                    continue
++                f = [int(x) for x in F[t]]
++                pa, pb, pc = V[f[0]], V[f[1]], V[f[2]]
++                ar = 0.5 * float(np.linalg.norm(np.cross(pb - pa, pc - pa)))
++                e = [float(np.linalg.norm(pb - pa)), float(np.linalg.norm(pc - pb)), float(np.linalg.norm(pa - pc))]
++                if min(e) >= 0.34 and ar >= 0.03:
++                    continue                       # healthy triangle
++                if max(e) < 0.3:
++                    drop_tri.add(t)                # micro-sliver: sub-tolerance hole merges shut
++                    done.add(t)
++                    continue
++                order = sorted(range(3), key=lambda i: -e[i])
++                placed = False
++                for i in order:                    # absorb into the analytic neighbour with most contact
++                    nb = twin.get((f[(i + 1) % 3], f[i]), -1)
++                    nl = int(label[nb]) if nb != -1 else -1
++                    if nl != L and nl != -1 and nl not in facet and nl not in force_all and (label == nl).sum() > 5:
++                        label[t] = nl
++                        done.add(t)
++                        placed = True
++                        if os.environ.get("SB_DEBUG"):
++                            print(f"ABSORB tri {t} {L}->{nl}", file=sys.stderr, flush=True)
++                        break
++                if placed:
++                    continue
++                for i in order:                    # interior kite-merge across the longest same-region edge
++                    nb = twin.get((f[(i + 1) % 3], f[i]), -1)
++                    if nb == -1 or nb in done or int(label[nb]) != L:
++                        continue
++                    g = [int(x) for x in F[nb]]
++                    a, b = f[i], f[(i + 1) % 3]
++                    c = f[(i + 2) % 3]
++                    dd = [x for x in g if x != a and x != b]
++                    if len(dd) != 1:
++                        continue
++                    dd = dd[0]
++                    old = min(_mnang(V[a], V[b], V[c]), _mnang(V[a], V[b], V[dd]))
++                    new = min(_mnang(V[a], V[c], V[dd]), _mnang(V[b], V[c], V[dd]))
++                    qa = 0.5 * (np.linalg.norm(np.cross(V[b] - V[a], V[c] - V[a]))
++                                + np.linalg.norm(np.cross(V[b] - V[a], V[dd] - V[a])))
++                    qn = 0.5 * (np.linalg.norm(np.cross(V[c] - V[a], V[dd] - V[a]))
++                                + np.linalg.norm(np.cross(V[c] - V[b], V[dd] - V[b])))
++                    if new > old + math.radians(1) and abs(qn - qa) / max(qa, 1e-12) < 0.01:
++                        Fb[t], Fb[nb] = (a, c, dd), (b, c, dd)
++                        done.add(t); done.add(nb)
++                    else:
++                        done.add(t)
++                    placed = True
++                    break
++        twin = {}                                  # labels changed -> rebuild for the pipeline below
++        for t, f in enumerate(F):
++            for i in range(3):
++                twin[(int(f[i]), int(f[(i + 1) % 3]))] = t
++        if os.environ.get("SB_DEBUG"):
++            print(f"TRIAGE drop={len(drop_tri)}", file=sys.stderr, flush=True)
+     tol = float(z["tol"]) if "tol" in z.files else 1e-3 * diag
++    # resampled covers for sliver regions whose scan facets sew invalid: fresh well-shaped triangles on new
++    # vertices (border fidelity within sewing tolerance, so neighbours are untouched); Vb extends V with them
++    Vb, covers = V, {}
++    if remesh:
++        newpts = []
++        for L in sorted(remesh):
++            if not (label == L).any():
++                continue
++            P = V[np.unique(F[label == L])]
++            cov = _resample_cover(P, [V[lp] for lp in loops(F, label, L, twin)], float(mesh.area_faces[label == L].sum()))
++            if cov is not None:
++                Q, K = cov
++                covers[L] = K + (len(V) + sum(len(q) for q in newpts))
++                newpts.append(Q)
++                if os.environ.get("SB_DEBUG"):
++                    print(f"REMESH {L} {surfs[L]['kind']} cover {len(K)} tris from {int((label == L).sum())}",
++                          file=sys.stderr, flush=True)
++        if newpts:
++            Vb = np.vstack([V] + newpts)
+     vert = {}
+     def vtx(i):
+         if i not in vert:
+-            vert[i] = BRepBuilderAPI_MakeVertex(pnt(V[i])).Vertex()
++            vert[i] = BRepBuilderAPI_MakeVertex(pnt(Vb[i])).Vertex()
+         return vert[i]
+     edges = {}
+     def chain_edge(ids):
+@@ -269,8 +421,9 @@ def build(mesh, z, out, facet=frozenset()):
+             continue
+         lps = loops(F, label, L, twin)
+         # borders that cannot bound one analytic face go straight to triangles, on every pass: reintroducing them
+-        # rebuilds the same invalid face (mechpart sphere 20 came back as an 8301 mm2 invalid cap)
+-        force_facet = _bad_topology(surfs[L], lps, V)
++        # rebuilds the same invalid face (mechpart sphere 20 came back as an 8301 mm2 invalid cap). Remeshed
++        # regions skip the analytic path too: their cover replaces the triangles below.
++        force_facet = _bad_topology(surfs[L], lps, V) or L in covers or L in remesh
+         wires = []
+         for lp in (lps if not force_facet else []):
+             nb = [int(label[twin[(lp[(i + 1) % len(lp)], lp[i])]]) for i in range(len(lp))]  # neighbour past edge i
+@@ -334,8 +487,25 @@ def build(mesh, z, out, facet=frozenset()):
+                   f"attempts {tried_a}", file=sys.stderr, flush=True)
+         if f is None:                                  # OCCT crashed or refused: this region stays faceted
+             n_fail += 1
+-            for t in np.where(label == L)[0]:
+-                poly = BRepBuilderAPI_MakePolygon(vtx(int(F[t][0])), vtx(int(F[t][1])), vtx(int(F[t][2])), True)
++            if L in covers:                            # resampled hairline-free cover instead of the scan slivers
++                triples = [(int(a), int(b), int(c_)) for a, b, c_ in covers[L]]
++            else:
++                triples = [(int(Fb[t][0]), int(Fb[t][1]), int(Fb[t][2])) for t in np.where(label == L)[0]
++                           if t not in drop_tri]
++            if L in remesh:
++                # facet slivers with sub-precision AREA fold into backtracking zero-area wires under ShapeFix
++                # (mechpart regions 14/17/20: triangles down to 3e-4 mm2, InvalidImbricationOfWires at any tolerance).
++                # Drop them: they cover ~nothing, and the micro-slit sews shut. Scoped to proven-bad regions only.
++                kept = []
++                for (a, b, c_) in triples:
++                    pa, pb, pc = Vb[a], Vb[b], Vb[c_]
++                    if 0.5 * np.linalg.norm(np.cross(pb - pa, pc - pa)) >= 0.03:
++                        kept.append((a, b, c_))
++                if os.environ.get("SB_DEBUG"):
++                    print(f"DESLIVER {L} drop {len(triples) - len(kept)} of {len(triples)}", file=sys.stderr, flush=True)
++                triples = kept
++            for (a, b, c_) in triples:
++                poly = BRepBuilderAPI_MakePolygon(vtx(a), vtx(b), vtx(c_), True)
+                 mf = BRepBuilderAPI_MakeFace(poly.Wire(), True)
+                 if mf.IsDone():
+                     faces.append((mf.Face(), L))
+@@ -352,13 +522,20 @@ def build(mesh, z, out, facet=frozenset()):
+             g_ = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g_)
+             am = float(mesh.area_faces[label == L].sum())
+             print(f"face {L} {surfs[L]['kind']} loops {len(wires)} area {g_.Mass():.1f} vs mesh {am:.1f}", file=sys.stderr, flush=True)
+-    sew = BRepBuilderAPI_Sewing(max(2 * tol, 1e-5 * diag))
++    # SB_SEW_MUL / SB_FIX_MUL scale the sewing and ShapeFix tolerances (defaults: the historical 2x / 3x of the
++    # scan noise tol). The cleaned mesh is watertight with exactly-shared vertices, so wide tolerances only serve
++    # to merge hairline sliver vertices into backtracking wires (mechpart region 20: InvalidImbricationOfWires).
++    sew_mul = float(os.environ.get("SB_SEW_MUL", "2"))
++    fix_mul = float(os.environ.get("SB_FIX_MUL", "3"))
++    fix2_mul = float(os.environ.get("SB_FIX2_MUL", "0"))
++    prec_mul = float(os.environ.get("SB_PREC_MUL", "1"))
++    sew = BRepBuilderAPI_Sewing(max(sew_mul * tol, 1e-5 * diag))
+     for f, _ in faces:
+         sew.Add(f)
+     sew.Perform()
+     shape = sew.SewedShape()
+     # tolerances fixed on the WHOLE sewn shell, where edges are shared (per face it rebuilt them: 677 free edges)
+-    wf = ShapeFix_Shape(shape); wf.SetPrecision(max(tol, 1e-5 * diag)); wf.SetMaxTolerance(3 * tol); wf.Perform()
++    wf = ShapeFix_Shape(shape); wf.SetPrecision(max(prec_mul * tol, 1e-5 * diag)); wf.SetMaxTolerance(fix_mul * tol); wf.Perform()
+     shape = wf.Shape()
+     bad_regions = set(); why = {}
+     for f_, L_ in faces:
+@@ -371,7 +548,10 @@ def build(mesh, z, out, facet=frozenset()):
+                 for st in rs.Status():
+                     why[str(st).split(".")[-1]] = why.get(str(st).split(".")[-1], 0) + 1
+             exg.Next()
+-    fix = ShapeFix_Shape(shape); fix.Perform(); shape = fix.Shape()
++    fix = ShapeFix_Shape(shape)
++    if fix2_mul > 0:
++        fix.SetMaxTolerance(fix2_mul * tol)
++    fix.Perform(); shape = fix.Shape()
+     # the largest sewn shell becomes the solid (a scan is one body); the others are reported, not kept
+     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+     from OCP.ShapeFix import ShapeFix_Solid
+@@ -406,6 +586,21 @@ def build(mesh, z, out, facet=frozenset()):
+         t_ = BRepAdaptor_Surface(TopoDS.Face_s(ex.Current())).GetType()
+         kinds[names.get(int(t_), "other")] = kinds.get(names.get(int(t_), "other"), 0) + 1; nfaces += 1; ex.Next()
+     res["faces"] = nfaces; res["kinds"] = kinds
++    # invalid faces on the FINAL target, attributed geometrically: the sew-time check above misses faces that
++    # pass through sewing/ShapeFix unmodified (absent from the Modified map) yet are invalid downstream, or that
++    # downstream ops break (mechpart: 190 mm2 cylinder, 263 mm2 torus and 5 sliver facets missed with bad=[]).
++    late_bad = set()
++    tk = cKDTree(mesh.triangles_center)
++    exf = TopExp_Explorer(target, TopAbs_FACE)
++    while exf.More():
++        ff = TopoDS.Face_s(exf.Current())
++        if not BRepCheck_Analyzer(ff).IsValid():
++            gg = GProp_GProps(); BRepGProp.SurfaceProperties_s(ff, gg)
++            cc = gg.CentreOfMass()
++            _, jj = tk.query([cc.X(), cc.Y(), cc.Z()])
++            late_bad.add(int(label[int(jj)]))
++        exf.Next()
++    res["late_bad"] = sorted(late_bad)
+     res["analytic_planes"] = sum(1 for _f, L_ in faces if surfs[L_]["kind"] == "plane" and int((label == L_).sum()) > 1
+                                  and L_ < len(json.loads(str(z["surf"]))) and L_ not in facet)
+     w = STEPControl_Writer(); w.Transfer(target, STEPControl_AsIs); w.Write(str(out))
+@@ -504,15 +699,24 @@ def _wire_len(w):
+     g = GProp_GProps(); BRepGProp.LinearProperties_s(w, g); return g.Mass()
+ 
+ 
+-def build_until_valid(m, z, out, passes=3):
+-    """Regions whose face is invalid once sewn are rebuilt from their triangles, until none is."""
+-    facet = set()
++def build_until_valid(m, z, out, passes=7):
++    """Regions whose face is invalid once sewn are rebuilt from their triangles; faceted regions that still sew
++    invalid get sliver triage (drop micro-slivers, absorb border slivers, kite-merge interior ones); regions whose
++    faces are invalid only on the final solid are fed back the same way, until none is."""
++    facet, remesh = set(), set()
++    r = None
+     for _ in range(passes):
+-        r = build(m, z, out, frozenset(facet))
+-        if not r["bad_regions"] or set(r["bad_regions"]) <= facet:
+-            break
+-        facet |= set(r["bad_regions"])
++        r = build(m, z, out, frozenset(facet), frozenset(remesh))
++        offenders = set(r["bad_regions"]) | set(r.get("late_bad", []))
++        if offenders - facet:
++            facet |= offenders
++            continue
++        if offenders - remesh:
++            remesh |= offenders
++            continue
++        break
+     r["faceted_regions"] = len(facet)
++    r["remeshed_regions"] = sorted(remesh)
+     return r
+ 
+ 
