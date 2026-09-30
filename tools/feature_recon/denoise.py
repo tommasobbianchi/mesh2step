@@ -433,6 +433,7 @@ def clean(m):
         elif g["kind"] == "cone":
             geo[i] = np.r_[g["a"], g["o"], g["k"], 0.0]
     report["geo"] = geo
+    report["surf"] = json.dumps([{k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in S[L_].items()} for L_ in ids])
     report["inexact_at"] = bad_v
     return out, report, label
 
@@ -444,6 +445,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 3:
         # per-face region and each region's kind: edgebuild.py takes them as its segmentation (EB_LABELS=<file>)
         np.savez(sys.argv[3], label=label, kinds=np.array(rep["kinds"]), centres=out.triangles_center,
-                 inexact=np.array(rep["inexact_at"], int), geo=rep["geo"])
-    rep.pop("kinds"); rep.pop("inexact_at"); rep.pop("geo")
+                 inexact=np.array(rep["inexact_at"], int), geo=rep["geo"],
+                 surf=np.array(rep["surf"]))
+    rep.pop("kinds"); rep.pop("inexact_at"); rep.pop("geo"); rep.pop("surf")
     print(json.dumps(rep))
