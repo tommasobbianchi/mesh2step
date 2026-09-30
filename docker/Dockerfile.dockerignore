@@ -1,0 +1,15 @@
+.git
+.claude
+.worktrees
+tests
+benchmark
+docs
+scripts
+diag
+refs
+*.step
+*.stp
+__pycache__
+*.egg-info
+.pytest_cache
+build
