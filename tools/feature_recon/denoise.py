@@ -143,6 +143,79 @@ def common_point(surfs, x0, eps):
     return x if np.abs(f).max() < eps else None
 
 
+# ---------- tangent-constrained refit ----------
+def pack(s):
+    k = s["kind"]
+    if k == "sphere":
+        return np.r_[s["o"], s["R"]]
+    if k == "cylinder":
+        return np.r_[s["a"], s["o"], s["R"]]
+    if k == "cone":
+        return np.r_[s["a"], s["o"], s["k"]]
+    if k == "torus":
+        return np.r_[s["a"], s["o"], s["hc"], s["Rc"], s["r"]]
+    return None                                            # planes are references, never refitted here
+
+
+def unpack(kind, x):
+    if kind == "sphere":
+        return {"kind": kind, "o": x[:3], "R": x[3]}
+    a = _unit(x[:3])
+    if kind == "cylinder":
+        return {"kind": kind, "a": a, "o": x[3:6], "R": x[6]}
+    if kind == "cone":
+        return {"kind": kind, "a": a, "o": x[3:6], "k": x[6:8]}
+    return {"kind": kind, "a": a, "o": x[3:6], "hc": x[6], "Rc": x[7], "r": x[8]}
+
+
+def tangent_refit(S, V, vreg, label, area):
+    """A curved region meeting a neighbour tangentially (a fillet into a face) is refitted to its own vertices AND to
+    touch that neighbour, normal to normal, along their shared border. Fitted separately at scan noise the two miss
+    each other by a hair and share no curve at all (mechpart: 195 of 356 inexact vertices were such borders), so
+    nothing downstream can build the edge. The neighbour is the reference: a plane always, else the larger region."""
+    from scipy.optimize import least_squares
+    share = {L_: float(area[label == L_].sum()) for L_ in S}
+    pairs = {}
+    for v, regs in enumerate(vreg):
+        if len(regs) == 2:
+            pairs.setdefault(tuple(sorted(regs)), []).append(v)
+    done = 0
+    for L_ in sorted((L_ for L_ in S if S[L_]["kind"] != "plane"), key=lambda q: share[q]):
+        refs = []
+        for (p_, q_), vs in pairs.items():
+            if L_ not in (p_, q_) or len(vs) < 3:
+                continue
+            R_ = q_ if p_ == L_ else p_
+            if S[R_]["kind"] != "plane" and share[R_] < share[L_]:
+                continue                                   # the smaller curved one is refitted, the larger is fixed
+            B = project(S[R_], V[vs])                      # the border, on the reference
+            nr = normal(S[R_], B)
+            if np.median(np.abs(np.einsum("ij,ij->i", normal(S[L_], B), nr))) > 0.97:
+                refs.append((B, nr))
+        if not refs:
+            continue
+        own = V[[v for v, regs in enumerate(vreg) if regs == {L_}]]
+        if len(own) < 6:
+            continue
+        kind = S[L_]["kind"]; x0 = pack(S[L_])
+        Bs = np.vstack([b for b, _ in refs]); Ns = np.vstack([nn for _, nn in refs])
+        scale = float(np.linalg.norm(own.max(0) - own.min(0))) or 1.0
+
+        def resid(x):
+            s = unpack(kind, x)
+            ns = normal(s, Bs)
+            tang = np.linalg.norm(np.cross(ns, Ns), axis=1) * scale      # sine of the normals' angle, as a length
+            return np.r_[sdist(s, own), 10 * sdist(s, Bs), 10 * tang]
+        try:
+            r = least_squares(resid, x0, method="lm", max_nfev=400)
+        except Exception:                                  # noqa: BLE001 - a degenerate border: keep the free fit
+            continue
+        s = unpack(kind, r.x)
+        if np.percentile(np.abs(sdist(s, own)), 90) < 2 * np.percentile(np.abs(sdist(S[L_], own)), 90) + 1e-9:
+            S[L_] = s; done += 1
+    return done
+
+
 # ---------- the cleaner ----------
 def noise(V):
     _, idx = cKDTree(V).query(V, k=16)
@@ -241,30 +314,51 @@ def clean(m):
                     np.percentile(np.abs(sdist(S[rj], verts[i])), 90) < tol:
                 alias[rj] = ri
     label = np.where(label >= 0, [root(L_) if L_ >= 0 else -1 for L_ in label], -1)
+    # neighbours of one kind that ONE surface fits (a joint fit, not each on the other's: a long face fitted in two
+    # halves tilts each half; mechpart: 136 inexact vertices between near-parallel planes)
+    while True:
+        a_, b_ = m.face_adjacency.T
+        la, lb = label[a_], label[b_]
+        cand = {(min(p_, q_), max(p_, q_)) for p_, q_ in zip(la, lb) if p_ >= 0 and q_ >= 0 and p_ != q_
+                and S[p_]["kind"] == S[q_]["kind"]}
+        merged = False
+        for p_, q_ in sorted(cand, key=lambda pq: -(area[label == pq[0]].sum() + area[label == pq[1]].sum())):
+            if p_ not in set(label.tolist()) or q_ not in set(label.tolist()):
+                continue
+            both = (label == p_) | (label == q_)
+            P = V[np.unique(F[both])]
+            c = fit(S[p_]["kind"], P, n[both], diag, cen[both])
+            if c is not None and np.percentile(np.abs(sdist(c, P)), 90) < tol:
+                label[label == q_] = p_; S[p_] = c; merged = True
+        if not merged:
+            break
     for L_ in set(label[label >= 0].tolist()):
         c = fit(S[L_]["kind"], V[np.unique(F[label == L_])], n[label == L_], diag, cen[label == L_])
         if c is not None:
             S[L_] = c
     S = {L_: S[L_] for L_ in set(label[label >= 0].tolist())}
-    # snap: every vertex onto its region's surface, or onto the common points of its regions
     vreg = [set() for _ in range(len(V))]
     for t in np.where(label >= 0)[0]:
         for v in F[t]:
             vreg[v].add(int(label[t]))
-    V0 = V.copy(); inexact = 0; causes = {}
+    n_tangent = tangent_refit(S, V, vreg, label, area)
+    # snap: every vertex onto its region's surface, or onto the common points of its regions
+    V0 = V.copy(); inexact = 0; causes = {}; bad_v = []
     for v, regs in enumerate(vreg):
         if not regs:
             continue
         x0 = V[v:v + 1].copy()
-        x = common_point([S[L_] for L_ in regs], x0, 1e-7 * diag)
+        x = common_point([S[L_] for L_ in regs], x0, 1e-6 * diag)   # edgebuild checks 1e-5
         if x is None or np.linalg.norm(x - x0) > MOVE_K * tol:
             # the surfaces do not meet near this vertex (a region boundary that is not a real edge): the vertex stays
             # on its nearest surface and counts as inexact (its triangles in the other regions are not flat)
             x = min((project(S[L_], x0) for L_ in regs), key=lambda y: float(np.linalg.norm(y - x0)))
             inexact += 1
-            why = f"{min(len(regs), 4)} regions" + (", tangent" if len(regs) > 1 and max(
+            why = "+".join(sorted(S[L_]["kind"] for L_ in regs)) if len(regs) <= 3 else "4+ regions"
+            why += (", tangent" if len(regs) > 1 and max(
                 abs(float(normal(S[p_], x0)[0] @ normal(S[q_], x0)[0])) for p_ in regs for q_ in regs if p_ < q_) > 0.97 else "")
             causes[why] = causes.get(why, 0) + 1
+            bad_v.append(v)
             if np.linalg.norm(x - x0) > MOVE_K * tol:
                 continue
         V[v] = x[0]
@@ -281,12 +375,22 @@ def clean(m):
               "area_pct": {k: sorted(v, reverse=True)[:12] + ([f"+{len(v) - 12} more, {round(sum(sorted(v, reverse=True)[12:]), 1)} %"] if len(v) > 12 else []) for k, v in share.items()},
               "covered_pct": round(100 * float(area[label >= 0].sum() / area.sum()), 1),
               "move_max_mm": round(float(move.max()), 4), "move_p95_mm": round(float(np.percentile(move, 95)), 4),
-              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes}
+              "flipped": flipped, "inexact_vertices": inexact, "inexact_why": causes, "tangent_refits": n_tangent}
     # compact numbering (0..k-1) and each region's surface kind, for edgebuild's EB_LABELS
     ids = sorted(S)
     remap = {L_: i for i, L_ in enumerate(ids)}
     label = np.array([remap.get(L_, -1) for L_ in label])
     report["kinds"] = [S[L_]["kind"] for L_ in ids]
+    # each region's surface for edgebuild (its own torus/cone fitters reject noisy regions): axis, axis point, profile
+    geo = np.zeros((len(ids), 9))
+    for i, L_ in enumerate(ids):
+        g = S[L_]
+        if g["kind"] == "torus":
+            geo[i] = np.r_[g["a"], g["o"], g["hc"], g["Rc"], g["r"]]
+        elif g["kind"] == "cone":
+            geo[i] = np.r_[g["a"], g["o"], g["k"], 0.0]
+    report["geo"] = geo
+    report["inexact_at"] = bad_v
     return out, report, label
 
 
@@ -296,6 +400,7 @@ if __name__ == "__main__":
     out.export(sys.argv[2])
     if len(sys.argv) > 3:
         # per-face region and each region's kind: edgebuild.py takes them as its segmentation (EB_LABELS=<file>)
-        np.savez(sys.argv[3], label=label, kinds=np.array(rep["kinds"]), centres=out.triangles_center)
-    rep.pop("kinds")
+        np.savez(sys.argv[3], label=label, kinds=np.array(rep["kinds"]), centres=out.triangles_center,
+                 inexact=np.array(rep["inexact_at"], int), geo=rep["geo"])
+    rep.pop("kinds"); rep.pop("inexact_at"); rep.pop("geo")
     print(json.dumps(rep))

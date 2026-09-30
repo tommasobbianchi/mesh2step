@@ -119,6 +119,23 @@ if os.environ.get("EB_LABELS"):
     _d, _j = _KD(_z["centres"]).query(V[F].mean(1))
     label = np.where(_d < 1e-6 * diag, _z["label"][_j], -1)
     kinds = [str(k_) for k_ in _z["kinds"]]
+    _eb_label, _eb_kinds = label.copy(), list(kinds)
+    _eb_geo = _z["geo"] if "geo" in _z.files else None
+
+
+def _eb_surface(L):
+    """The cleaner's own torus / cone for region L, in this file's surface form (axis point o with o.a = 0)."""
+    g = _eb_geo[L]; a = g[:3] / np.linalg.norm(g[:3]); c = g[3:6]; off = float(c @ a)
+    if kinds[L] == "torus":
+        s = {"kind": "torus"}; set_axis(s, a)
+        s["o"] = c - off * s["a"]; s["hc"] = float(g[6]) + off * float(s["a"] @ a); s["major"] = float(g[7]); s["minor"] = float(g[8])
+        return s
+    k0, k1 = float(g[6]), float(g[7])                 # rho = k0 h + k1, h from the apex along a
+    if k0 < 0:
+        a, k0 = -a, -k0
+    off = float(c @ a)
+    s = {"kind": "cone"}; set_axis(s, a); s["o"] = c - off * s["a"]; s["k0"] = k0; s["k1"] = k1 - k0 * off
+    return s
 tri = V[F]
 nt = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]); area = np.linalg.norm(nt, axis=1) / 2
 nt = nt / np.maximum(2 * area[:, None], 1e-30)
@@ -818,6 +835,23 @@ if os.environ.get("EB_LEFTOVER_AXIS"):
             if b is not None:
                 newL = len(kinds); kinds.append(b["kind"]); label[grp_u] = newL; S[newL] = b; n_curved_u += 1
     log(f"{n_curved_u} curved groups of unlabelled triangles became regions about a known axis")
+if os.environ.get("EB_LABELS"):
+    # the passes above re-segment an EXACT tessellation (facet splits, merges, relabels at 1e-5 of the diagonal); on a
+    # cleaned scan they undo regions that were fitted within its noise (mechpart: 2596 triangles thrown out). Its own
+    # regions and kinds come back, and every surface is refitted on them.
+    label, kinds = _eb_label.copy(), list(_eb_kinds)
+    S = {}; _eb_drop = {}
+    for L in all_labels():
+        s = fit(L)
+        if s is None and _eb_geo is not None and kinds[L] in ("torus", "cone"):
+            s = _eb_surface(L)
+        if s is None:
+            _eb_drop[kinds[L]] = _eb_drop.get(kinds[L], 0) + int((label == L).sum())
+            label[label == L] = -1
+            continue
+        S[L] = s if s["kind"] == "plane" else refine(s, region_verts(L))
+    log(f"EB_LABELS: {len(S)} surfaces from the cleaner, {int((label < 0).sum())} triangles unlabelled; "
+        f"triangles of regions edgebuild's fit could not name, by kind: {_eb_drop}")
 # what is still unlabelled is a corner-fan sliver spanning several surfaces (Schlauchschelle: 2 of 1560): it
 # only has to belong to a face topologically, since no coordinate of the result comes from its vertices
 tot_area = float(area.sum())
