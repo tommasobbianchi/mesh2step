@@ -6,6 +6,7 @@ asks three separate things: rounded corners in the sketch outline, fillets on th
 
 usage: remerge.py <config_dir> [...]        (writes <config_dir>_v2/<part>.json and prints one summary line per dir)"""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,10 @@ Keep these three apart, as a designer models them:
 - EDGE FILLETS: an edge BETWEEN two faces rounded off, e.g. the rim where the top face meets the side walls, seen
   in the side views or in cuts ALONG the extrusion as a rounded corner of the profile;
 - EDGE CHAMFERS: such an edge cut off by a small flat bevel.
+EVIDENCE RULE: decide EDGE FILLETS and EDGE CHAMFERS ONLY from the CUT notes (when there are cuts): true only if a
+cut ALONG the part's thickness (its outline is the part's profile: thin bands, rectangles with steps) shows ROUNDED
+(fillet) or BEVELLED (chamfer) corners. Rounded corners in the cut ACROSS the thickness (the one that looks like the
+part seen from above) are SKETCH ARCS. The plain-view notes do not vote on edge fillets or chamfers.
 Answer ONLY with this JSON object:
 {{"part_type": "<a few words>",
  "turned": <true if the part or any feature of it is made by revolving/turning>,
@@ -47,7 +52,7 @@ def score2(pred, t):
 def main():
     T = truth()
     for d in map(Path, sys.argv[1:]):
-        out = d.with_name(d.name + "_v2"); out.mkdir(exist_ok=True)
+        out = d.with_name(d.name + "_" + os.environ.get("REMERGE_TAG", "v2")); out.mkdir(exist_ok=True)
         rows = []
         for f in sorted(d.glob("*.json"), key=lambda p: int(p.stem)):
             r = json.load(open(f))
