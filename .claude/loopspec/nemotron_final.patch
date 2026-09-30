@@ -1,0 +1,308 @@
+diff --git a/tools/feature_recon/scanbuild.py b/tools/feature_recon/scanbuild.py
+index 74756bf..6c452a6 100644
+--- a/tools/feature_recon/scanbuild.py
++++ b/tools/feature_recon/scanbuild.py
+@@ -9,6 +9,7 @@ spheres and tori; the edges follow the scan. Triangles in no region stay as smal
+ 
+ usage: scanbuild.py <clean.stl> <labels.npz> <out.step>        (one RESULT {json} line on stdout)"""
+ import json
++import itertools
+ import math
+ import os
+ import sys
+@@ -176,6 +177,75 @@ def _sphere_outward_ok(f, o):
+     return agree >= disagree
+ 
+ 
++def _cylinder_outward_ok(f, a, o):
++    """Majority vote: do the face's oriented normals point radially away from the cylinder axis?
++    
++    For cylinder/cone bands, mesh normal sums cancel, so use radial vote like spheres."""
++    from OCP.BRepAdaptor import BRepAdaptor_Surface
++    from OCP.BRepLProp import BRepLProp_SLProps
++    from OCP.BRepTopAdaptor import BRepTopAdaptor_FClass2d
++    from OCP.gp import gp_Pnt2d
++    from OCP.TopAbs import TopAbs_IN
++    ad = BRepAdaptor_Surface(f)
++    u0, u1, v0, v1 = ad.FirstUParameter(), ad.LastUParameter(), ad.FirstVParameter(), ad.LastVParameter()
++    cls = BRepTopAdaptor_FClass2d(f, 1e-7)
++    g = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g)
++    sgn = 1.0 if g.Mass() >= 0 else -1.0
++    a_np = np.array(a); o_np = np.array(o)
++    agree, disagree = 0, 0
++    for u in np.linspace(u0, u1, 9)[1:-1]:
++        for v in np.linspace(v0, v1, 9)[1:-1]:
++            if cls.Perform(gp_Pnt2d(u, v)) != TopAbs_IN:
++                continue
++            pr = BRepLProp_SLProps(ad, u, v, 1, 1e-9)
++            if not pr.IsNormalDefined():
++                continue
++            try:
++                du, dv = pr.D1U(), pr.D1V()
++            except Exception:
++                continue
++            n = du.Crossed(dv)
++            if n.Magnitude() < 1e-12:
++                continue
++            p = pr.Value()
++            pv = np.array([p.X(), p.Y(), p.Z()]) - o_np
++            rad = pv - (pv @ a_np) * a_np
++            if np.linalg.norm(rad) < 1e-12:
++                continue
++            rad /= np.linalg.norm(rad)
++            n_np = np.array([n.X(), n.Y(), n.Z()])
++            if sgn * (n_np @ rad) > 0:
++                agree += 1
++            else:
++                disagree += 1
++    return agree >= disagree
++
++
++def _split_cylinder_loop_at_seam(lp, V, s):
++    """Split a cylinder loop that crosses the seam into two loops at the seam."""
++    a = np.array(s["a"]) / np.linalg.norm(s["a"]); o = np.array(s["o"])
++    P = V[lp]
++    q = P - o
++    h = q @ a
++    radial = q - np.outer(h, a)
++    theta = np.arctan2(radial[:, 1], radial[:, 0])
++    # Find seam crossing: where theta jumps by > pi
++    dtheta = np.diff(theta)
++    seam_idx = np.where(np.abs(dtheta) > np.pi)[0]
++    if len(seam_idx) == 0:
++        return [lp]  # no seam crossing
++    # Split at seam crossings
++    result = []
++    start = 0
++    for idx in seam_idx:
++        result.append(lp[start:idx+1])
++        start = idx + 1
++    result.append(lp[start:])
++    # Filter out too-short segments
++    result = [seg for seg in result if len(seg) > 2]
++    return result if len(result) > 1 else [lp]
++
++
+ def _bad_topology(s, lps, V):
+     """True when a region's border loops cannot bound one analytic face: a multi-loop sphere (closed-surface wire
+     nesting fails in UV space), a sphere loop winding ~0x instead of once (a self-wrapping border), or plane loops
+@@ -273,18 +343,16 @@ def build(mesh, z, out, facet=frozenset()):
+         force_facet = _bad_topology(surfs[L], lps, V)
+         wires = []
+         for lp in (lps if not force_facet else []):
+-            nb = [int(label[twin[(lp[(i + 1) % len(lp)], lp[i])]]) for i in range(len(lp))]  # neighbour past edge i
++            nb = [int(label[twin[(lp[(i + 1) % len(lp)], lp[i])]]) for i in range(len(lp))]
+             cuts = [i for i in range(len(lp)) if nb[i] != nb[i - 1]]
+-            if len(cuts) < 2:                          # one neighbour all round: split the loop in two edges
++            if len(cuts) < 2:
+                 cuts = [0, len(lp) // 2]
+-            # every edge of the loop into ONE list: MakeWire.Add(list) connects them in any order (a chain shared with
+-            # the neighbour is stored once, so on one side its segments come reversed and edge-by-edge Add stopped there)
+             from OCP.TopTools import TopTools_ListOfShape
+             lst = TopTools_ListOfShape()
+             for ci, c0 in enumerate(cuts):
+                 c1 = cuts[(ci + 1) % len(cuts)]
+                 ids = [lp[i % len(lp)] for i in range(c0, c1 + (len(lp) if c1 <= c0 else 0) + 1)]
+-                ex = TopExp_Explorer(chain_edge(ids), TopAbs_EDGE)   # one B-spline edge, or a polyline's segments
++                ex = TopExp_Explorer(chain_edge(ids), TopAbs_EDGE)
+                 while ex.More():
+                     lst.Append(ex.Current()); ex.Next()
+             mw = BRepBuilderAPI_MakeWire(); mw.Add(lst)
+@@ -307,6 +375,52 @@ def build(mesh, z, out, facet=frozenset()):
+             # the face "unorientable": 6 of 7 invalid faces on mechpart)
+             wires = [w if (_plane_area(w, npl, True) > 0) == (i == 0) else TopoDS.Wire_s(w.Reversed())
+                      for i, w in enumerate(wires)]
++        elif surfs[L]["kind"] in ("cylinder", "cone") and len(wires) == 2:
++            # Cylinder/cone band: two boundary loops need opposite orientations in UV space (theta).
++            # Determine UV orientation of each wire by sampling its tangent and the surface normal.
++            from OCP.BRepAdaptor import BRepAdaptor_Curve
++            from OCP.BRepTools import BRepTools_WireExplorer
++            a = np.array(surfs[L]["a"]) / np.linalg.norm(surfs[L]["a"])
++            def wire_uv_sign(w):
++                # Sample first edge midpoint, compute tangent x radial -> should point along +axis or -axis
++                ex = BRepTools_WireExplorer(w)
++                if not ex.More():
++                    return 0
++                e = ex.Current()
++                c = BRepAdaptor_Curve(e)
++                u = (c.FirstParameter() + c.LastParameter()) * 0.5
++                p = c.Value(u)
++                # Tangent
++                try:
++                    deriv = c.D1(u)
++                    tang = np.array([deriv[1].X(), deriv[1].Y(), deriv[1].Z()])
++                except Exception:
++                    return 0
++                pv = np.array([p.X(), p.Y(), p.Z()]) - np.array(surfs[L]["o"])
++                rad = pv - (pv @ a) * a
++                if np.linalg.norm(rad) < 1e-9:
++                    return 0
++                rad /= np.linalg.norm(rad)
++                # cross(tangent, radial) dot axis: +1 or -1 indicates UV orientation
++                cross = np.cross(tang, rad)
++                return 1 if cross @ a > 0 else -1
++            s0 = wire_uv_sign(wires[0])
++            s1 = wire_uv_sign(wires[1])
++            if s0 == s1 and s0 != 0:
++                # Same UV orientation: reverse the second wire
++                wires[1] = TopoDS.Wire_s(wires[1].Reversed())
++            # Sort by h coordinate (height along axis) for consistent ordering
++            def wire_h(w):
++                ex = BRepTools_WireExplorer(w)
++                if not ex.More():
++                    return 0
++                e = ex.Current()
++                c = BRepAdaptor_Curve(e)
++                u = (c.FirstParameter() + c.LastParameter()) * 0.5
++                p = c.Value(u)
++                pv = np.array([p.X(), p.Y(), p.Z()]) - np.array(surfs[L]["o"])
++                return pv @ a
++            wires.sort(key=wire_h)
+         else:
+             wires.sort(key=lambda w: -_wire_len(w))
+         if os.environ.get("SB_DEBUG"):
+@@ -314,46 +428,74 @@ def build(mesh, z, out, facet=frozenset()):
+         # the face must cover what the region covers: on a closed surface (sphere, torus, full cone) a loop bounds two
+         # faces and OCCT may keep the other one (mechpart: a sphere face of 5698 mm2 for a 234 mm2 region). Both
+         # orientations are tried; one within 25 % of the region's mesh area wins, else the region stays faceted.
++        # For multi-loop non-planes (cylinder/cone bands), try all wire orientation combinations.
+         am = float(mesh.area_faces[label == L].sum())
+         f, best_err = None, None; tried_a = []
+-        for ws in (() if force_facet else (wires, [TopoDS.Wire_s(w.Reversed()) for w in wires])):
+-            c = forked_face(gs, ws, max(tol, 1e-5 * diag), surfs[L]["kind"] in ("plane", "sphere"))
+-            if c is None:
+-                continue
+-            g_ = GProp_GProps(); BRepGProp.SurfaceProperties_s(c, g_)
+-            err = max(abs(abs(g_.Mass()) - am) - tol * tol, 0.0) / max(am, 1e-12)   # tol^2: slivers
+-            tried_a.append(round(g_.Mass(), 1))
+-            if best_err is None or err < best_err:
+-                f, best_err = c, err
+-        # validity is judged AFTER sewing (sewing fixes most edge tolerances: 7 of 914 faces invalid, against 69 regions
+-        # rejected when judged before, and ShapeFix_Shape per face rebuilt the edges so nothing sewed: 677 free edges)
+-        if f is not None and (best_err > 0.25 or L in facet):
+-            f = None                                   # wrong area, or invalid once sewn: the region stays faceted
+-        if f is None and os.environ.get("SB_DEBUG"):
+-            print(f"FAILED {L} {surfs[L]['kind']} loops {len(wires)} tris {int((label == L).sum())} mesh area {am:.1f} "
+-                  f"attempts {tried_a}", file=sys.stderr, flush=True)
+-        if f is None:                                  # OCCT crashed or refused: this region stays faceted
++        # If topology is bad, skip analytic face attempt entirely and go straight to triangle faceting.
++        # Track forced-facet regions to exclude them from post-sewing validity check (their triangles
++        # may merge into invalid topology under ShapeFix, but that's acceptable for faceted regions).
++        forced_facet = force_facet
++        if not forced_facet:
++            if len(wires) > 1 and surfs[L]["kind"] in ("cylinder", "cone"):
++                # Try all 2^n orientation combinations (cap at 8 for n<=3)
++                import itertools
++                wire_sets = []
++                for signs in itertools.product([1, -1], repeat=len(wires)):
++                    ws = [TopoDS.Wire_s(w.Reversed()) if s == -1 else w for w, s in zip(wires, signs)]
++                    wire_sets.append(ws)
++                if len(wire_sets) > 8:
++                    wire_sets = wire_sets[:8]
++            else:
++                wire_sets = (wires, [TopoDS.Wire_s(w.Reversed()) for w in wires])
++            if surfs[L]["kind"] in ("plane", "sphere") or (surfs[L]["kind"] in ("cylinder", "cone") and len(wires) == 2):
++                # Direct MakeFace for planes, spheres, and cylinder/cone bands (2 boundary wires, no seam crossing)
++                try_direct = True
++            else:
++                # ShapeFix_Face for single-loop cylinders/cones (may cross seam) and tori
++                try_direct = False
++            for ws in wire_sets:
++                c = forked_face(gs, ws, max(tol, 1e-5 * diag), try_direct=try_direct)
++                if c is None:
++                    continue
++                g_ = GProp_GProps(); BRepGProp.SurfaceProperties_s(c, g_)
++                err = max(abs(abs(g_.Mass()) - am) - tol * tol, 0.0) / max(am, 1e-12)   # tol^2: slivers
++                tried_a.append(round(g_.Mass(), 1))
++                if best_err is None or err < best_err:
++                    f, best_err = c, err
++            # validity is judged AFTER sewing (sewing fixes most edge tolerances: 7 of 914 faces invalid, against 69 regions
++            # rejected when judged before, and ShapeFix_Shape per face rebuilt the edges so nothing sewed: 677 free edges)
++            if f is not None and (best_err > 0.25 or L in facet):
++                f = None                                   # wrong area, or invalid once sewn: the region stays faceted
++        if f is None:
++            if forced_facet or os.environ.get("SB_DEBUG"):
++                print(f"FAILED {L} {surfs[L]['kind']} loops {len(wires)} tris {int((label == L).sum())} mesh area {am:.1f} "
++                      f"attempts {tried_a}", file=sys.stderr, flush=True)
+             n_fail += 1
+             for t in np.where(label == L)[0]:
+                 poly = BRepBuilderAPI_MakePolygon(vtx(int(F[t][0])), vtx(int(F[t][1])), vtx(int(F[t][2])), True)
+                 mf = BRepBuilderAPI_MakeFace(poly.Wire(), True)
+                 if mf.IsDone():
+-                    faces.append((mf.Face(), L))
++                    faces.append((mf.Face(), L, True))  # mark as faceted
+             continue
+         if surfs[L]["kind"] == "sphere":
+             # radial majority vote, not the mesh normal sum: once a region wraps most of its sphere the summed
+             # normals cancel to noise and the face below comes out pointing inward, doubling the volume
+             if not _sphere_outward_ok(f, np.array(surfs[L]["o"], float)):
+                 f = TopoDS.Face_s(f.Reversed())
++        elif surfs[L]["kind"] in ("cylinder", "cone"):
++            # radial majority vote around axis: mesh normal sums cancel for bands
++            a = np.array(surfs[L]["a"]); o = np.array(surfs[L]["o"])
++            if not _cylinder_outward_ok(f, a, o):
++                f = TopoDS.Face_s(f.Reversed())
+         elif _face_normal(f) @ nrm < 0:              # the face looks where the region's triangles look
+             f = TopoDS.Face_s(f.Reversed())
+-        faces.append((f, L))
++        faces.append((f, L, False))  # analytic face, not faceted
+         if os.environ.get("SB_DEBUG"):
+             g_ = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g_)
+             am = float(mesh.area_faces[label == L].sum())
+             print(f"face {L} {surfs[L]['kind']} loops {len(wires)} area {g_.Mass():.1f} vs mesh {am:.1f}", file=sys.stderr, flush=True)
+     sew = BRepBuilderAPI_Sewing(max(2 * tol, 1e-5 * diag))
+-    for f, _ in faces:
++    for f, _, _ in faces:
+         sew.Add(f)
+     sew.Perform()
+     shape = sew.SewedShape()
+@@ -361,7 +503,9 @@ def build(mesh, z, out, facet=frozenset()):
+     wf = ShapeFix_Shape(shape); wf.SetPrecision(max(tol, 1e-5 * diag)); wf.SetMaxTolerance(3 * tol); wf.Perform()
+     shape = wf.Shape()
+     bad_regions = set(); why = {}
+-    for f_, L_ in faces:
++    for f_, L_, is_faceted in faces:
++        if is_faceted:
++            continue  # skip validity check for triangle-faceted regions
+         g_ = wf.Context().Apply(sew.Modified(f_))
+         exg = TopExp_Explorer(g_, TopAbs_FACE)
+         while exg.More():
+@@ -406,15 +550,17 @@ def build(mesh, z, out, facet=frozenset()):
+         t_ = BRepAdaptor_Surface(TopoDS.Face_s(ex.Current())).GetType()
+         kinds[names.get(int(t_), "other")] = kinds.get(names.get(int(t_), "other"), 0) + 1; nfaces += 1; ex.Next()
+     res["faces"] = nfaces; res["kinds"] = kinds
+-    res["analytic_planes"] = sum(1 for _f, L_ in faces if surfs[L_]["kind"] == "plane" and int((label == L_).sum()) > 1
++    res["analytic_planes"] = sum(1 for _f, L_, _ in faces if surfs[L_]["kind"] == "plane" and int((label == L_).sum()) > 1
+                                  and L_ < len(json.loads(str(z["surf"]))) and L_ not in facet)
+     w = STEPControl_Writer(); w.Transfer(target, STEPControl_AsIs); w.Write(str(out))
+     return res
+ 
+ 
+-def forked_face(gs, wires, prec, plane=False):
++def forked_face(gs, wires, prec, try_direct=True):
+     """The face on surface gs bounded by wires, built in a forked child: OCCT segfaults on some (mechpart: a cone
+-    region bounded by one loop, as edgebuild's apex cone). None when the child dies or fails."""
++    region bounded by one loop, as edgebuild's apex cone). None when the child dies or fails.
++    try_direct: attempt BRepBuilderAPI_MakeFace first (keeps wire-orientation-selected side).
++    Falls back to ShapeFix_Face which handles seam-crossing wires but may swap material side on closed surfaces."""
+     import tempfile
+     from OCP.BRepTools import BRepTools
+     from OCP.TopoDS import TopoDS_Shape
+@@ -422,13 +568,12 @@ def forked_face(gs, wires, prec, plane=False):
+     pid = os.fork()
+     if pid == 0:
+         try:
+-            # Direct MakeFace first for planes AND spheres: it trims by the wires as given, keeping the side the
+-            # wire orientation selects (an outward mesh gives CCW-from-outside loops, i.e. the cap). ShapeFix_Face
+-            # on the bare surface instead "repairs" UV orientation, which on a closed surface swaps the material
+-            # side: mechpart sphere caps selected at 540/209 mm2 came out as 8301/5740 mm2 complements downstream.
++            # Direct MakeFace first: it trims by the wires as given, keeping the side the
++            # wire orientation selects. ShapeFix_Face on the bare surface instead "repairs" UV orientation,
++            # which on a closed surface (sphere, cylinder, cone, torus) can swap the material side.
+             # MakeFace refuses seam-crossing wires, so ShapeFix stays as fallback (and the 25 % area check guards).
+             face = None
+-            if plane:
++            if try_direct and wires:
+                 mf = BRepBuilderAPI_MakeFace(gs, wires[0], True)
+                 for w in wires[1:]:
+                     mf.Add(w)
