@@ -6,7 +6,7 @@ Protocol, the same for every model: per view (7 views) one call with the view's 
 words; then one text-only call to the same model merging the 7 notes into a JSON inventory. Scored against truth.py (the
 owner's 5/5 feature trees): turned, holes (exact and within 1), fillets, chamfers, levels (within 1).
 
-usage: vlm_bench.py <out_dir> <model> <grid> [part ...]
+usage: [VLM_SECTIONS=1] vlm_bench.py <out_dir> <model> <grid> [part ...]
   model: deepseek | qwen30b | qwen8b        grid: 1 (overview only) | 2 | 4"""
 import base64
 import json
@@ -25,6 +25,7 @@ import tiles as TL  # noqa: E402
 from truth import truth  # noqa: E402
 
 MESHES = Path.home() / "corpora" / "mechparts"
+SECTIONS = os.environ.get("VLM_SECTIONS") == "1"    # add the cut outlines (sections.py) to the views
 QWEN = {"qwen30b": "qwen3-vl:30b-a3b-instruct-q4_K_M", "qwen8b": "qwen3-vl:8b-instruct-q4_K_M"}
 
 P_VIEW = """You are looking at ONE view of a mechanical part (a CAD model rendered orthographically, grey shading).
@@ -42,7 +43,19 @@ P_TILES = ("The next {n} images are tiles that enlarge the same view in a {g}x{g
            "left to right and top to bottom, overlapping slightly. Use them to see small features; a feature cut by a "
            "tile edge appears in two neighbouring tiles and is still ONE feature.")
 
-P_MERGE = """Below are notes on the 7 views (+X, -X, +Y, -Y, +Z top, -Z bottom, isometric) of ONE mechanical part.
+P_SECT = """You are looking at CUTS through ONE mechanical part: the part is sliced by a plane and the images show the
+cut outline (grey = material, white = empty, black = the outline). {tiles_note}
+The cut is across the {axis} axis (each image label says where). Read the outlines as a designer reads a drawing:
+- the outline shape of each cut (it is a sketch of the part at that height);
+- CORNERS of the outline: SHARP (a point), ROUNDED (a smooth arc = a FILLET) or BEVELLED (a short straight cut
+  across the corner = a CHAMFER); say which corners are which;
+- CIRCLES inside the outline (holes), how many; notches or openings (pockets, slots);
+- how the cuts differ from one another (steps, levels).
+Give counts, never measurements. If something is unclear, say so."""
+
+P_MERGE = """Below are notes on the 7 views (+X, -X, +Y, -Y, +Z top, -Z bottom, isometric) of ONE mechanical part, and possibly
+on CUTS through it (section outlines, the most reliable evidence for fillets = rounded corners, chamfers = bevelled
+corners, and holes = circles).
 A feature seen in several views is ONE feature: a through hole appears on both opposite faces and counts once.
 Answer ONLY with this JSON object, nothing else:
 {{"part_type": "<what the part is, a few words>",
@@ -130,13 +143,22 @@ def run_part(part, model, grid, out, t):
         txt, u = ask(model, imgs, prompt)
         notes.append(f"[{v}]\n{txt.strip()}")
         usage["in"] += u["in"]; usage["out"] += u["out"]; usage["images"] += len(imgs); usage["calls"] += 1
+    if SECTIONS:
+        import sections as SC
+        for axis, imgs in SC.all_sections(MESHES / f"{part}.stl", out / "renders" / part, grid).items():
+            tn = P_TILES.format(n=len(imgs) - len(SC.FRACS), g=grid) if grid > 1 else ""
+            txt, u = ask(model, imgs, P_SECT.format(axis=axis, tiles_note=tn))
+            notes.append(f"[cuts across {axis}]\n{txt.strip()}")
+            usage["in"] += u["in"]; usage["out"] += u["out"]; usage["images"] += len(imgs); usage["calls"] += 1
     txt, u = ask(model, [], P_MERGE.format(notes="\n\n".join(notes)), want_json=True)
     usage["in"] += u["in"]; usage["out"] += u["out"]; usage["calls"] += 1
     pred = parse(txt)
     row = {"part": part, "model": model, "grid": grid, "seconds": round(time.time() - t0, 1), "usage": usage,
            "truth": t, "pred": pred, "score": score(pred, t)}
-    (out / f"{model}_g{grid}").mkdir(parents=True, exist_ok=True)
-    json.dump({**row, "notes": notes, "raw_merge": txt}, open(out / f"{model}_g{grid}" / f"{part}.json", "w"), indent=1)
+    cfg = f"{model}_g{grid}" + ("_sect" if SECTIONS else "")
+    row["config"] = cfg
+    (out / cfg).mkdir(parents=True, exist_ok=True)
+    json.dump({**row, "notes": notes, "raw_merge": txt}, open(out / cfg / f"{part}.json", "w"), indent=1)
     return row
 
 
@@ -155,7 +177,7 @@ def main():
             print(json.dumps({k: row[k] for k in ("part", "seconds", "score")}), flush=True)
     keys = ["turned", "holes_exact", "holes_pm1", "fillets", "chamfers", "levels_pm1"]
     ok = [r for r in rows if r["score"].get("parsed")]
-    summ = {"model": model, "grid": grid, "parts": len(rows), "parsed": len(ok),
+    summ = {"model": model, "grid": grid, "sections": SECTIONS, "parts": len(rows), "parsed": len(ok),
             **{k: round(sum(r["score"][k] for r in ok) / max(len(rows), 1), 3) for k in keys},
             "mean_s": round(sum(r["seconds"] for r in rows) / max(len(rows), 1), 1),
             "images_per_part": round(sum(r["usage"]["images"] for r in rows) / max(len(rows), 1), 1),
