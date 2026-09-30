@@ -283,6 +283,8 @@ def build(mesh, z, out, facet=frozenset()):
         t_ = BRepAdaptor_Surface(TopoDS.Face_s(ex.Current())).GetType()
         kinds[names.get(int(t_), "other")] = kinds.get(names.get(int(t_), "other"), 0) + 1; nfaces += 1; ex.Next()
     res["faces"] = nfaces; res["kinds"] = kinds
+    res["analytic_planes"] = sum(1 for _f, L_ in faces if surfs[L_]["kind"] == "plane" and int((label == L_).sum()) > 1
+                                 and L_ < len(json.loads(str(z["surf"]))) and L_ not in facet)
     w = STEPControl_Writer(); w.Transfer(target, STEPControl_AsIs); w.Write(str(out))
     return res
 
