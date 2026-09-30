@@ -170,9 +170,21 @@ def main():
     with ThreadPoolExecutor(6) as ex:
         list(ex.map(lambda p: TL.all_views(MESHES / f"{p}.stl", out / "renders" / p, grid), parts))
     workers = 4 if model == "deepseek" else 1
-    rows = []
+    cfg = f"{model}_g{grid}" + ("_sect" if SECTIONS else "")
+    done = {f.stem for f in (out / cfg).glob("*.json")} if (out / cfg).exists() else set()
+    rows = [json.load(open(out / cfg / f"{p}.json")) for p in parts if p in done]
+    todo = [p for p in parts if p not in done]          # a rerun does only the missing parts
+
+    def safe(p):
+        # one failed part (a timeout while another model holds the GPU) is recorded, never kills the configuration
+        try:
+            return run_part(p, model, grid, out, T[p])
+        except Exception as e:                       # noqa: BLE001
+            return {"part": p, "model": model, "grid": grid, "config": cfg, "seconds": 0.0, "error": str(e)[:200],
+                    "usage": {"in": 0, "out": 0, "images": 0, "calls": 0}, "truth": T[p], "pred": None,
+                    "score": {"parsed": False}}
     with ThreadPoolExecutor(workers) as ex, open(out / "bench.jsonl", "a") as fh:
-        for row in ex.map(lambda p: run_part(p, model, grid, out, T[p]), parts):
+        for row in ex.map(safe, todo):
             fh.write(json.dumps(row) + "\n"); fh.flush(); rows.append(row)
             print(json.dumps({k: row[k] for k in ("part", "seconds", "score")}), flush=True)
     keys = ["turned", "holes_exact", "holes_pm1", "fillets", "chamfers", "levels_pm1"]
