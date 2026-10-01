@@ -100,7 +100,7 @@ def ask_qwen(model, images, prompt, want_json=False):
             "options": {"temperature": 0, "num_ctx": 32768}}
     if want_json:
         body["format"] = "json"
-    req = urllib.request.Request("http://127.0.0.1:11434/api/chat", data=json.dumps(body).encode(),
+    req = urllib.request.Request(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=1800) as r:
         j = json.loads(r.read())
