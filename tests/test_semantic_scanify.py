@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import trimesh
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools/semantic"))
@@ -25,7 +26,8 @@ def test_scanify_is_dense_noisy_rotated_and_deterministic():
     assert not np.allclose(sorted(s.extents), sorted(m.extents), atol=0.5)
     # same volume and size within the noise (it is the same part)
     assert abs(s.volume - m.volume) / m.volume < 0.03
-    assert abs(np.linalg.norm(s.extents) - np.linalg.norm(m.extents)) / np.linalg.norm(m.extents) < 0.25
+    # same size: a rotation changes the axis-aligned box, not the oriented one
+    assert sorted(trimesh.bounds.oriented_bounds(s)[1]) == pytest.approx(sorted(m.extents), abs=1.5)  # noise: +-0.6 mm per face
     # deterministic for a seed
     s2 = S.scanify(m, seed=1, noise=0.003, faces=60000)
     assert np.allclose(s.vertices, s2.vertices)
