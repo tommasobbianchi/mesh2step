@@ -7,7 +7,7 @@ words; then one text-only call to the same model merging the 7 notes into a JSON
 owner's 5/5 feature trees): turned, holes (exact and within 1), fillets, chamfers, levels (within 1).
 
 usage: [VLM_SECTIONS=1] vlm_bench.py <out_dir> <model> <grid> [part ...]
-  model: deepseek | qwen27b | qwen30b | qwen8b        grid: 1 (overview only) | 2 | 4"""
+  model: deepseek | qwen27b        grid: 1 (overview only) | 2 | 4"""
 import base64
 import json
 import os
@@ -26,7 +26,7 @@ from truth import truth  # noqa: E402
 
 MESHES = Path.home() / "corpora" / "mechparts"
 SECTIONS = os.environ.get("VLM_SECTIONS") == "1"    # add the cut outlines (sections.py) to the views
-QWEN = {"qwen27b": "qwen3.8:27b", "qwen30b": "qwen3-vl:30b-a3b-instruct-q4_K_M", "qwen8b": "qwen3-vl:8b-instruct-q4_K_M"}
+QWEN = {"qwen27b": "qwen3.8:27b"}   # qwen3-vl 8b/30b dropped 2026-10-01: they cannot read edges from cuts
 
 P_VIEW = """You are looking at ONE view of a mechanical part (a CAD model rendered orthographically, grey shading).
 The first image is the whole view. {tiles_note}
