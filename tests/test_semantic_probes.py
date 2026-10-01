@@ -64,3 +64,12 @@ def test_normalize_plan_sorts_undo_by_stage():
     assert [u["op"] for u in out["undo"]] == ["fillet", "hole", "pocket", "boss"]
     assert [u["step"] for u in out["undo"]] == [1, 2, 3, 4]
     assert [u["op"] for u in plan["undo"]][0] == "hole"          # input untouched
+
+
+def test_count_holes_finds_a_blind_hole_off_the_mid_plane():
+    """10 mm plate, a d=4 blind hole 3 mm deep from the top at x=12, plus a through hole d=6 at x=-10."""
+    b = trimesh.creation.box((40, 30, 10))
+    t = trimesh.creation.cylinder(radius=3, height=20, sections=64); t.apply_translation((-10, 0, 0))
+    bl = trimesh.creation.cylinder(radius=2, height=6, sections=64); bl.apply_translation((12, 0, 5))
+    m = b.difference(t).difference(bl)
+    assert P.count_holes(m, "Z") == 2

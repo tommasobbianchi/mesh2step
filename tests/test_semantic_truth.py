@@ -30,3 +30,10 @@ def test_faceted_holes_count():
 def test_real_trees_with_faceted_holes():
     t = T.truth()
     assert t["17"]["holes"] >= 10 and t["14"]["holes"] >= 10    # engine trees draw these holes as 16/32-gons
+
+
+def test_hole_through_stacked_levels_counts_once():
+    # the same through hole redrawn in two stacked pads is ONE hole (part 14 counted 53 this way)
+    tree = {"features": [{"op": "pad", "axis": "Z", "loops": [ngon(4, r=50), ngon(32)]},
+                         {"op": "pad", "axis": "Z", "loops": [ngon(4, r=40), ngon(32), ngon(32, cx=-20)]}]}
+    assert T.facts(tree)["holes"] == 2

@@ -85,8 +85,21 @@ def section_circles(mesh, axis, frac, tol=0.02):
 
 
 def count_holes(mesh, axis):
-    """Return the number of circular holes in the mid-section along the given axis."""
-    return len(section_circles(mesh, axis, 0.5))
+    """Return the number of circular holes along the given axis, cutting at several heights."""
+    b = bbox(mesh)
+    diag = float(np.linalg.norm(b["size"]))
+    tol = 0.02 * diag
+    centres = []
+    for frac in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+        for c in section_circles(mesh, axis, frac):
+            centres.append(c["c"])
+    count = 0
+    used = []
+    for c in centres:
+        if all(float(np.linalg.norm(np.array(c) - np.array(u))) > tol for u in used):
+            count += 1
+            used.append(c)
+    return count
 
 
 def revolve_axis(mesh):

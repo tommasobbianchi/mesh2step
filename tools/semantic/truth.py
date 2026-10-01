@@ -34,16 +34,44 @@ def is_circle_loop(loop):
     return rms < 0.02 * r
 
 
+def loop_centre(loop):
+    """Return the centre [x, y] of a circle loop, or None if the loop is not a circle."""
+    if len(loop) == 1 and loop[0]["t"] == "circle":
+        return [float(loop[0]["c"][0]), float(loop[0]["c"][1])]
+    if len(loop) < 8 or any(g["t"] != "line" for g in loop):
+        return None
+    pts = np.array([g["p"][0] for g in loop], dtype=float)
+    x, y = pts[:, 0], pts[:, 1]
+    A_mat = np.column_stack([x, y, np.ones_like(x)])
+    b_vec = x**2 + y**2
+    sol, _, _, _ = np.linalg.lstsq(A_mat, b_vec, rcond=None)
+    return [float(sol[0] / 2.0), float(sol[1] / 2.0)]
+
+
+def count_distinct_holes(centres, threshold=0.5):
+    """Greedy dedupe: count centres more than `threshold` mm apart as distinct holes."""
+    count = 0
+    used = []
+    for c in centres:
+        if all(float(np.linalg.norm(np.array(c) - np.array(u))) > threshold for u in used):
+            count += 1
+            used.append(c)
+    return count
+
+
 def facts(tree):
     feats = tree["features"]
-    holes = 0
+    centres = []
     for f in feats:
         if f["op"] not in ("pad", "pocket") or not isinstance(f.get("loops"), list):
             continue
         for i, loop in enumerate(f["loops"]):
             # a pad's outline (loop 0) that is a circle is a disc or boss, not a hole; a pocket's circle is a hole
             if is_circle_loop(loop) and (i > 0 or f["op"] == "pocket"):
-                holes += 1
+                c = loop_centre(loop)
+                if c is not None:
+                    centres.append(c)
+    holes = count_distinct_holes(centres)
     # rounded corners drawn IN a sketch (arcs of an outline or a pocket), as opposed to fillet OPERATIONS on edges: a
     # designer draws a sprocket's scallops or a pocket's corners as arcs (parts 4, 14), and the VLM sees both as round
     arcs = any(g["t"] == "arc" for f in feats if f["op"] in ("pad", "pocket") and isinstance(f.get("loops"), list)

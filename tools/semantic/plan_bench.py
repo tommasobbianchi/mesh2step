@@ -22,7 +22,7 @@ import trimesh
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vlm_bench as VB  # noqa: E402
-from truth import GRADES, is_circle_loop  # noqa: E402
+from truth import GRADES, is_circle_loop, facts  # noqa: E402
 
 NOTES = Path(__file__).resolve().parents[2] / "runs/semantic/m1qs/qwen27b_g1_sect"
 # PLAN_FACTS=1: edge fillets/chamfers are not the planner's to decide. S1's merge already answers them from the cuts
@@ -100,9 +100,7 @@ def tree_facts(tree):
         outline = "circle"
     else:
         outline = "arcs" if any(g["t"] == "arc" for g in loop0) else "polygon"
-    holes = sum(1 for f in F if f["op"] in ("pad", "pocket") and isinstance(f.get("loops"), list)
-                for i, lp in enumerate(f["loops"]) if is_circle_loop(lp)
-                and (i > 0 or f["op"] == "pocket"))
+    holes = facts(tree)["holes"]
     return {"axis": b.get("axis"), "outline": outline, "revolve": any("revolve" in f for f in F),
             "additive": sum(f["op"] == "pad" for f in F), "holes": holes,
             "fillets": any(f["op"] == "round" for f in F), "chamfers": any(f["op"] == "chamfer" for f in F)}
