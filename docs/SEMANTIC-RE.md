@@ -133,14 +133,19 @@ tree is then delivered with the remaining differences listed, not hidden.
 
 ## Model roles and the bake-off
 
-Default: **DeepSeek vision** for S1 (cheap, already wired), fed 4 x 4 tiles so its 800 px cap no longer limits
-what it can see. Local **Qwen3-VL** (qwen3-vl:30b-a3b and 8b are installed on nativedev's 3090, $0 per call, dynamic
-resolution with a settable pixel budget) takes the same tiles and is the zero-cost candidate. S2 needs consistent structured reasoning more than vision.
-A Claude model (Sonnet 5, or Haiku 4.5 if it holds) is the leading candidate; the Opus rebuild is evidence Claude
-reasons well about CAD, and one call per round keeps the cost down.
+**Decided 2026-10-01 by measurement on the 28 parts graded 5/5 (owner's call: "qwen wins"): qwen3.8:27b, local on
+nativedev's 3090, $0, for BOTH S1 and S2.** DeepSeek stays the paid reference to check against, not a pipeline stage.
 
-This is decided by measurement, not assumption: the same S1 and S2 prompts through DeepSeek vision, local Qwen3-VL
-(3090, $0), Haiku 4.5 and Sonnet 5, scored on the sets below. Pick the cheapest model per stage that holds the score.
+- **S1 look:** whole views (7) + three mid-plane cuts, no tiles. Tiles (2x2, 4x4) bought 1-3 exact hole counts at 5-17x
+  the images on every model. qwen3.8:27b: turned 19, holes 13 exact / 19 +-1, levels 23, fillets 7 of 9 found from
+  the cuts, 140 s/part; DeepSeek + cuts: holes 16, fillets 9 of 9, levels 16. qwen3-vl 8b/30b could not read edges
+  from cuts and were dropped (30b deleted). Edge fillets/chamfers come from the cuts ONLY (evidence rule).
+- **S2 deconstruct** (`tools/semantic/plan_bench.py`): qwen3.8:27b (thinking on) axis 24, outline class 23, additive
+  count 20 - as good as Sonnet 5 (24/22/19, $0.15/part) and better than DeepSeek (22/20/18). Its weaknesses are
+  handled outside the model: it breaks the undo order in 12/28 (code sorts the steps by stage) and over-calls
+  fillets/chamfers (S1's evidence-rule answers are passed in as fixed facts, `PLAN_FACTS=1`).
+- Open: revolves (18/28, the always-no score) and holes +-1 (19/28) are the weakest structural answers; they are
+  S3's first probe targets.
 
 ## Evaluation sets and metrics
 
