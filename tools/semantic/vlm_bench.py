@@ -7,7 +7,7 @@ words; then one text-only call to the same model merging the 7 notes into a JSON
 owner's 5/5 feature trees): turned, holes (exact and within 1), fillets, chamfers, levels (within 1).
 
 usage: [VLM_SECTIONS=1] vlm_bench.py <out_dir> <model> <grid> [part ...]
-  model: deepseek | qwen30b | qwen8b        grid: 1 (overview only) | 2 | 4"""
+  model: deepseek | qwen27b | qwen30b | qwen8b        grid: 1 (overview only) | 2 | 4"""
 import base64
 import json
 import os
@@ -26,7 +26,7 @@ from truth import truth  # noqa: E402
 
 MESHES = Path.home() / "corpora" / "mechparts"
 SECTIONS = os.environ.get("VLM_SECTIONS") == "1"    # add the cut outlines (sections.py) to the views
-QWEN = {"qwen30b": "qwen3-vl:30b-a3b-instruct-q4_K_M", "qwen8b": "qwen3-vl:8b-instruct-q4_K_M"}
+QWEN = {"qwen27b": "qwen3.8:27b", "qwen30b": "qwen3-vl:30b-a3b-instruct-q4_K_M", "qwen8b": "qwen3-vl:8b-instruct-q4_K_M"}
 
 P_VIEW = """You are looking at ONE view of a mechanical part (a CAD model rendered orthographically, grey shading).
 The first image is the whole view. {tiles_note}
@@ -100,6 +100,8 @@ def ask_qwen(model, images, prompt, want_json=False):
             "options": {"temperature": 0, "num_ctx": 32768}}
     if want_json:
         body["format"] = "json"
+    if model == "qwen27b":
+        body["think"] = False        # qwen3.8 is a hybrid reasoner; the qwen3-vl instruct builds have no thinking mode
     req = urllib.request.Request(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=1800) as r:

@@ -60,7 +60,8 @@ def main():
                 continue
             if (out / f.name).exists():
                 rows.append(json.load(open(out / f.name))); continue
-            txt, u = VB.ask(r["model"], [], P_MERGE2.format(notes="\n\n".join(r["notes"])), want_json=True)
+            # REMERGE_MODEL: one text merger for every config, so only the per-view notes differ between them
+            txt, u = VB.ask(os.environ.get("REMERGE_MODEL", r["model"]), [], P_MERGE2.format(notes="\n\n".join(r["notes"])), want_json=True)
             pred = VB.parse(txt)
             r2 = {**r, "pred": pred, "score": score2(pred, T[r["part"]]), "truth": T[r["part"]], "raw_merge": txt,
                   "merge2_usage": u}
