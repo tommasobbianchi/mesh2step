@@ -102,6 +102,11 @@ def count_holes(mesh, axis):
     return count
 
 
+def count_holes_all(mesh):
+    """Return the total number of circular holes across all three axes."""
+    return sum(count_holes(mesh, a) for a in ("X", "Y", "Z"))
+
+
 def revolve_axis(mesh):
     """Return the axis of revolution if the part is a solid of revolution, else None."""
     b = bbox(mesh)

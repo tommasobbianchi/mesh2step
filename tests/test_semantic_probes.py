@@ -73,3 +73,14 @@ def test_count_holes_finds_a_blind_hole_off_the_mid_plane():
     bl = trimesh.creation.cylinder(radius=2, height=6, sections=64); bl.apply_translation((12, 0, 5))
     m = b.difference(t).difference(bl)
     assert P.count_holes(m, "Z") == 2
+
+
+def test_count_holes_all_axes_finds_a_cross_hole():
+    """10 mm plate: a through hole d=6 along Z at x=-10, and a cross hole d=4 along X through the side wall."""
+    b = trimesh.creation.box((40, 30, 10))
+    t = trimesh.creation.cylinder(radius=3, height=20, sections=64); t.apply_translation((-10, 0, 0))
+    x = trimesh.creation.cylinder(radius=2, height=60, sections=64)
+    x.apply_transform(trimesh.transformations.rotation_matrix(1.5707963, (0, 1, 0))); x.apply_translation((0, 8, 0))
+    m = b.difference(t).difference(x)
+    assert P.count_holes(m, "Z") == 1
+    assert P.count_holes_all(m) == 2
