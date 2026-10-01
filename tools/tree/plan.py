@@ -30,6 +30,7 @@ import tree as T                                       # noqa: E402
 CLAUDE = os.path.expanduser("~/.local/bin/claude")
 RENDER = Path.home() / ".claude/skills/deepseek-vision/scripts/render.py"
 MODEL = os.environ.get("PLAN_MODEL", "sonnet")
+QWEN = MODEL.startswith("qwen")
 AXN = "XYZ"
 HOPELESS = 0.9                                # bodies score below which polishing is skipped
 
@@ -94,6 +95,16 @@ def ask_plan(stl, F, wd):
     subprocess.run([sys.executable, str(RENDER), str(stl), "--out", str(vis), "--views", "ISO,PX,PY,PZ",
                     "--crops", "0", "--px", "640"], capture_output=True, text=True, timeout=300)
     imgs = sorted(str(p) for p in vis.glob("*.png"))
+    if QWEN:
+        import base64
+        messages = [{"role": "user", "content": PROMPT.format(facts=json.dumps(F)) + "\nThe images are the renders "
+                    + ", ".join(Path(p).stem for p in imgs) + ".",
+                    "images": [base64.b64encode(Path(p).read_bytes()).decode() for p in imgs]}]
+        raw = _qwen(messages)
+        messages.append({"role": "assistant", "content": raw})
+        import fix as FX
+        plan = FX.first_json(raw, "bodies") or {"bodies": []}
+        return plan, 0.0, raw, messages
     prompt = PROMPT.format(facts=json.dumps(F)) + "\nRenders: " + " ".join(imgs)
     cmd = [CLAUDE, "-p", "--model", MODEL, "--allowedTools", "Read",
            "--disallowedTools", "Bash,Task,Edit,Write,NotebookEdit,WebFetch,WebSearch",
@@ -107,6 +118,17 @@ def _call(cmd, wd):
     import fix as FX
     plan = FX.first_json(raw, "bodies") or {"bodies": []}
     return plan, float(d.get("total_cost_usd") or 0), raw, d.get("session_id")
+
+
+def _qwen(messages):
+    import urllib.request
+    url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/chat"
+    body = json.dumps({"model": MODEL, "messages": messages, "stream": False, "think": "medium",
+                       "format": "json", "options": {"temperature": 0, "num_ctx": 32768}}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=1800) as r:
+        d = json.loads(r.read())
+    return d["message"]["content"]
 
 
 REVISE = """The engine built your plan. Steps it made: {steps}
@@ -402,6 +424,11 @@ def plan_tree(stl, wd=None):
                             clusters=json.dumps(ev))
         if replay:
             plan2, c2 = replay[1], 0.0
+        elif QWEN:
+            sid.append({"role": "user", "content": msg})
+            raw = _qwen(sid)
+            sid.append({"role": "assistant", "content": raw})
+            plan2, c2 = FX.first_json(raw, "bodies") or {"bodies": []}, 0.0
         else:
             plan2, c2, raw, sid = _call([CLAUDE, "-p", "--model", MODEL, "--resume", sid, "--allowedTools", "Read",
                                          "--disallowedTools", "Bash,Task,Edit,Write,NotebookEdit,WebFetch,WebSearch",
