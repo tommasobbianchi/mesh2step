@@ -9,7 +9,29 @@ import glob
 import json
 from pathlib import Path
 
+import numpy as np
+
 GRADES = Path.home() / "projects/mesh2step/.worktrees/interview/runs/engine/grade_set_v15/grades"
+
+
+def is_circle_loop(loop):
+    """True when the loop is a single circle segment, or a faceted polygon (>=8 line segments)
+    whose start points lie on one circle (algebraic least-squares fit, RMS radial residual < 2 % of radius)."""
+    if len(loop) == 1 and loop[0]["t"] == "circle":
+        return True
+    if len(loop) < 8 or any(g["t"] != "line" for g in loop):
+        return False
+    pts = np.array([g["p"][0] for g in loop], dtype=float)
+    x, y = pts[:, 0], pts[:, 1]
+    # Algebraic circle fit: x^2 + y^2 = A*x + B*y + C  (A=2a, B=2b, C=r^2-a^2-b^2)
+    A_mat = np.column_stack([x, y, np.ones_like(x)])
+    b_vec = x**2 + y**2
+    sol, _, _, _ = np.linalg.lstsq(A_mat, b_vec, rcond=None)
+    a, b = sol[0] / 2.0, sol[1] / 2.0
+    r = np.sqrt(sol[2] + a**2 + b**2)
+    residuals = np.sqrt((x - a)**2 + (y - b)**2) - r
+    rms = np.sqrt(np.mean(residuals**2))
+    return rms < 0.02 * r
 
 
 def facts(tree):
@@ -19,9 +41,8 @@ def facts(tree):
         if f["op"] not in ("pad", "pocket") or not isinstance(f.get("loops"), list):
             continue
         for i, loop in enumerate(f["loops"]):
-            circle = len(loop) == 1 and loop[0]["t"] == "circle"
             # a pad's outline (loop 0) that is a circle is a disc or boss, not a hole; a pocket's circle is a hole
-            if circle and (i > 0 or f["op"] == "pocket"):
+            if is_circle_loop(loop) and (i > 0 or f["op"] == "pocket"):
                 holes += 1
     # rounded corners drawn IN a sketch (arcs of an outline or a pocket), as opposed to fillet OPERATIONS on edges: a
     # designer draws a sprocket's scallops or a pocket's corners as arcs (parts 4, 14), and the VLM sees both as round
