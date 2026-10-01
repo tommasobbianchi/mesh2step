@@ -41,7 +41,10 @@ def test_simplify_recovers_a_clean_plate(clean, scan):
     assert axis_aligned_fraction(out) > 0.85                       # flat faces came back flat and aligned
     assert abs(out.volume - clean.volume) / clean.volume < 0.05
     ax = "XYZ"[int(np.argmin(out.extents))]
-    assert P.count_holes(out, ax) == 1                             # the bore survives at this distance
+    # the bore survives at this distance: seen from p, a wall is only accurate to ~one pitch (~3 % of r here), so the
+    # fine-mesh 2 % circle tolerance is the wrong bar; measured d = 6.06 vs 6.00, centred
+    holes = P.section_circles(out, ax, 0.5, tol=0.05)
+    assert len(holes) == 1 and abs(holes[0]["d"] - 6) < 0.3
     assert T.shape == (4, 4)                                       # the transform back to the input frame
 
 
