@@ -2,18 +2,29 @@
 import numpy as np
 import trimesh
 from scipy import ndimage
+from skimage import measure
 
 
 def simplify(mesh, p=0.01, max_faces=20000):
-    """Reduce a mesh to its coarse axis-aligned shape seen from distance p. Dual contouring, not marching cubes:
-    MC rounded every corner by 1-2 pitch and the analyser read it as fillets (runs/second_opinion/answer.md)."""
+    """Reduce a mesh to its coarse axis-aligned shape seen from distance p (marching cubes: watertight on 52/53
+    fake-scan runs, but corners come back rounded by 1-2 pitch)."""
+    occ, lo, h, T = _occupancy(mesh, p)
+    field = ndimage.gaussian_filter(occ.astype(float), 1.0)
+    verts, faces, _, _ = measure.marching_cubes(field, level=0.5, spacing=(h, h, h))
+    verts += lo + h/2                 # grid index 0 sits at lo + h/2
+    surface = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    surface.merge_vertices()
+    surface.fix_normals()
+    return _finish(surface, h, max_faces), T
+
+
+def simplify_dc(mesh, p=0.01, max_faces=20000):
+    """simplify by dual contouring: sharp corners by construction (runs/second_opinion/answer.md).
+    NOT YET USABLE: one vertex per cell makes it non-manifold - watertight 10/27 scans at p=0.01, 0/26 at 0.0025."""
     occ, lo, h, T = _occupancy(mesh, p)
     out = _finish(_dual_contour(occ, lo, h), h, max_faces)
     _sharpen_corners(out)
     return out, T
-
-
-simplify_dc = simplify
 
 
 def _occupancy(mesh, p):
