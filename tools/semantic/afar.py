@@ -2,29 +2,21 @@
 import numpy as np
 import trimesh
 from scipy import ndimage
-from skimage import measure
 
 
 def simplify(mesh, p=0.01, max_faces=20000):
-    """Reduce a mesh to its coarse axis-aligned shape seen from distance p (marching cubes: watertight on 52/53
-    fake-scan runs, but corners come back rounded by 1-2 pitch)."""
-    occ, lo, h, T = _occupancy(mesh, p)
-    field = ndimage.gaussian_filter(occ.astype(float), 1.0)
-    verts, faces, _, _ = measure.marching_cubes(field, level=0.5, spacing=(h, h, h))
-    verts += lo + h/2                 # grid index 0 sits at lo + h/2
-    surface = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    surface.merge_vertices()
-    surface.fix_normals()
-    return _finish(surface, h, max_faces), T
-
-
-def simplify_dc(mesh, p=0.01, max_faces=20000):
-    """simplify by dual contouring: sharp corners by construction (runs/second_opinion/answer.md).
-    NOT YET USABLE: one vertex per cell makes it non-manifold - watertight 10/27 scans at p=0.01, 0/26 at 0.0025."""
+    """Reduce a mesh to its coarse axis-aligned shape seen from distance p, by dual contouring: sharp corners by
+    construction where marching cubes rounded them (runs/second_opinion/answer.md). Watertight 56/56 (28 scans x
+    p 0.01, 0.0025; runs/second_opinion/kimi_dc.md).
+    Checkerboard grid faces (4 alternating corner signs of the smoothed field) are disambiguated
+    up front; without that their dual edges are shared by 4 quads and the mesh is non-manifold."""
     occ, lo, h, T = _occupancy(mesh, p)
     out = _finish(_dual_contour(occ, lo, h), h, max_faces)
     _sharpen_corners(out)
     return out, T
+
+
+simplify_dc = simplify
 
 
 def _occupancy(mesh, p):
@@ -61,7 +53,7 @@ def _dual_contour(occ, lo, h, sigma=1.2, lam=0.1):
     origin = lo - h/2
     cdims = np.array(occ.shape) - 1
     g = np.stack(np.gradient(f, h, h, h), axis=-1)               # points inside; outward is -g
-    sign = f > 0.5
+    sign = _disambiguate(f)
     cells, pts, norms = [], [], []
     for ax in range(3):
         idx = np.argwhere(np.diff(sign.astype(np.int8), axis=ax) != 0)
@@ -97,6 +89,59 @@ def _dual_contour(occ, lo, h, sigma=1.2, lam=0.1):
     surface.merge_vertices()
     surface.fix_normals()
     return surface
+
+
+def _disambiguate(f, iters=256):
+    """Flip near-tie corners until no grid face is a checkerboard (4 alternating corner signs).
+
+    A face with 4 sign-changing boundary edges gives the dual edge between its two cell
+    vertices 4 incident quads -> non-manifold (measured 1:1 with every bad edge in
+    runs/second_opinion/classify_*.log). Flipping the corner closest to the isolevel makes
+    the face 3-1 -> exactly 2 sign-changing edges. Crossings/normals still come from f.
+    Corners flip at most twice (once freely, once as a forced move on a stuck face), so the
+    loop terminates; measured 2-3 passes on the most ambiguous scans (2, 19, 27 @ p=0.0025)."""
+    sign = f > 0.5
+    flips = np.zeros(f.shape, np.int8)
+    for _ in range(iters):
+        faces = []
+        for ax in range(3):
+            oax = [a for a in range(3) if a != ax]
+            def sl(dj, dk):
+                s = [slice(None)] * 3
+                s[oax[0]] = slice(0, -1) if dj == 0 else slice(1, None)
+                s[oax[1]] = slice(0, -1) if dk == 0 else slice(1, None)
+                return tuple(s)
+            c000, c011, c010, c001 = sign[sl(0, 0)], sign[sl(1, 1)], sign[sl(1, 0)], sign[sl(0, 1)]
+            amb = (c000 == c011) & (c010 == c001) & (c000 != c010)
+            for loc in np.argwhere(amb):
+                i, j, k = (int(x) for x in loc)
+                corners = []
+                for dj in (0, 1):
+                    for dk in (0, 1):
+                        c = [i, j, k]
+                        c[oax[0]] += dj
+                        c[oax[1]] += dk
+                        corners.append(tuple(c))
+                faces.append(corners)
+        if not faces:
+            return sign
+        faces.sort(key=lambda cs: min(abs(f[c] - 0.5) for c in cs))
+        for corners in faces:
+            c0, c1, c2, c3 = corners
+            if not (sign[c0] == sign[c3] and sign[c1] == sign[c2] and sign[c0] != sign[c1]):
+                continue  # already resolved by an earlier flip this pass
+            for budget in (1, 2):                      # 1 = free flip, 2 = forced flip of a pinned corner
+                for c in sorted(corners, key=lambda c: abs(f[c] - 0.5)):
+                    if flips[c] < budget:
+                        sign[c] = ~sign[c]
+                        flips[c] += 1
+                        break
+                else:
+                    continue
+                break
+            else:
+                raise RuntimeError(f"_disambiguate: unresolvable checkerboard face at {corners[0]}")
+    raise RuntimeError(f"_disambiguate: {len(faces)} checkerboard faces left after {iters} passes")
 
 
 def _sharpen_corners(mesh):
