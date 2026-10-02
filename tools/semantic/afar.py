@@ -2,22 +2,28 @@
 import numpy as np
 import trimesh
 from scipy import ndimage
-from skimage import measure
 
 
 def simplify(mesh, p=0.01, max_faces=20000):
-    """Reduce a mesh to its coarse axis-aligned shape seen from distance p."""
-    # Step 1: Frame
+    """Reduce a mesh to its coarse axis-aligned shape seen from distance p. Dual contouring, not marching cubes:
+    MC rounded every corner by 1-2 pitch and the analyser read it as fillets (runs/second_opinion/answer.md)."""
+    occ, lo, h, T = _occupancy(mesh, p)
+    out = _finish(_dual_contour(occ, lo, h), h, max_faces)
+    _sharpen_corners(out)
+    return out, T
+
+
+simplify_dc = simplify
+
+
+def _occupancy(mesh, p):
+    """Closed occupancy grid of the mesh in its oriented-bounds frame; pitch p * diagonal."""
+    import igl
     mesh = mesh.copy()
     mesh.merge_vertices()
     T0 = trimesh.bounds.oriented_bounds(mesh)[0]
     aligned = mesh.copy().apply_transform(T0)
-    T = np.linalg.inv(T0)
-
-    # Step 2: Voxelize and extract surface
-    import igl
-    pitch = p * np.linalg.norm(aligned.extents)
-    h = pitch
+    h = p * np.linalg.norm(aligned.extents)
     lo = aligned.bounds[0] - 3*h
     hi = aligned.bounds[1] + 3*h
     axes = [np.arange(lo[i] + h/2, hi[i], h) for i in range(3)]
@@ -25,21 +31,69 @@ def simplify(mesh, p=0.01, max_faces=20000):
     w = igl.fast_winding_number(np.asarray(aligned.vertices, float), np.asarray(aligned.faces, np.int64), G)
     occ = (w > 0.5).reshape(len(axes[0]), len(axes[1]), len(axes[2]))
     occ = ndimage.binary_closing(occ, iterations=1); occ = ndimage.binary_fill_holes(occ)
-    field = ndimage.gaussian_filter(occ.astype(float), 1.0)
-    verts, faces, _, _ = measure.marching_cubes(field, level=0.5, spacing=(h, h, h))
-    verts += lo + h/2                 # grid index 0 sits at lo + h/2
-    surface = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    surface.merge_vertices()
-    surface.fix_normals()
+    return occ, lo, h, np.linalg.inv(T0)
 
-    # Step 3: Flatten axis-aligned faces (snap, on the DENSE mesh)
-    _flatten_faces(surface, pitch)
 
-    # Step 4: Decimate the clean manifold to at most max_faces
+def _finish(surface, pitch, max_faces):
+    _flatten_faces(surface, pitch)    # snap axis-aligned faces on the DENSE mesh
     out = _decimate(surface, max_faces)
     out.fix_normals()
+    return out
 
-    return out, T
+
+def _dual_contour(occ, lo, h, sigma=1.2, lam=0.1):
+    """Watertight dual contouring of a bool occupancy grid (node (i,j,k) at lo + h/2 + (i,j,k)*h).
+    Sign changes and Hermite normals both come from the smoothed field, never from the scan: the scan's
+    normals are noise (median 18 deg tilt), and a binary grid's checkerboard faces make it non-manifold."""
+    occ = np.pad(occ, 1, constant_values=False)
+    f = ndimage.gaussian_filter(occ.astype(np.float64), sigma)   # 0..1, surface at 0.5
+    origin = lo - h/2
+    cdims = np.array(occ.shape) - 1
+    g = np.stack(np.gradient(f, h, h, h), axis=-1)               # points inside; outward is -g
+    sign = f > 0.5
+    cells, pts, norms = [], [], []
+    for ax in range(3):
+        idx = np.argwhere(np.diff(sign.astype(np.int8), axis=ax) != 0)
+        nxt = tuple((idx + np.eye(3, dtype=int)[ax]).T)
+        f0, f1 = f[tuple(idx.T)], f[nxt]
+        t = np.clip(np.where(np.abs(f1 - f0) < 1e-12, 0.5, (0.5 - f0) / np.where(f1 == f0, 1, f1 - f0)), 0, 1)
+        pts.append(origin + idx * h + t[:, None] * np.eye(3)[ax] * h)
+        gc = (1 - t)[:, None] * g[tuple(idx.T)] + t[:, None] * g[nxt]
+        norms.append(-gc / np.maximum(np.linalg.norm(gc, axis=1, keepdims=True), 1e-12))
+        ay, az = [k for k in range(3) if k != ax]
+        off = np.zeros((4, 3), np.int64)
+        off[:, ay] = [0, 1, 1, 0]
+        off[:, az] = [0, 0, 1, 1]
+        c = idx[:, None, :] - off[None]
+        cells.append((c[..., 0] * cdims[1] + c[..., 1]) * cdims[2] + c[..., 2])
+    cells, pts, norms = np.concatenate(cells), np.concatenate(pts), np.concatenate(norms)
+
+    # QEF per active cell (each edge feeds its 4 cells); compact arrays, a full-grid H OOMs on fine sweeps
+    active, inv = np.unique(cells.ravel(), return_inverse=True)
+    n4, p4 = np.repeat(norms, 4, axis=0), np.repeat(pts, 4, axis=0)
+    H = np.zeros((len(active), 3, 3)); rhs = np.zeros((len(active), 3))
+    np.add.at(H, inv, np.einsum("ij,ik->ijk", n4, n4))
+    np.add.at(rhs, inv, n4 * np.einsum("ij,ij->i", n4, p4)[:, None])
+    centers = origin + (np.array(np.unravel_index(active, cdims)).T + 0.5) * h
+    verts = np.linalg.solve(H + lam**2 * np.eye(3), (rhs + lam**2 * centers)[..., None])[..., 0]
+    verts = np.clip(verts, centers - h/2, centers + h/2)
+
+    q = inv.reshape(-1, 4)                                       # one quad per edge, wound outward
+    v = verts[q]
+    flip = np.einsum("ij,ij->i", np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), norms) < 0
+    q = np.where(flip[:, None], q[:, [0, 3, 2, 1]], q)
+    surface = trimesh.Trimesh(vertices=verts, faces=q[:, [0, 1, 2, 0, 2, 3]].reshape(-1, 3), process=False)
+    surface.merge_vertices()
+    surface.fix_normals()
+    return surface
+
+
+def _sharpen_corners(mesh):
+    """Snap the nearest vertex to each bbox corner, filling the chamfer decimation leaves; vertices only."""
+    lo, hi = mesh.bounds
+    for c in np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]):
+        mesh.vertices[int(np.linalg.norm(mesh.vertices - c, axis=1).argmin())] = c
+    return mesh
 
 
 def _flatten_faces(mesh, pitch):
