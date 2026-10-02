@@ -60,3 +60,14 @@ def test_farther_is_simpler(scan):
     near, _ = A.simplify(scan, p=0.005)
     far, _ = A.simplify(scan, p=0.02)
     assert len(far.faces) < len(near.faces)
+
+
+def test_corners_come_back_sharp(scan):
+    """Seen from afar a face blurs but a corner between two planes is still a corner: the blur's ~1-2 pitch rounding
+    (measured 0.6-1.1 mm at p=0.01) must not survive, or the analyser models every edge as a fillet."""
+    out, _ = A.simplify(scan, p=0.01)
+    lo, hi = out.bounds
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    gaps = [np.linalg.norm(out.vertices - c, axis=1).min() for c in corners]
+    assert max(gaps) < 0.25, gaps
+    assert out.is_watertight
