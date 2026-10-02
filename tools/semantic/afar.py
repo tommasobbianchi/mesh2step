@@ -146,6 +146,8 @@ def _disambiguate(f, iters=256):
 
 def _sharpen_corners(mesh):
     """Snap the nearest vertex to each bbox corner, filling the chamfer decimation leaves; vertices only."""
+    if mesh.is_empty:                 # p so coarse the part vanished; the sweep's volume gate reports it
+        return mesh
     lo, hi = mesh.bounds
     for c in np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]):
         mesh.vertices[int(np.linalg.norm(mesh.vertices - c, axis=1).argmin())] = c
