@@ -103,7 +103,7 @@ def test_build_with_gauges(client, scan, tri, tmp_path):
     assert r.status_code == 200, r.text
     step = tmp_path / "g.step"
     step.write_bytes(client.get(f"/api/download/{r.json()['token']}").content)
-    _, faces, nsol, valid = G.read_step(step)
+    _, _, nsol, valid = G.read_step(step)
     assert nsol == 1 and valid
 
 

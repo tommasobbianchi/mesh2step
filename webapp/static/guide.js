@@ -250,17 +250,24 @@ export async function startGuide(ctx) {
     // two rectangular flanges from the edge line into each face, extruded along the edge
     const u = new THREE.Vector3().fromArray(g.edge.direction), o = new THREE.Vector3().fromArray(g.edge.point);
     const a = o.clone().addScaledVector(u, g.extent[0]), b = o.clone().addScaledVector(u, g.extent[1]);
-    const pos = [];
+    // each flange a slab of thickness th standing on its face (normals point out of the part); drawn over the mesh
+    const th = 0.15 * brushR, pos = [], rim = [];
+    const quad = (p, q, r, s) => { for (const v of [p, q, r, p, r, s]) pos.push(v.x, v.y, v.z); };
     for (const p of g.planes) {
       const f = new THREE.Vector3().fromArray(p.flange).multiplyScalar(p.width);
+      const n = new THREE.Vector3().fromArray(p.normal).multiplyScalar(th);
       const a2 = a.clone().add(f), b2 = b.clone().add(f);
-      for (const v of [a, b, b2, a, b2, a2]) pos.push(v.x, v.y, v.z);
+      const [an, bn, a2n, b2n] = [a, b, a2, b2].map(v => v.clone().add(n));
+      quad(a, b, b2, a2); quad(an, bn, b2n, a2n); quad(a2, b2, b2n, a2n);
+      rim.push(a2n, b2n);
     }
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
     const grp = new THREE.Group();
-    grp.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false })));
-    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color })));
+    const m = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
+    const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([a, b, ...rim]), new THREE.LineBasicMaterial({ color, depthTest: false }));
+    m.renderOrder = l.renderOrder = 10;
+    grp.add(m, l);
     scene.add(grp);
     return grp;
   }
