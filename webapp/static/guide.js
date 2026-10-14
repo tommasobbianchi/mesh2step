@@ -90,6 +90,18 @@ export async function startGuide(ctx) {
   brushSize.style.cssText = 'width:80px;vertical-align:middle;';
   const fitBtn = el('button', 'guide-fit', 'Fit painted');
   const clearBtn = el('button', 'guide-clear', 'Clear paint');
+  // the V-gauge (scan mode): click a sharp edge, an L snaps to it, Accept declares that edge 90 degrees
+  const gaugeBtn = el('button', 'guide-gauge', 'Gauge');
+  gaugeBtn.title = 'Click a sharp edge: a 90° L snaps to its two flat faces; Accept makes that edge exactly 90°';
+  gaugeBtn.style.display = 'none';
+  const gaugeBar = el('div', 'guide-gauge-bar');
+  gaugeBar.style.cssText = 'display:none;margin:4px 0;';
+  const gaugeInfo = document.createElement('div'); gaugeInfo.id = 'guide-gauge-info'; gaugeBar.appendChild(gaugeInfo);
+  const gaugeAcceptBtn = el('button', 'guide-gauge-accept', 'Accept'); gaugeBar.appendChild(gaugeAcceptBtn);
+  const gaugeRetryBtn = el('button', 'guide-gauge-retry', 'Retry wider'); gaugeBar.appendChild(gaugeRetryBtn);
+  const gaugeCancelBtn = el('button', 'guide-gauge-cancel', 'Cancel'); gaugeBar.appendChild(gaugeCancelBtn);
+  const gaugeList = el('div', 'guide-gauges');
+  gaugeList.style.cssText = 'margin:2px 0;color:#555;';
   const statusEl = el('div', 'guide-status');
   statusEl.style.cssText = 'margin-top:6px;color:#c00;min-height:1.2em;';
   const dl = el('a', 'guide-download', 'Download refined STEP');
@@ -226,10 +238,92 @@ export async function startGuide(ctx) {
   }
   function setBrush(on) {
     brushing = on;
+    if (on && gauging) setGauge(false);
     if (controls) controls.enabled = !on;
     brushBtn.style.background = on ? '#3b82f6' : '';
     brushBtn.style.color = on ? '#fff' : '';
   }
+  // --- the V-gauge ---
+  let gauging = false, gaugeTri = -1, gaugeRadius = null, gaugePending = null, gaugePreview = null;
+  const gaugeMeshes = new Map();       // accepted gauge selection -> its L in the scene
+  function gaugeL(g, color, opacity) {
+    // two rectangular flanges from the edge line into each face, extruded along the edge
+    const u = new THREE.Vector3().fromArray(g.edge.direction), o = new THREE.Vector3().fromArray(g.edge.point);
+    const a = o.clone().addScaledVector(u, g.extent[0]), b = o.clone().addScaledVector(u, g.extent[1]);
+    const pos = [];
+    for (const p of g.planes) {
+      const f = new THREE.Vector3().fromArray(p.flange).multiplyScalar(p.width);
+      const a2 = a.clone().add(f), b2 = b.clone().add(f);
+      for (const v of [a, b, b2, a, b2, a2]) pos.push(v.x, v.y, v.z);
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false })));
+    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color })));
+    scene.add(grp);
+    return grp;
+  }
+  function dropPreview() {
+    if (gaugePreview) { scene.remove(gaugePreview); gaugePreview = null; }
+    gaugePending = null; gaugeBar.style.display = 'none';
+  }
+  function setGauge(on) {
+    gauging = on;
+    if (on) setBrush(false); else dropPreview();
+    gaugeBtn.style.background = on ? '#ef4444' : '';
+    gaugeBtn.style.color = on ? '#fff' : '';
+  }
+  async function placeGauge() {
+    statusEl.textContent = 'Fitting the gauge…';
+    const resp = await fetch(`api/guide/${token}/gauge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(gaugeRadius ? { triangle: gaugeTri, radius: gaugeRadius } : { triangle: gaugeTri }),
+    });
+    const data = await resp.json();
+    dropPreview();
+    if (!resp.ok) { statusEl.textContent = data.detail || 'No 90° edge here'; return; }
+    statusEl.textContent = '';
+    gaugePending = data;
+    gaugePreview = gaugeL(data, 0xef4444, 0.45);
+    gaugeInfo.textContent = `measured ${data.angle_measured_deg.toFixed(1)}° → 90° · rms ${data.rms.toFixed(3)} mm`;
+    gaugeBar.style.display = '';
+  }
+  function listGauges() {
+    gaugeList.textContent = '';
+    selections.filter(s => s.kind === 'gauge').forEach((s, i) => {
+      const row = document.createElement('div');
+      row.textContent = `Gauge ${i + 1} (${s.angle_measured_deg.toFixed(1)}°) `;
+      const rm = document.createElement('button');
+      rm.textContent = 'remove'; rm.className = 'guide-gauge-remove';
+      rm.addEventListener('click', () => {
+        selections = selections.filter(x => x !== s);
+        scene.remove(gaugeMeshes.get(s)); gaugeMeshes.delete(s);
+        listGauges(); recolour();
+      });
+      row.appendChild(rm); gaugeList.appendChild(row);
+    });
+  }
+  gaugeBtn.addEventListener('click', () => setGauge(!gauging));
+  gaugeCancelBtn.addEventListener('click', dropPreview);
+  gaugeRetryBtn.addEventListener('click', () => {
+    if (!gaugePending) return;
+    gaugeRadius = (gaugeRadius || 3 * brushR) * 1.5;      // 3 brushR = the server's default window (6 % of the diagonal)
+    placeGauge();
+  });
+  gaugeAcceptBtn.addEventListener('click', () => {
+    if (!gaugePending) return;
+    // a curved face the user already selected keeps its triangles; a plane selection loses them to the gauge (server)
+    const curved = new Set();
+    for (const s of selections) if (s.kind !== 'gauge' && s.surface !== 'plane' && s.kind !== 'chamfer') for (const t of s.triangles) curved.add(t);
+    const g = gaugePending;
+    for (const p of g.planes) p.triangles = p.triangles.filter(t => !curved.has(t));
+    g.triangles = g.triangles.filter(t => !curved.has(t));
+    selections.push(g);
+    gaugeMeshes.set(g, gaugeL(g, 0xdc2626, 0.3));
+    dropPreview(); listGauges(); recolour();
+  });
+
   canvas.addEventListener('mousedown', e => {
     pdX = e.clientX; pdY = e.clientY;
     if (brushing && step < steps.length) { painting = true; paintAt(e); }
@@ -239,6 +333,11 @@ export async function startGuide(ctx) {
   canvas.addEventListener('mouseup', async e => {
     if (painting) { painting = false; return; }
     if (Math.hypot(e.clientX - pdX, e.clientY - pdY) > 6) return;
+    if (gauging) {
+      const h = hitAt(e);
+      if (h) { gaugeTri = h.faceIndex; gaugeRadius = null; placeGauge().catch(e2 => { statusEl.textContent = 'Error: ' + e2.message; }); }
+      return;
+    }
     if (step >= steps.length) return;
 
     const kind = steps[step][0];
@@ -315,6 +414,7 @@ export async function startGuide(ctx) {
       selections = []; painted = new Set();
       statusEl.textContent = 'Finding surfaces in the scan\u2026';
       scanBtn.textContent = '3D scan mode';
+      gaugeBtn.style.display = '';
       await enterStep();
       statusEl.textContent = '';
     } catch (e2) {
@@ -352,7 +452,11 @@ export async function startGuide(ctx) {
   });
 
   undoBtn.addEventListener('click', () => {
-    if (selections.length) { selections.pop(); recolour(); }
+    if (selections.length) {
+      const s = selections.pop();
+      if (gaugeMeshes.has(s)) { scene.remove(gaugeMeshes.get(s)); gaugeMeshes.delete(s); listGauges(); }
+      recolour();
+    }
   });
 
   skipBtn.addEventListener('click', () => { step++; enterStep(); });

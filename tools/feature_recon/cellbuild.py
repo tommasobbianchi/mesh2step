@@ -78,7 +78,11 @@ def surfaces(mesh, label, kinds, params, fill=()):
         P = mesh.vertices[np.unique(mesh.faces[ts])]
         c = P.mean(0)
         plane = ("plane", {"normal": np.linalg.svd(P - c)[2][-1], "point": c}, ts, k)
-        if kind == "plane":   # a plane is always observable from its triangles: fit it, whatever was passed
+        if kind == "plane":   # a plane is always observable from its triangles: fit it, whatever was passed ...
+            ex = params.get(k) or {}
+            if ex.get("exact"):   # ... unless the user fixed it exactly (a gauge, bd projects-vgj7.4)
+                plane = ("plane", {"normal": np.asarray(ex["normal"], float), "point": np.asarray(ex["point"], float),
+                                   "exact": True}, ts, k)
             out.append(plane)
             continue
         p = params.get(k)
@@ -136,7 +140,8 @@ def _same(a, b, tol):
 
 def dedupe(surfs, tol):
     keep = []
-    for s in sorted(surfs, key=lambda s: -len(s[2])):     # the larger region's surface stands
+    # the larger region's surface stands; an exact (gauge) plane stands over any fitted one
+    for s in sorted(surfs, key=lambda s: (not s[1].get("exact", False), -len(s[2]))):
         for i, k in enumerate(keep):
             if _same(k, s, tol):
                 keep[i] = (k[0], k[1], np.r_[k[2], s[2]])

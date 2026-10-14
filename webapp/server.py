@@ -1923,6 +1923,40 @@ def guide_fit(token: str, body: FitBody):
             "params": _ui_params(surface, {k: v for k, v in r.items() if k not in ("kind", "rms")})}
 
 
+class GaugeBody(BaseModel):
+    triangle: int
+    radius: float | None = None
+
+
+@app.post("/api/guide/{token}/gauge")
+def guide_gauge(token: str, body: GaugeBody):
+    """The V-gauge (bd projects-vgj7.4): the user clicks a sharp edge and declares it 90 degrees between two planes;
+    both sides are fitted on the raw scan and made exactly perpendicular. 400 when there is no such edge there."""
+    import numpy as np
+    import trimesh
+
+    sys.path.insert(0, str(EDGEBUILD.parent))
+    from gauge import gauge
+
+    job, tri = _guide_tri(token)
+    if not 0 <= body.triangle < len(tri):
+        raise HTTPException(400, f"triangle {body.triangle} is not a triangle of this mesh")
+    if body.radius is not None and not body.radius > 0:
+        raise HTTPException(400, "radius must be positive")
+    scan = job.get("scan")
+    if scan:
+        mesh, raw, noise = scan["prep"], scan["raw"], scan["noise"]
+    else:
+        mesh = trimesh.Trimesh(tri.reshape(-1, 3), np.arange(3 * len(tri)).reshape(-1, 3))   # merged: edge lengths
+        raw, noise = None, None
+    try:
+        g = gauge(mesh, body.triangle, raw=raw, noise=noise, radius=body.radius)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    # the selection the page sends back on build: kind gauge, its planes, and every triangle it claims
+    return g | {"kind": "gauge", "triangles": sorted({t for p in g["planes"] for t in p["triangles"]})}
+
+
 class BuildBody(BaseModel):
     selections: list[dict]
 

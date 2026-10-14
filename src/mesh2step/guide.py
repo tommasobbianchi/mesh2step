@@ -308,7 +308,34 @@ def suggest(tri, kind):
     return results
 
 
+def _expand_gauges(selections):
+    """A gauge selection (kind "gauge", bd projects-vgj7.4: two perpendicular planes the user snapped to a scan edge)
+    becomes its two plane selections, with exact params the builder uses as given. The gauge wins its triangles over
+    the user's other plane selections; those lose them (a curved selection overlapping it is still an error)."""
+    if not any(s.get("kind") == "gauge" for s in selections):
+        return selections
+    out, claimed = [], set()
+    for s in selections:
+        if s.get("kind") == "gauge":
+            for p in s["planes"]:
+                t = [x for x in p["triangles"] if x not in claimed]
+                claimed.update(t)
+                nrm = [float(v) for v in p["normal"]]
+                out.append({"kind": "plane", "surface": "plane", "triangles": t,
+                            "params": {"normal": nrm, "point": [float(p["d"]) * v for v in nrm], "exact": True}})
+    for s in selections:
+        if s.get("kind") == "gauge":
+            continue
+        if s.get("surface", s.get("kind")) in ("plane", "chamfer"):
+            s = dict(s, triangles=[x for x in s["triangles"] if x not in claimed])
+            if not s["triangles"]:
+                continue
+        out.append(s)
+    return out
+
+
 def labels(n, selections):
+    selections = _expand_gauges(selections)
     label = [-1] * n
     kinds, params, fill = {}, {}, []
     seen = set()
